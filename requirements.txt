@@ -1,0 +1,30 @@
+# LangGraph and LangChain
+langgraph>=0.2.50
+langchain>=0.3.12
+langchain-anthropic>=0.3.5
+langchain-openai>=0.2.14
+langchain-core>=0.3.25
+
+# AI/ML
+anthropic>=0.40.0
+openai>=1.58.1
+
+# Web Framework (for API endpoints if needed)
+fastapi>=0.115.6
+uvicorn>=0.34.0
+pydantic>=2.10.4
+pydantic-settings>=2.7.0
+
+# Database
+supabase>=2.11.1
+psycopg2-binary>=2.9.10
+pgvector>=0.3.6
+
+# Utilities
+python-dotenv>=1.0.1
+httpx>=0.28.1
+aiofiles>=24.1.0
+
+# Date/Time
+python-dateutil>=2.9.0
+pytz>=2024.2
