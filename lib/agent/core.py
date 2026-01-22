@@ -319,11 +319,20 @@ async def create_agent(
         max_tokens=4096
     )
 
-    # Create ReAct agent
+    # Create ReAct agent with system prompt as messages_modifier
+    # The messages_modifier is a function that prepends the system prompt
+    def add_system_prompt(state):
+        """Add system prompt to the beginning of messages."""
+        from langchain_core.messages import SystemMessage
+        messages = state.get("messages", [])
+        if not messages or not isinstance(messages[0], SystemMessage):
+            return [SystemMessage(content=system_prompt)] + messages
+        return messages
+
     agent = create_react_agent(
         llm,
         tools,
-        state_modifier=system_prompt
+        messages_modifier=add_system_prompt
     )
 
     logger.info("✓ Agent created successfully")
