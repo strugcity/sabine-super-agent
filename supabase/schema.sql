@@ -231,10 +231,11 @@ COMMENT ON COLUMN custody_schedule.parent_with_custody IS 'Which parent has cust
 CREATE INDEX IF NOT EXISTS idx_custody_schedule_dates
     ON custody_schedule(user_id, start_date, end_date);
 
--- Index for finding current custody
-CREATE INDEX IF NOT EXISTS idx_custody_schedule_active
-    ON custody_schedule(user_id, start_date, end_date)
-    WHERE start_date <= CURRENT_DATE AND end_date >= CURRENT_DATE;
+-- Index for finding current custody (removed CURRENT_DATE predicate - not immutable)
+-- The date range index above (idx_custody_schedule_dates) will handle these queries efficiently
+-- CREATE INDEX IF NOT EXISTS idx_custody_schedule_active
+--     ON custody_schedule(user_id, start_date, end_date)
+--     WHERE start_date <= CURRENT_DATE AND end_date >= CURRENT_DATE;
 
 -- -----------------------------------------------------------------------------
 -- Conversation History (Audit Trail)
