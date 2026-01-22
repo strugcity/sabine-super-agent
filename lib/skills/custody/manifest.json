@@ -1,0 +1,19 @@
+{
+  "name": "get_custody_schedule",
+  "description": "Retrieve custody schedule information for a specific date or date range",
+  "version": "1.0.0",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "date": {
+        "type": "string",
+        "description": "Date in YYYY-MM-DD format (optional, defaults to today)"
+      },
+      "days_ahead": {
+        "type": "integer",
+        "description": "Number of days to look ahead (optional, defaults to 7)"
+      }
+    },
+    "required": []
+  }
+}

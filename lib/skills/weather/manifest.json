@@ -1,0 +1,15 @@
+{
+  "name": "get_weather",
+  "description": "Get current weather information for a location",
+  "version": "1.0.0",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "location": {
+        "type": "string",
+        "description": "City name or ZIP code"
+      }
+    },
+    "required": ["location"]
+  }
+}
