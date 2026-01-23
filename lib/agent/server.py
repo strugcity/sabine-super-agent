@@ -267,7 +267,7 @@ async def startup_event():
     # Load environment variables from project root
     from dotenv import load_dotenv
     env_path = project_root / ".env"
-    load_dotenv(dotenv_path=env_path)
+    load_dotenv(dotenv_path=env_path, override=True)
 
     # Check required environment variables
     required_vars = ["ANTHROPIC_API_KEY", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]
@@ -308,7 +308,7 @@ if __name__ == "__main__":
     # Load environment variables from project root
     from dotenv import load_dotenv
     env_path = project_root / ".env"
-    load_dotenv(dotenv_path=env_path)
+    load_dotenv(dotenv_path=env_path, override=True)
 
     # Get configuration
     host = os.getenv("API_HOST", "0.0.0.0")

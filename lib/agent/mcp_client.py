@@ -1,22 +1,46 @@
 """
 MCP Client - Model Context Protocol Integration
 
-This module handles connections to remote MCP servers via SSE (Server-Sent Events)
+This module handles connections to remote MCP servers via streamable-http protocol
 and converts MCP tools into LangChain-compatible StructuredTool objects.
 
 The Personal Super Agent uses this to integrate external services like Google Drive,
 Slack, Calendar, etc. through standardized MCP servers.
+
+Updated to support streamable-http protocol (MCP spec 2024-11-05+)
 """
 
 import asyncio
 import logging
+import json
 from typing import Any, Callable, Dict, List, Optional
 from pydantic import BaseModel, Field
 import httpx
-from httpx_sse import aconnect_sse
 from langchain_core.tools import StructuredTool
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_sse_response(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Parse Server-Sent Events (SSE) format response to extract JSON data.
+
+    Args:
+        text: SSE formatted text (e.g., "event: message\\ndata: {...}\\n\\n")
+
+    Returns:
+        Parsed JSON data or None if parsing fails
+    """
+    try:
+        # SSE format: "event: message\ndata: {...}\n\n"
+        lines = text.strip().split('\n')
+        for line in lines:
+            if line.startswith('data: '):
+                json_str = line[6:]  # Remove "data: " prefix
+                return json.loads(json_str)
+    except Exception as e:
+        logger.debug(f"Failed to parse SSE response: {e}")
+    return None
 
 
 class MCPToolSchema(BaseModel):
@@ -42,23 +66,23 @@ class MCPServerInfo(BaseModel):
 
 async def get_mcp_tools(url: str, timeout: int = 10) -> List[StructuredTool]:
     """
-    Connect to a remote MCP server via SSE and fetch available tools.
+    Connect to a remote MCP server via streamable-http and fetch available tools.
 
     This function:
-    1. Connects to the MCP server using SSE
-    2. Sends a 'list_tools' request
+    1. Sends an initialize request to the MCP server and gets session ID
+    2. Sends a 'tools/list' request with session ID
     3. Receives the tool definitions
     4. Converts them to LangChain StructuredTool objects
 
     Args:
-        url: The MCP server URL (e.g., 'https://mcp.example.com/sse')
+        url: The MCP server URL (e.g., 'http://localhost:8000/mcp')
         timeout: Connection timeout in seconds (default: 10)
 
     Returns:
         List of LangChain StructuredTool objects (empty list if connection fails)
 
     Example:
-        >>> tools = await get_mcp_tools('https://gdrive-mcp.example.com/sse')
+        >>> tools = await get_mcp_tools('http://localhost:8000/mcp')
         >>> print(f"Loaded {len(tools)} tools from MCP server")
     """
     tools: List[StructuredTool] = []
@@ -67,55 +91,80 @@ async def get_mcp_tools(url: str, timeout: int = 10) -> List[StructuredTool]:
         logger.info(f"Connecting to MCP server: {url}")
 
         async with httpx.AsyncClient(timeout=timeout) as client:
-            # Connect to the SSE endpoint
             try:
-                async with aconnect_sse(client, "GET", url) as event_source:
-                    # Send initialization request
-                    init_request = {
-                        "jsonrpc": "2.0",
-                        "id": "init",
-                        "method": "initialize",
-                        "params": {
-                            "protocolVersion": "1.0",
-                            "capabilities": {},
-                            "clientInfo": {
-                                "name": "personal-super-agent",
-                                "version": "1.0.0"
-                            }
+                # Send initialization request (streamable-http uses POST for all operations)
+                init_request = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {
+                            "name": "personal-super-agent",
+                            "version": "1.0.0"
                         }
                     }
+                }
 
-                    # In a real SSE MCP implementation, you'd POST requests
-                    # and listen for responses via SSE. This is a simplified version.
-                    # For now, we'll make a separate request to list tools.
+                init_response = await client.post(
+                    url,
+                    json=init_request,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream"
+                    }
+                )
 
-                    # Request tool list
-                    tools_response = await client.post(
-                        url.replace('/sse', '/rpc'),  # Adjust endpoint as needed
-                        json={
-                            "jsonrpc": "2.0",
-                            "id": "list_tools",
-                            "method": "tools/list",
-                            "params": {}
-                        }
-                    )
+                if init_response.status_code != 200:
+                    logger.warning(f"Initialize failed for {url}: {init_response.status_code}")
+                    return tools
 
-                    if tools_response.status_code == 200:
-                        data = tools_response.json()
+                # Extract session ID from response headers
+                session_id = init_response.headers.get("mcp-session-id")
+                if not session_id:
+                    logger.warning(f"No session ID received from {url}")
+                    return tools
 
-                        if "result" in data and "tools" in data["result"]:
-                            mcp_tools = [MCPTool(**tool) for tool in data["result"]["tools"]]
+                logger.debug(f"Got session ID: {session_id}")
 
-                            # Convert MCP tools to LangChain StructuredTools
-                            for mcp_tool in mcp_tools:
-                                langchain_tool = _convert_mcp_to_langchain_tool(mcp_tool, url, client)
-                                tools.append(langchain_tool)
+                # Request tool list with session ID
+                tools_response = await client.post(
+                    url,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/list",
+                        "params": {}
+                    },
+                    headers={
+                        "Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream",
+                        "mcp-session-id": session_id
+                    }
+                )
 
-                            logger.info(f"Successfully loaded {len(tools)} tools from {url}")
-                        else:
-                            logger.warning(f"No tools found in MCP server response: {url}")
+                if tools_response.status_code == 200:
+                    # Parse SSE response
+                    data = _parse_sse_response(tools_response.text)
+                    if not data:
+                        logger.warning(f"Failed to parse SSE response from {url}")
+                        return tools
+
+                    if "result" in data and "tools" in data["result"]:
+                        mcp_tools = [MCPTool(**tool) for tool in data["result"]["tools"]]
+
+                        # Convert MCP tools to LangChain StructuredTools
+                        # Pass session_id so tools can use it
+                        for mcp_tool in mcp_tools:
+                            langchain_tool = _convert_mcp_to_langchain_tool(mcp_tool, url, session_id)
+                            tools.append(langchain_tool)
+
+                        logger.info(f"Successfully loaded {len(tools)} tools from {url}")
                     else:
-                        logger.warning(f"Failed to fetch tools from {url}: {tools_response.status_code}")
+                        logger.warning(f"No tools found in MCP server response: {url}")
+                else:
+                    logger.warning(f"Failed to fetch tools from {url}: {tools_response.status_code} - {tools_response.text}")
 
             except httpx.ConnectError as e:
                 logger.warning(f"Connection error to MCP server {url}: {e}")
@@ -131,7 +180,7 @@ async def get_mcp_tools(url: str, timeout: int = 10) -> List[StructuredTool]:
 def _convert_mcp_to_langchain_tool(
     mcp_tool: MCPTool,
     server_url: str,
-    client: httpx.AsyncClient
+    session_id: str
 ) -> StructuredTool:
     """
     Convert an MCP tool definition to a LangChain StructuredTool.
@@ -139,7 +188,7 @@ def _convert_mcp_to_langchain_tool(
     Args:
         mcp_tool: The MCP tool definition
         server_url: The MCP server URL (for making tool calls)
-        client: The HTTP client to use for requests
+        session_id: The MCP session ID for this connection
 
     Returns:
         A LangChain StructuredTool that wraps the MCP tool
@@ -147,38 +196,47 @@ def _convert_mcp_to_langchain_tool(
 
     # Create an async function that will be called when the tool is invoked
     async def tool_func(**kwargs) -> str:
-        """Execute the MCP tool via RPC call."""
+        """Execute the MCP tool via streamable-http call."""
         try:
-            response = await client.post(
-                server_url.replace('/sse', '/rpc'),
-                json={
-                    "jsonrpc": "2.0",
-                    "id": f"call_{mcp_tool.name}",
-                    "method": "tools/call",
-                    "params": {
-                        "name": mcp_tool.name,
-                        "arguments": kwargs
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    server_url,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": f"call_{mcp_tool.name}",
+                        "method": "tools/call",
+                        "params": {
+                            "name": mcp_tool.name,
+                            "arguments": kwargs
+                        }
+                    },
+                    headers={
+                        "Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream",
+                        "mcp-session-id": session_id
                     }
-                },
-                timeout=30.0
-            )
+                )
 
-            if response.status_code == 200:
-                data = response.json()
-                if "result" in data:
-                    # MCP tools return structured results
-                    result = data["result"]
-                    if isinstance(result, dict) and "content" in result:
-                        # Extract text content from MCP response
-                        content = result["content"]
-                        if isinstance(content, list) and len(content) > 0:
-                            return content[0].get("text", str(result))
-                        return str(content)
-                    return str(result)
-                elif "error" in data:
-                    return f"Error: {data['error'].get('message', 'Unknown error')}"
+                if response.status_code == 200:
+                    # Parse SSE response
+                    data = _parse_sse_response(response.text)
+                    if not data:
+                        return f"Failed to parse response from MCP server"
 
-            return f"Failed to execute tool: HTTP {response.status_code}"
+                    if "result" in data:
+                        # MCP tools return structured results
+                        result = data["result"]
+                        if isinstance(result, dict) and "content" in result:
+                            # Extract text content from MCP response
+                            content = result["content"]
+                            if isinstance(content, list) and len(content) > 0:
+                                return content[0].get("text", str(result))
+                            return str(content)
+                        return str(result)
+                    elif "error" in data:
+                        return f"Error: {data['error'].get('message', 'Unknown error')}"
+
+                return f"Failed to execute tool: HTTP {response.status_code}"
 
         except Exception as e:
             logger.error(f"Error executing MCP tool {mcp_tool.name}: {e}")
@@ -208,10 +266,27 @@ async def test_mcp_connection(url: str) -> bool:
     """
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(url.replace('/sse', '/health'))
+            # Try to initialize connection
+            response = await client.post(
+                url,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "test",
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "test", "version": "1.0.0"}
+                    }
+                },
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream"
+                }
+            )
             return response.status_code == 200
     except Exception as e:
-        logger.debug(f"MCP server {url} health check failed: {e}")
+        logger.debug(f"MCP server {url} connection test failed: {e}")
         return False
 
 
@@ -228,19 +303,27 @@ async def get_mcp_server_info(url: str) -> Optional[MCPServerInfo]:
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.post(
-                url.replace('/sse', '/rpc'),
+                url,
                 json={
                     "jsonrpc": "2.0",
                     "id": "info",
-                    "method": "info",
-                    "params": {}
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "info-request", "version": "1.0.0"}
+                    }
+                },
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream"
                 }
             )
 
             if response.status_code == 200:
                 data = response.json()
-                if "result" in data:
-                    return MCPServerInfo(**data["result"])
+                if "result" in data and "serverInfo" in data["result"]:
+                    return MCPServerInfo(**data["result"]["serverInfo"])
     except Exception as e:
         logger.debug(f"Failed to get MCP server info from {url}: {e}")
 
