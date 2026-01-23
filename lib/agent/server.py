@@ -264,9 +264,10 @@ async def startup_event():
     logger.info("Personal Super Agent API Starting...")
     logger.info("=" * 60)
 
-    # Load environment variables
+    # Load environment variables from project root
     from dotenv import load_dotenv
-    load_dotenv()
+    env_path = project_root / ".env"
+    load_dotenv(dotenv_path=env_path)
 
     # Check required environment variables
     required_vars = ["ANTHROPIC_API_KEY", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]
@@ -304,9 +305,10 @@ async def shutdown_event():
 # =============================================================================
 
 if __name__ == "__main__":
-    # Load environment variables
+    # Load environment variables from project root
     from dotenv import load_dotenv
-    load_dotenv()
+    env_path = project_root / ".env"
+    load_dotenv(dotenv_path=env_path)
 
     # Get configuration
     host = os.getenv("API_HOST", "0.0.0.0")
