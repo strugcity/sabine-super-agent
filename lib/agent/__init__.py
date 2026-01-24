@@ -23,8 +23,14 @@ from .core import (
     create_agent,
     run_agent,
     run_agent_sync,
+    run_agent_with_caching,
     load_deep_context,
-    build_system_prompt
+    build_system_prompt,
+    build_static_context,
+    build_dynamic_context,
+    get_cache_metrics,
+    reset_cache_metrics,
+    get_context_hash
 )
 
 from .registry import (
@@ -49,8 +55,14 @@ __all__ = [
     "create_agent",
     "run_agent",
     "run_agent_sync",
+    "run_agent_with_caching",
     "load_deep_context",
     "build_system_prompt",
+    "build_static_context",
+    "build_dynamic_context",
+    "get_cache_metrics",
+    "reset_cache_metrics",
+    "get_context_hash",
 
     # Registry functions
     "get_all_tools",

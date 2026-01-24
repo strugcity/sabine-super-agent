@@ -28,8 +28,9 @@ import uvicorn
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from lib.agent.core import run_agent, create_agent
+from lib.agent.core import run_agent, run_agent_with_caching, create_agent, get_cache_metrics, reset_cache_metrics
 from lib.agent.registry import get_all_tools
+from lib.agent.gmail_handler import handle_new_email_notification
 
 # Configure logging
 logging.basicConfig(
@@ -70,6 +71,10 @@ class InvokeRequest(BaseModel):
         None,
         description="Previous conversation history"
     )
+    use_caching: bool = Field(
+        False,
+        description="Use direct API with prompt caching (faster, but no tool execution loops)"
+    )
 
 
 class InvokeResponse(BaseModel):
@@ -103,9 +108,39 @@ async def root():
         "status": "running",
         "endpoints": {
             "POST /invoke": "Run the agent with a user message",
+            "POST /invoke/cached": "Run agent with prompt caching (faster)",
             "GET /health": "Health check and system status",
-            "GET /tools": "List available tools"
+            "GET /tools": "List available tools",
+            "GET /cache/metrics": "Get prompt cache metrics",
+            "POST /cache/reset": "Reset cache metrics"
         }
+    }
+
+
+@app.get("/cache/metrics")
+async def cache_metrics():
+    """
+    Get prompt caching metrics.
+
+    Returns statistics on cache hit rate, token savings, and latency.
+    """
+    return {
+        "success": True,
+        "metrics": get_cache_metrics()
+    }
+
+
+@app.post("/cache/reset")
+async def cache_reset():
+    """
+    Reset prompt caching metrics.
+
+    Useful for starting fresh benchmarks.
+    """
+    reset_cache_metrics()
+    return {
+        "success": True,
+        "message": "Cache metrics reset"
     }
 
 
@@ -173,26 +208,34 @@ async def invoke_agent(request: InvokeRequest):
 
     Args:
         request: InvokeRequest with message, user_id, session_id, etc.
+                 Set use_caching=True for faster responses with prompt caching
 
     Returns:
         InvokeResponse with agent's reply
     """
-    logger.info(f"Received invoke request for user {request.user_id}")
+    logger.info(f"Received invoke request for user {request.user_id} (caching: {request.use_caching})")
     logger.info(f"Message: {request.message}")
 
     try:
         # Generate session ID if not provided
         session_id = request.session_id or f"session-{request.user_id[:8]}"
 
-        # Run the agent
+        # Run the agent (with optional caching)
         result = await run_agent(
             user_id=request.user_id,
             session_id=session_id,
             user_message=request.message,
-            conversation_history=request.conversation_history
+            conversation_history=request.conversation_history,
+            use_caching=request.use_caching
         )
 
         if result["success"]:
+            # Log cache metrics if available
+            cache_info = result.get("cache_metrics", {})
+            if cache_info.get("status"):
+                logger.info(f"Cache: {cache_info.get('status')} | "
+                           f"Read: {cache_info.get('cache_read_tokens', 0)} tokens")
+
             logger.info(f"Agent response: {result['response'][:100]}...")
             return InvokeResponse(
                 success=True,
@@ -217,6 +260,69 @@ async def invoke_agent(request: InvokeRequest):
         raise HTTPException(
             status_code=500,
             detail=f"Failed to invoke agent: {str(e)}"
+        )
+
+
+@app.post("/invoke/cached")
+async def invoke_agent_cached(request: InvokeRequest):
+    """
+    Invoke the agent with prompt caching enabled.
+
+    This endpoint uses direct Anthropic API calls with prompt caching
+    for faster responses (up to 2x) and lower costs (up to 90% savings).
+
+    Best for:
+    - Simple queries that don't require tool execution loops
+    - Repeated queries with the same context
+    - High-volume scenarios where cost matters
+
+    Note: This mode doesn't support multi-step tool execution.
+    For complex queries requiring multiple tool calls, use /invoke instead.
+    """
+    logger.info(f"Received CACHED invoke request for user {request.user_id}")
+
+    try:
+        session_id = request.session_id or f"session-{request.user_id[:8]}"
+
+        result = await run_agent_with_caching(
+            user_id=request.user_id,
+            session_id=session_id,
+            user_message=request.message,
+            conversation_history=request.conversation_history
+        )
+
+        if result["success"]:
+            cache_metrics = result.get("cache_metrics", {})
+            logger.info(
+                f"Cached response: {result.get('latency_ms', 0):.0f}ms | "
+                f"Cache: {cache_metrics.get('status', 'N/A')} | "
+                f"Read: {cache_metrics.get('cache_read_tokens', 0)} tokens"
+            )
+
+            return {
+                "success": True,
+                "response": result["response"],
+                "user_id": request.user_id,
+                "session_id": session_id,
+                "timestamp": result["timestamp"],
+                "cache_metrics": cache_metrics,
+                "latency_ms": result.get("latency_ms", 0)
+            }
+        else:
+            return {
+                "success": False,
+                "response": "Error processing request",
+                "error": result.get("error"),
+                "user_id": request.user_id,
+                "session_id": session_id,
+                "timestamp": result["timestamp"]
+            }
+
+    except Exception as e:
+        logger.error(f"Exception in cached invoke endpoint: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to invoke cached agent: {str(e)}"
         )
 
 
@@ -247,6 +353,31 @@ async def test_agent():
 
     except Exception as e:
         logger.error(f"Test failed: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+# Gmail handler endpoint (simple, no agent)
+class GmailHandleRequest(BaseModel):
+    historyId: str
+
+
+@app.post("/gmail/handle")
+async def handle_gmail_notification(request: GmailHandleRequest):
+    """
+    Simple Gmail notification handler.
+
+    Directly calls MCP tools without using the complex agent.
+    This is more reliable for simple auto-reply functionality.
+    """
+    try:
+        result = await handle_new_email_notification(request.historyId)
+        return result
+
+    except Exception as e:
+        logger.error(f"Gmail handler failed: {e}")
         return {
             "success": False,
             "error": str(e)
