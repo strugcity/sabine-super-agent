@@ -55,3 +55,24 @@ build/
 .idea/
 *.swp
 *.swo
+
+# OAuth secrets (NEVER commit)
+client_secret*.json
+credentials.json
+token.json
+
+# Runtime state files
+lib/agent/.processed_emails.json
+lib/agent/.processed_emails.lock
+*.lock
+
+# Logs
+logs/
+*.log
+
+# Debug/test scripts
+oauth_*.log
+NUL
+
+# Claude Code
+.claude/

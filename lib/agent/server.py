@@ -492,7 +492,9 @@ if __name__ == "__main__":
     # Get configuration
     host = os.getenv("API_HOST", "0.0.0.0")
     port = int(os.getenv("API_PORT", "8000"))
-    reload = os.getenv("NODE_ENV", "development") == "development"
+    # Disable reload - it causes issues with PowerShell jobs and file locking
+    # Set UVICORN_RELOAD=true to enable if needed
+    reload = os.getenv("UVICORN_RELOAD", "false").lower() == "true"
 
     logger.info(f"Starting server on {host}:{port}")
     logger.info(f"Reload: {reload}")

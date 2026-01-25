@@ -30,6 +30,11 @@ httpx-sse
 mcp>=1.1.1
 httpx-sse>=0.4.0
 
+# Google APIs (for Gmail watch setup)
+google-auth>=2.47.0
+google-auth-oauthlib>=1.2.4
+google-api-python-client>=2.188.0
+
 # Date/Time
 python-dateutil>=2.9.0
 pytz>=2024.2
