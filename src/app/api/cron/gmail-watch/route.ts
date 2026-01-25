@@ -5,7 +5,7 @@
  * push notification watch. Gmail watches expire after 7 days, so we renew
  * with a 1-day buffer.
  *
- * Schedule: 0 0 */6 * * (every 6 days at midnight)
+ * Cron Schedule: "0 0 every-6-days" (see vercel.json)
  */
 
 import { NextRequest, NextResponse } from 'next/server';
