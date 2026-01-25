@@ -9,7 +9,10 @@ Run with:
     python lib/agent/server.py
 
 Or with uvicorn:
-    uvicorn lib.agent.server:app --host 0.0.0.0 --port 8000 --reload
+    uvicorn lib.agent.server:app --host 0.0.0.0 --port 8001 --reload
+
+Note: Railway sets PORT env var automatically. The server respects both
+PORT and API_PORT environment variables for flexibility.
 """
 
 import asyncio
@@ -520,9 +523,11 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to load tools: {e}")
 
+    # Get the port for logging
+    api_port = os.getenv("PORT") or os.getenv("API_PORT", "8001")
     logger.info("=" * 60)
     logger.info("API Ready!")
-    logger.info("Listening on http://0.0.0.0:8000")
+    logger.info(f"Listening on http://0.0.0.0:{api_port}")
     logger.info("=" * 60)
 
 
@@ -543,8 +548,9 @@ if __name__ == "__main__":
     load_dotenv(dotenv_path=env_path, override=True)
 
     # Get configuration
+    # Railway sets PORT env var, we also support API_PORT for backwards compatibility
     host = os.getenv("API_HOST", "0.0.0.0")
-    port = int(os.getenv("API_PORT", "8000"))
+    port = int(os.getenv("PORT") or os.getenv("API_PORT", "8001"))
     # Disable reload - it causes issues with PowerShell jobs and file locking
     # Set UVICORN_RELOAD=true to enable if needed
     reload = os.getenv("UVICORN_RELOAD", "false").lower() == "true"

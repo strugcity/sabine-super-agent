@@ -42,15 +42,17 @@ COPY deploy/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 # Environment variables (defaults, override in Railway)
 ENV PYTHONUNBUFFERED=1
 ENV API_HOST=0.0.0.0
-ENV API_PORT=8001
+# Railway sets PORT env var - we use it for the main API
+# MCP server runs internally on 8000
+ENV API_PORT=${PORT:-8001}
 ENV MCP_SERVERS=http://localhost:8000/mcp
 
-# Expose ports
-EXPOSE 8001 8000
+# Expose the main API port (Railway will route to this)
+EXPOSE ${PORT:-8001}
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8001/health || exit 1
+# Health check - use the PORT variable
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:${PORT:-8001}/health || exit 1
 
 # Start supervisor (manages both services)
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
