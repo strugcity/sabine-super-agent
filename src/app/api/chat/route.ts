@@ -13,6 +13,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import twilio from 'twilio';
 
 // =============================================================================
 // Configuration
@@ -20,6 +21,8 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const PYTHON_API_URL = process.env.PYTHON_API_URL || 'http://127.0.0.1:8000';
 const ADMIN_PHONE = process.env.ADMIN_PHONE || '';
+const AGENT_API_KEY = process.env.AGENT_API_KEY || '';
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || '';
 
 // Default user ID (in production, you'd look this up from the phone number)
 const DEFAULT_USER_ID = process.env.DEFAULT_USER_ID || '00000000-0000-0000-0000-000000000000';
@@ -79,6 +82,55 @@ function escapeXml(unsafe: string): string {
 }
 
 // =============================================================================
+// Twilio Signature Validation
+// =============================================================================
+
+/**
+ * Validate that the request actually came from Twilio.
+ *
+ * Twilio signs every webhook request with the X-Twilio-Signature header.
+ * This validates that signature using the auth token.
+ *
+ * @param request - The incoming request
+ * @param params - The parsed form parameters
+ * @returns true if the signature is valid, false otherwise
+ */
+function validateTwilioSignature(
+  request: NextRequest,
+  params: Record<string, string>
+): boolean {
+  // Skip validation if auth token not configured (development only)
+  if (!TWILIO_AUTH_TOKEN) {
+    console.warn('⚠️  TWILIO_AUTH_TOKEN not set - skipping signature validation (INSECURE)');
+    return true;
+  }
+
+  const signature = request.headers.get('x-twilio-signature');
+  if (!signature) {
+    console.error('❌ Missing X-Twilio-Signature header');
+    return false;
+  }
+
+  // Get the full URL that Twilio used to call this webhook
+  // In production, this should match what's configured in Twilio console
+  const url = request.url;
+
+  // Validate the signature
+  const isValid = twilio.validateRequest(
+    TWILIO_AUTH_TOKEN,
+    signature,
+    url,
+    params
+  );
+
+  if (!isValid) {
+    console.error('❌ Invalid Twilio signature - possible spoofing attempt');
+  }
+
+  return isValid;
+}
+
+// =============================================================================
 // User ID Lookup (Placeholder)
 // =============================================================================
 
@@ -115,6 +167,16 @@ export async function POST(request: NextRequest) {
     // Parse form data from Twilio
     const formData = await request.formData();
     const body: TwilioWebhookBody = Object.fromEntries(formData) as any;
+
+    // ==========================================================================
+    // Security: Validate Twilio Signature
+    // ==========================================================================
+    // This MUST come before any processing to prevent spoofed requests
+
+    if (!validateTwilioSignature(request, body)) {
+      console.error('🚫 Request rejected: Invalid Twilio signature');
+      return new NextResponse('Forbidden', { status: 403 });
+    }
 
     const fromPhone = body.From;
     const message = body.Body;
@@ -160,6 +222,7 @@ export async function POST(request: NextRequest) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-API-Key': AGENT_API_KEY,
       },
       body: JSON.stringify({
         message: message,

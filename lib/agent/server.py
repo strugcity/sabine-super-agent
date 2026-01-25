@@ -13,14 +13,17 @@ Or with uvicorn:
 """
 
 import asyncio
+import hmac
 import logging
 import os
+import secrets
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 import uvicorn
 
@@ -38,6 +41,51 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Authentication
+# =============================================================================
+
+# API key for authenticating requests to protected endpoints
+# Set via AGENT_API_KEY environment variable
+AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
+
+# API key header scheme
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def verify_api_key(api_key: Optional[str] = Depends(api_key_header)) -> bool:
+    """
+    Verify the API key from the X-API-Key header.
+
+    Uses constant-time comparison to prevent timing attacks.
+
+    Raises:
+        HTTPException: 401 if API key is missing or invalid
+    """
+    if not AGENT_API_KEY:
+        logger.error("AGENT_API_KEY not configured - rejecting all requests")
+        raise HTTPException(
+            status_code=500,
+            detail="Server misconfiguration: API key not set"
+        )
+
+    if not api_key:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing API key. Include X-API-Key header."
+        )
+
+    # Constant-time comparison to prevent timing attacks
+    if not secrets.compare_digest(api_key, AGENT_API_KEY):
+        logger.warning("Invalid API key attempt")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid API key"
+        )
+
+    return True
 
 # =============================================================================
 # FastAPI Application
@@ -199,7 +247,7 @@ async def list_tools():
 
 
 @app.post("/invoke", response_model=InvokeResponse)
-async def invoke_agent(request: InvokeRequest):
+async def invoke_agent(request: InvokeRequest, _: bool = Depends(verify_api_key)):
     """
     Invoke the Personal Super Agent with a user message.
 
@@ -264,7 +312,7 @@ async def invoke_agent(request: InvokeRequest):
 
 
 @app.post("/invoke/cached")
-async def invoke_agent_cached(request: InvokeRequest):
+async def invoke_agent_cached(request: InvokeRequest, _: bool = Depends(verify_api_key)):
     """
     Invoke the agent with prompt caching enabled.
 
@@ -327,7 +375,7 @@ async def invoke_agent_cached(request: InvokeRequest):
 
 
 @app.post("/test")
-async def test_agent():
+async def test_agent(_: bool = Depends(verify_api_key)):
     """
     Test endpoint for quick verification.
 
@@ -365,7 +413,7 @@ class GmailHandleRequest(BaseModel):
 
 
 @app.post("/gmail/handle")
-async def handle_gmail_notification(request: GmailHandleRequest):
+async def handle_gmail_notification(request: GmailHandleRequest, _: bool = Depends(verify_api_key)):
     """
     Simple Gmail notification handler.
 
