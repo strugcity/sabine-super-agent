@@ -412,6 +412,10 @@ class GmailHandleRequest(BaseModel):
     historyId: str
 
 
+class GmailWatchRenewRequest(BaseModel):
+    webhookUrl: str
+
+
 @app.post("/gmail/handle")
 async def handle_gmail_notification(request: GmailHandleRequest, _: bool = Depends(verify_api_key)):
     """
@@ -426,6 +430,55 @@ async def handle_gmail_notification(request: GmailHandleRequest, _: bool = Depen
 
     except Exception as e:
         logger.error(f"Gmail handler failed: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@app.post("/gmail/renew-watch")
+async def renew_gmail_watch(request: GmailWatchRenewRequest, _: bool = Depends(verify_api_key)):
+    """
+    Renew Gmail push notification watch.
+
+    Called by Vercel cron every 6 days to keep the watch active.
+    Gmail watches expire after 7 days.
+    """
+    try:
+        import subprocess
+        import sys
+
+        # Run the setup script
+        script_path = project_root / "scripts" / "setup_gmail_watch.py"
+        result = subprocess.run(
+            [sys.executable, str(script_path), "--webhook-url", request.webhookUrl],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+
+        if result.returncode == 0:
+            logger.info(f"Gmail watch renewed successfully")
+            return {
+                "success": True,
+                "message": "Gmail watch renewed",
+                "output": result.stdout
+            }
+        else:
+            logger.error(f"Gmail watch renewal failed: {result.stderr}")
+            return {
+                "success": False,
+                "error": result.stderr or "Unknown error"
+            }
+
+    except subprocess.TimeoutExpired:
+        logger.error("Gmail watch renewal timed out")
+        return {
+            "success": False,
+            "error": "Timeout"
+        }
+    except Exception as e:
+        logger.error(f"Gmail watch renewal failed: {e}")
         return {
             "success": False,
             "error": str(e)
