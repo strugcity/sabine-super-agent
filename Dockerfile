@@ -5,8 +5,10 @@
 # using a supervisor process to manage both services.
 #
 # Services:
-#   - Python API (port 8001) - Main agent server
-#   - workspace-mcp (port 8000) - Google Workspace MCP server
+#   - Python API (Railway's PORT) - Main agent server (external)
+#   - workspace-mcp (port 8000) - Google Workspace MCP server (internal)
+#
+# Railway injects PORT env var - the Python API listens on that port.
 # =============================================================================
 
 FROM python:3.11-slim
@@ -42,17 +44,12 @@ COPY deploy/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 # Environment variables (defaults, override in Railway)
 ENV PYTHONUNBUFFERED=1
 ENV API_HOST=0.0.0.0
-# Railway uses port 8080 for the main API
 # MCP server runs internally on 8000
-ENV API_PORT=8080
 ENV MCP_SERVERS=http://localhost:8000/mcp
 
-# Expose the main API port (Railway routes to 8080)
-EXPOSE 8080
-
-# Health check on port 8080
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+# Note: Railway injects PORT env var at runtime
+# The server reads PORT directly and listens on it
+# No need to EXPOSE or hardcode - Railway handles networking
 
 # Start supervisor (manages both services)
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
