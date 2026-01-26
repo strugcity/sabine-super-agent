@@ -31,6 +31,7 @@ fi
 echo "[MCP Setup] Creating credentials directory: ${CRED_DIR}"
 mkdir -p "${CRED_DIR}"
 
+# Write email-specific credentials file
 echo "[MCP Setup] Writing credentials file for ${MCP_USER_EMAIL}"
 cat > "${CRED_FILE}" << EOF
 {
@@ -53,9 +54,35 @@ cat > "${CRED_FILE}" << EOF
   "expiry": "1970-01-01T00:00:00.000000"
 }
 EOF
-
-# Set appropriate permissions
 chmod 600 "${CRED_FILE}"
 
-echo "[MCP Setup] Credentials file created successfully at ${CRED_FILE}"
+# Also write default_user.json (workspace-mcp may look for this)
+DEFAULT_CRED_FILE="${CRED_DIR}/default_user.json"
+echo "[MCP Setup] Writing default_user.json"
+cat > "${DEFAULT_CRED_FILE}" << EOF
+{
+  "token": "",
+  "refresh_token": "${GOOGLE_REFRESH_TOKEN}",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "client_id": "${GOOGLE_OAUTH_CLIENT_ID}",
+  "client_secret": "${GOOGLE_OAUTH_CLIENT_SECRET}",
+  "scopes": [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/spreadsheets"
+  ],
+  "expiry": "1970-01-01T00:00:00.000000"
+}
+EOF
+chmod 600 "${DEFAULT_CRED_FILE}"
+
+echo "[MCP Setup] Credentials files created successfully:"
+echo "  - ${CRED_FILE}"
+echo "  - ${DEFAULT_CRED_FILE}"
 echo "[MCP Setup] MCP server will use refresh token to obtain access token on first request"
