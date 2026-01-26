@@ -41,6 +41,10 @@ RUN mkdir -p /app/logs /app/data
 # Copy supervisor configuration
 COPY deploy/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
+# Copy MCP credential setup script
+COPY deploy/setup-mcp-credentials.sh /app/setup-mcp-credentials.sh
+RUN chmod +x /app/setup-mcp-credentials.sh
+
 # Environment variables (defaults, override in Railway)
 ENV PYTHONUNBUFFERED=1
 ENV API_HOST=0.0.0.0
@@ -52,4 +56,5 @@ ENV MCP_SERVERS=http://localhost:8000/mcp
 # No need to EXPOSE or hardcode - Railway handles networking
 
 # Start supervisor (manages both services)
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+# First setup MCP credentials from environment variables, then start supervisor
+CMD ["/bin/bash", "-c", "/app/setup-mcp-credentials.sh && /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf"]

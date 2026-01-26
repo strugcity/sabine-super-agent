@@ -198,6 +198,20 @@ def _convert_mcp_to_langchain_tool(
     async def tool_func(**kwargs) -> str:
         """Execute the MCP tool via streamable-http call."""
         try:
+            # Auto-inject user_google_email for Gmail/Calendar/Drive/Docs/Sheets tools
+            if mcp_tool.name.startswith(('search_gmail', 'get_gmail', 'send_gmail', 'draft_gmail',
+                                         'list_gmail', 'manage_gmail', 'create_gmail', 'delete_gmail',
+                                         'modify_gmail', 'batch_modify_gmail',
+                                         'list_calendars', 'get_events', 'create_event', 'modify_event', 'delete_event',
+                                         'search_drive', 'get_drive', 'list_drive', 'create_drive', 'update_drive', 'check_drive',
+                                         'list_documents', 'get_document', 'create_document', 'update_document', 'export_doc',
+                                         'read_document', 'create_table', 'debug_table',
+                                         'list_spreadsheets', 'get_spreadsheet', 'create_spreadsheet', 'create_sheet',
+                                         'read_sheet', 'modify_sheet', 'format_sheet', 'add_conditional', 'update_conditional', 'delete_conditional',
+                                         'read_spreadsheet_comment', 'create_spreadsheet_comment', 'reply_to_spreadsheet', 'resolve_spreadsheet')):
+                if 'user_google_email' not in kwargs:
+                    kwargs['user_google_email'] = 'sabine@strugcity.com'
+
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     server_url,
