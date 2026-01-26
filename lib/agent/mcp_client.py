@@ -13,12 +13,16 @@ Updated to support streamable-http protocol (MCP spec 2024-11-05+)
 import asyncio
 import logging
 import json
+import os
 from typing import Any, Callable, Dict, List, Optional
 from pydantic import BaseModel, Field
 import httpx
 from langchain_core.tools import StructuredTool
 
 logger = logging.getLogger(__name__)
+
+# Default Google email for MCP tools - can be overridden via environment variable
+DEFAULT_USER_GOOGLE_EMAIL = os.environ.get('USER_GOOGLE_EMAIL', 'rknollmaier@gmail.com')
 
 
 def _parse_sse_response(text: str) -> Optional[Dict[str, Any]]:
@@ -64,7 +68,7 @@ class MCPServerInfo(BaseModel):
     protocolVersion: str = "1.0"
 
 
-async def get_mcp_tools(url: str, timeout: int = 10) -> List[StructuredTool]:
+async def get_mcp_tools(url: str, timeout: int = 10, max_retries: int = 30, retry_delay: float = 2.0) -> List[StructuredTool]:
     """
     Connect to a remote MCP server via streamable-http and fetch available tools.
 
@@ -77,6 +81,8 @@ async def get_mcp_tools(url: str, timeout: int = 10) -> List[StructuredTool]:
     Args:
         url: The MCP server URL (e.g., 'http://localhost:8000/mcp')
         timeout: Connection timeout in seconds (default: 10)
+        max_retries: Maximum number of connection attempts (default: 30)
+        retry_delay: Seconds to wait between retries (default: 2.0)
 
     Returns:
         List of LangChain StructuredTool objects (empty list if connection fails)
@@ -87,93 +93,113 @@ async def get_mcp_tools(url: str, timeout: int = 10) -> List[StructuredTool]:
     """
     tools: List[StructuredTool] = []
 
-    try:
-        logger.info(f"Connecting to MCP server: {url}")
+    logger.info(f"Connecting to MCP server: {url}")
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            try:
-                # Send initialization request (streamable-http uses POST for all operations)
-                init_request = {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {},
-                        "clientInfo": {
-                            "name": "personal-super-agent",
-                            "version": "1.0.0"
+    for attempt in range(1, max_retries + 1):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                try:
+                    # Send initialization request (streamable-http uses POST for all operations)
+                    init_request = {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2024-11-05",
+                            "capabilities": {},
+                            "clientInfo": {
+                                "name": "personal-super-agent",
+                                "version": "1.0.0"
+                            }
                         }
                     }
-                }
 
-                init_response = await client.post(
-                    url,
-                    json=init_request,
-                    headers={
-                        "Content-Type": "application/json",
-                        "Accept": "application/json, text/event-stream"
-                    }
-                )
+                    init_response = await client.post(
+                        url,
+                        json=init_request,
+                        headers={
+                            "Content-Type": "application/json",
+                            "Accept": "application/json, text/event-stream"
+                        }
+                    )
 
-                if init_response.status_code != 200:
-                    logger.warning(f"Initialize failed for {url}: {init_response.status_code}")
-                    return tools
-
-                # Extract session ID from response headers
-                session_id = init_response.headers.get("mcp-session-id")
-                if not session_id:
-                    logger.warning(f"No session ID received from {url}")
-                    return tools
-
-                logger.debug(f"Got session ID: {session_id}")
-
-                # Request tool list with session ID
-                tools_response = await client.post(
-                    url,
-                    json={
-                        "jsonrpc": "2.0",
-                        "id": 2,
-                        "method": "tools/list",
-                        "params": {}
-                    },
-                    headers={
-                        "Content-Type": "application/json",
-                        "Accept": "application/json, text/event-stream",
-                        "mcp-session-id": session_id
-                    }
-                )
-
-                if tools_response.status_code == 200:
-                    # Parse SSE response
-                    data = _parse_sse_response(tools_response.text)
-                    if not data:
-                        logger.warning(f"Failed to parse SSE response from {url}")
+                    if init_response.status_code != 200:
+                        logger.warning(f"Initialize failed for {url}: {init_response.status_code} (attempt {attempt}/{max_retries})")
+                        if attempt < max_retries:
+                            await asyncio.sleep(retry_delay)
+                            continue
                         return tools
 
-                    if "result" in data and "tools" in data["result"]:
-                        mcp_tools = [MCPTool(**tool) for tool in data["result"]["tools"]]
+                    # Extract session ID from response headers
+                    session_id = init_response.headers.get("mcp-session-id")
+                    if not session_id:
+                        logger.warning(f"No session ID received from {url} (attempt {attempt}/{max_retries})")
+                        if attempt < max_retries:
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        return tools
 
-                        # Convert MCP tools to LangChain StructuredTools
-                        # Pass session_id so tools can use it
-                        for mcp_tool in mcp_tools:
-                            langchain_tool = _convert_mcp_to_langchain_tool(mcp_tool, url, session_id)
-                            tools.append(langchain_tool)
+                    logger.debug(f"Got session ID: {session_id}")
 
-                        logger.info(f"Successfully loaded {len(tools)} tools from {url}")
+                    # Request tool list with session ID
+                    tools_response = await client.post(
+                        url,
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": 2,
+                            "method": "tools/list",
+                            "params": {}
+                        },
+                        headers={
+                            "Content-Type": "application/json",
+                            "Accept": "application/json, text/event-stream",
+                            "mcp-session-id": session_id
+                        }
+                    )
+
+                    if tools_response.status_code == 200:
+                        # Parse SSE response
+                        data = _parse_sse_response(tools_response.text)
+                        if not data:
+                            logger.warning(f"Failed to parse SSE response from {url}")
+                            return tools
+
+                        if "result" in data and "tools" in data["result"]:
+                            mcp_tools = [MCPTool(**tool) for tool in data["result"]["tools"]]
+
+                            # Convert MCP tools to LangChain StructuredTools
+                            # Pass session_id so tools can use it
+                            for mcp_tool in mcp_tools:
+                                langchain_tool = _convert_mcp_to_langchain_tool(mcp_tool, url, session_id)
+                                tools.append(langchain_tool)
+
+                            logger.info(f"Successfully loaded {len(tools)} tools from {url}")
+                            return tools  # Success - exit retry loop
+                        else:
+                            logger.warning(f"No tools found in MCP server response: {url}")
+                            return tools
                     else:
-                        logger.warning(f"No tools found in MCP server response: {url}")
-                else:
-                    logger.warning(f"Failed to fetch tools from {url}: {tools_response.status_code} - {tools_response.text}")
+                        logger.warning(f"Failed to fetch tools from {url}: {tools_response.status_code} - {tools_response.text}")
+                        return tools
 
-            except httpx.ConnectError as e:
-                logger.warning(f"Connection error to MCP server {url}: {e}")
-            except httpx.TimeoutException as e:
-                logger.warning(f"Timeout connecting to MCP server {url}: {e}")
+                except httpx.ConnectError as e:
+                    logger.warning(f"Connection error to MCP server {url}: {e} (attempt {attempt}/{max_retries})")
+                    if attempt < max_retries:
+                        await asyncio.sleep(retry_delay)
+                        continue
+                except httpx.TimeoutException as e:
+                    logger.warning(f"Timeout connecting to MCP server {url}: {e} (attempt {attempt}/{max_retries})")
+                    if attempt < max_retries:
+                        await asyncio.sleep(retry_delay)
+                        continue
 
-    except Exception as e:
-        logger.error(f"Unexpected error fetching MCP tools from {url}: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error fetching MCP tools from {url}: {e} (attempt {attempt}/{max_retries})")
+            if attempt < max_retries:
+                await asyncio.sleep(retry_delay)
+                continue
 
+    logger.error(f"Failed to connect to MCP server {url} after {max_retries} attempts")
     return tools
 
 
@@ -210,7 +236,7 @@ def _convert_mcp_to_langchain_tool(
                                          'read_sheet', 'modify_sheet', 'format_sheet', 'add_conditional', 'update_conditional', 'delete_conditional',
                                          'read_spreadsheet_comment', 'create_spreadsheet_comment', 'reply_to_spreadsheet', 'resolve_spreadsheet')):
                 if 'user_google_email' not in kwargs:
-                    kwargs['user_google_email'] = 'sabine@strugcity.com'
+                    kwargs['user_google_email'] = DEFAULT_USER_GOOGLE_EMAIL
 
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
