@@ -52,21 +52,24 @@ PROCESSED_FILE = Path(__file__).parent / ".processed_emails.json"
 LOCK_FILE = Path(__file__).parent / ".processed_emails.lock"
 
 
-def get_config() -> tuple[str, str, List[str], str]:
+def get_config() -> tuple[str, str, str, List[str], str]:
     """
     Get configuration values at runtime (after .env is loaded).
-    Returns: (mcp_server_url, assistant_email, authorized_emails, user_id)
+    Returns: (mcp_server_url, assistant_email, user_google_email, authorized_emails, user_id)
     """
     mcp_server_url = os.getenv("MCP_SERVERS", "http://localhost:8000/mcp").split(",")[0]
+    # ASSISTANT_EMAIL: The email address that Sabine responds FROM (her identity)
     assistant_email = os.getenv("ASSISTANT_EMAIL", "sabine@strugcity.com").lower()
+    # USER_GOOGLE_EMAIL: The Google account to operate on (read inbox, calendar, etc.)
+    user_google_email = os.getenv("USER_GOOGLE_EMAIL", "rknollmaier@gmail.com").lower()
     authorized_raw = os.getenv("GMAIL_AUTHORIZED_EMAILS", "")
     authorized_emails = [e.strip().lower() for e in authorized_raw.split(",") if e.strip()]
     # User ID for agent context (from Supabase) - use DEFAULT_USER_ID as fallback
     user_id = os.getenv("AGENT_USER_ID") or os.getenv("DEFAULT_USER_ID", "00000000-0000-0000-0000-000000000001")
 
-    logger.debug(f"Config loaded - MCP: {mcp_server_url}, Assistant: {assistant_email}, Authorized: {authorized_emails}")
+    logger.debug(f"Config loaded - MCP: {mcp_server_url}, Assistant: {assistant_email}, User Google: {user_google_email}, Authorized: {authorized_emails}")
 
-    return mcp_server_url, assistant_email, authorized_emails, user_id
+    return mcp_server_url, assistant_email, user_google_email, authorized_emails, user_id
 
 
 def acquire_lock() -> Optional[Any]:
@@ -145,7 +148,7 @@ def save_processed_id(message_id: str):
 
 async def initialize_mcp_session() -> Optional[str]:
     """Initialize MCP session and return session ID."""
-    mcp_server_url, _, _, _ = get_config()
+    mcp_server_url, _, _, _, _ = get_config()
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
@@ -179,12 +182,12 @@ async def initialize_mcp_session() -> Optional[str]:
 
 async def call_mcp_tool(session_id: str, tool_name: str, arguments: Dict[str, Any]) -> Optional[str]:
     """Call an MCP tool and return the result."""
-    mcp_server_url, assistant_email, _, _ = get_config()
+    mcp_server_url, _, user_google_email, _, _ = get_config()
     try:
-        # Auto-inject email for Gmail tools
+        # Auto-inject email for Gmail tools - use USER_GOOGLE_EMAIL (the account to operate on)
         if tool_name.startswith(('search_gmail', 'get_gmail', 'send_gmail', 'list_gmail')):
             if 'user_google_email' not in arguments:
-                arguments['user_google_email'] = assistant_email
+                arguments['user_google_email'] = user_google_email
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
@@ -400,7 +403,7 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
 
     try:
         # Get config at runtime (after .env is loaded)
-        _, assistant_email, authorized_emails, user_id = get_config()
+        _, assistant_email, _, authorized_emails, user_id = get_config()
         logger.info(f"Authorized emails: {authorized_emails}")
 
         # Initialize MCP session
