@@ -41,9 +41,10 @@ RUN mkdir -p /app/logs /app/data
 # Copy supervisor configuration
 COPY deploy/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# Copy MCP credential setup script
+# Copy MCP credential setup script and MCP server wrapper
 COPY deploy/setup-mcp-credentials.sh /app/setup-mcp-credentials.sh
-RUN chmod +x /app/setup-mcp-credentials.sh
+COPY deploy/start-mcp-server.sh /app/deploy/start-mcp-server.sh
+RUN chmod +x /app/setup-mcp-credentials.sh /app/deploy/start-mcp-server.sh
 
 # Environment variables (defaults, override in Railway)
 ENV PYTHONUNBUFFERED=1
