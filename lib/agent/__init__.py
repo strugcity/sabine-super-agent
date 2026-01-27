@@ -46,8 +46,7 @@ from .registry import (
 from .mcp_client import (
     get_mcp_tools,
     get_mcp_tools_sync,
-    test_mcp_connection,
-    get_mcp_server_info
+    test_mcp_connection
 )
 
 __all__ = [
@@ -77,5 +76,4 @@ __all__ = [
     "get_mcp_tools",
     "get_mcp_tools_sync",
     "test_mcp_connection",
-    "get_mcp_server_info",
 ]

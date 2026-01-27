@@ -33,14 +33,24 @@ logger = logging.getLogger(__name__)
 # Base path for local skills
 SKILLS_DIR = Path(__file__).parent.parent / "skills"
 
-# MCP Server URLs (loaded from environment variables)
-MCP_SERVERS = [
-    url.strip()
-    for url in os.getenv("MCP_SERVERS", "").split(",")
-    if url.strip()
-]
+# MCP Server configurations (loaded from environment variables)
+# Format: "workspace-mcp" or "workspace-mcp:arg1:arg2" (colon-separated)
+# Example: MCP_SERVERS="workspace-mcp workspace-calendar:--config=/path/to/config"
+MCP_SERVERS = []
 
-logger.info(f"Configured MCP servers: {MCP_SERVERS}")
+mcp_server_specs = os.getenv("MCP_SERVERS", "").strip()
+if mcp_server_specs:
+    for spec in mcp_server_specs.split(" "):
+        spec = spec.strip()
+        if spec:
+            # Parse "command:arg1:arg2" format
+            parts = spec.split(":")
+            MCP_SERVERS.append({
+                "command": parts[0],
+                "args": parts[1:] if len(parts) > 1 else ["--transport", "stdio"]
+            })
+
+logger.info(f"Configured MCP servers: {[s['command'] for s in MCP_SERVERS]}")
 
 
 # =============================================================================
@@ -191,15 +201,22 @@ async def load_mcp_tools() -> List[StructuredTool]:
         return all_mcp_tools
 
     # Load tools from each MCP server concurrently
-    tasks = [get_mcp_tools(url) for url in MCP_SERVERS]
+    tasks = [
+        get_mcp_tools(
+            command=server["command"],
+            args=server.get("args", ["--transport", "stdio"])
+        )
+        for server in MCP_SERVERS
+    ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     for i, result in enumerate(results):
+        server_name = MCP_SERVERS[i]["command"]
         if isinstance(result, Exception):
-            logger.error(f"Failed to load tools from {MCP_SERVERS[i]}: {result}")
+            logger.error(f"Failed to load tools from {server_name}: {result}")
         elif isinstance(result, list):
             all_mcp_tools.extend(result)
-            logger.info(f"✓ Loaded {len(result)} tools from {MCP_SERVERS[i]}")
+            logger.info(f"✓ Loaded {len(result)} tools from {server_name}")
 
     return all_mcp_tools
 
