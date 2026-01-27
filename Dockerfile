@@ -1,23 +1,37 @@
 # =============================================================================
-# Personal Super Agent - Python API + MCP Server
+# Personal Super Agent - Python API + Node.js MCP Server
 # =============================================================================
-# This Dockerfile runs both the Python FastAPI server and workspace-mcp
-# using a supervisor process to manage both services.
+# Multi-stage build supporting both Python (FastAPI) and Node.js (workspace-mcp)
+# This Dockerfile runs both services using supervisor process management.
 #
+# Stage 1: Python base with Node.js runtime
 # Services:
 #   - Python API (Railway's PORT) - Main agent server (external)
-#   - workspace-mcp (port 8000) - Google Workspace MCP server (internal)
+#   - workspace-mcp (Node.js CLI) - Google Workspace MCP server (internal, Stdio transport)
 #
+# Why multi-runtime: workspace-mcp is a Node.js CLI tool, not Python
 # Railway injects PORT env var - the Python API listens on that port.
 # =============================================================================
 
 FROM python:3.11-slim
 
-# Install system dependencies
+# Install system dependencies including Node.js
 RUN apt-get update && apt-get install -y \
     supervisor \
     curl \
+    ca-certificates \
+    gnupg \
+    lsb-release \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js (v20 LTS) via NodeSource repository
+# workspace-mcp CLI requires Node.js to execute
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Verify Node.js and npm installation
+RUN node --version && npm --version
 
 # Set working directory
 WORKDIR /app
@@ -28,8 +42,12 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install workspace-mcp
-RUN pip install --no-cache-dir workspace-mcp
+# Install workspace-mcp via npm globally (so it's in PATH for supervisor)
+# workspace-mcp is a Node.js package, not Python
+RUN npm install -g workspace-mcp@latest
+
+# Verify workspace-mcp is installed and accessible
+RUN which workspace-mcp && workspace-mcp --help || echo "workspace-mcp installed as Node module"
 
 # Copy application code
 COPY lib/ ./lib/
@@ -37,6 +55,10 @@ COPY scripts/ ./scripts/
 
 # Create directories for runtime files
 RUN mkdir -p /app/logs /app/data
+
+# Create credentials directory that MCP server will use
+RUN mkdir -p /root/.google_workspace_mcp/credentials && \
+    chmod 700 /root/.google_workspace_mcp/credentials
 
 # Copy supervisor configuration
 COPY deploy/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
@@ -49,13 +71,17 @@ RUN chmod +x /app/setup-mcp-credentials.sh /app/deploy/start-mcp-server.sh
 # Environment variables (defaults, override in Railway)
 ENV PYTHONUNBUFFERED=1
 ENV API_HOST=0.0.0.0
-# MCP server runs internally on 8000
-ENV MCP_SERVERS=http://localhost:8000/mcp
+# MCP server uses Stdio transport (direct subprocess communication via stdin/stdout)
+# workspace-mcp CLI will be spawned as subprocess by Python Stdio client
+ENV MCP_SERVERS=workspace-mcp
+ENV NODE_ENV=production
+ENV WORKSPACE_MCP_PORT=8000
 
-# Note: Railway injects PORT env var at runtime
-# The server reads PORT directly and listens on it
-# No need to EXPOSE or hardcode - Railway handles networking
+# Health check: verify Python API is responding
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:${PORT:-8080}/health || exit 1
 
-# Start supervisor (manages both services)
-# First setup MCP credentials from environment variables, then start supervisor
+# Start supervisor (manages both Python API and workspace-mcp via start-mcp-server.sh)
+# Step 1: Setup MCP credentials from Railway environment variables
+# Step 2: Start supervisor to manage both services
 CMD ["/bin/bash", "-c", "/app/setup-mcp-credentials.sh && /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf"]
