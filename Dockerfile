@@ -42,13 +42,6 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install workspace-mcp via npm globally (so it's in PATH for supervisor)
-# workspace-mcp is a Node.js package, not Python
-RUN npm install -g workspace-mcp@latest
-
-# Verify workspace-mcp is installed and accessible
-RUN which workspace-mcp && workspace-mcp --help || echo "workspace-mcp installed as Node module"
-
 # Copy application code
 COPY lib/ ./lib/
 COPY scripts/ ./scripts/
