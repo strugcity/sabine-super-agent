@@ -280,3 +280,4 @@ This is a personal project, but feel free to fork and adapt for your own use!
 ## 📄 License
 
 MIT
+
