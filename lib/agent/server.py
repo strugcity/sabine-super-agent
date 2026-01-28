@@ -439,6 +439,47 @@ async def handle_gmail_notification(request: GmailHandleRequest, _: bool = Depen
         }
 
 
+@app.get("/gmail/diagnostic")
+async def gmail_diagnostic(_: bool = Depends(verify_api_key)):
+    """
+    Diagnostic endpoint to verify Gmail credentials configuration.
+
+    Returns partial credential info (first/last chars) for debugging.
+    """
+    client_id = os.getenv("GOOGLE_CLIENT_ID", "")
+    client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "")
+    user_token = os.getenv("USER_REFRESH_TOKEN", "")
+    agent_token = os.getenv("AGENT_REFRESH_TOKEN", "")
+    auth_emails = os.getenv("GMAIL_AUTHORIZED_EMAILS", "")
+
+    return {
+        "google_client_id": {
+            "set": bool(client_id),
+            "prefix": client_id[:20] + "..." if len(client_id) > 20 else client_id,
+            "length": len(client_id)
+        },
+        "google_client_secret": {
+            "set": bool(client_secret),
+            "prefix": client_secret[:10] + "..." if len(client_secret) > 10 else client_secret,
+            "length": len(client_secret)
+        },
+        "user_refresh_token": {
+            "set": bool(user_token),
+            "prefix": user_token[:20] + "..." if len(user_token) > 20 else user_token,
+            "length": len(user_token)
+        },
+        "agent_refresh_token": {
+            "set": bool(agent_token),
+            "prefix": agent_token[:20] + "..." if len(agent_token) > 20 else agent_token,
+            "length": len(agent_token)
+        },
+        "gmail_authorized_emails": auth_emails,
+        "assistant_email": os.getenv("ASSISTANT_EMAIL", ""),
+        "agent_email": os.getenv("AGENT_EMAIL", ""),
+        "user_google_email": os.getenv("USER_GOOGLE_EMAIL", "")
+    }
+
+
 @app.post("/gmail/renew-watch")
 async def renew_gmail_watch(request: GmailWatchRenewRequest, _: bool = Depends(verify_api_key)):
     """
