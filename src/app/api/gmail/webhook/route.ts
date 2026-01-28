@@ -64,16 +64,26 @@ export async function POST(request: NextRequest) {
     console.log(`[Gmail Webhook] Calling simple Gmail handler: ${PYTHON_API_URL}/gmail/handle`);
 
     // Call the simple Gmail handler (bypasses complex agent)
-    fetch(`${PYTHON_API_URL}/gmail/handle`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-Key': AGENT_API_KEY,
-      },
-      body: JSON.stringify({ historyId }),
-    }).catch((error) => {
+    try {
+      const response = await fetch(`${PYTHON_API_URL}/gmail/handle`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': AGENT_API_KEY,
+        },
+        body: JSON.stringify({ historyId }),
+      });
+
+      console.log('[Gmail Webhook] Railway Response Status:', response.status);
+      const responseText = await response.text();
+      console.log('[Gmail Webhook] Railway Response Text:', responseText);
+
+      if (!response.ok) {
+        console.error(`[Gmail Webhook] Railway returned non-2xx status: ${response.status}`, responseText);
+      }
+    } catch (error) {
       console.error('[Gmail Webhook] Error calling handler:', error);
-    });
+    }
 
     // Acknowledge receipt to Pub/Sub immediately
     return NextResponse.json({ success: true });
