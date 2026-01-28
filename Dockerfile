@@ -22,6 +22,8 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     gnupg \
     lsb-release \
+    libsecret-1-0 \
+    libsecret-1-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js (v20 LTS) via NodeSource repository

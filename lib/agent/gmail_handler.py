@@ -1,5 +1,6 @@
+
 """
-Gmail Handler - AI-Powered Email Responses
+Gmail Handler - AI-Powered Email Responses (Stdio MCP Refactor)
 
 This module handles incoming Gmail notifications and generates intelligent
 AI responses using the LangGraph agent with full context awareness.
@@ -9,6 +10,7 @@ Features:
 - File-based locking to prevent duplicate processing (race condition fix)
 - Loop prevention (skips auto-replies, self-emails)
 - Authorized sender filtering
+- Uses MCPClient (Stdio) for all MCP tool calls
 """
 
 import asyncio
@@ -17,7 +19,7 @@ import logging
 import os
 import re
 import sys
-import httpx
+from lib.agent.mcp_client import MCPClient
 import time
 from pathlib import Path
 from typing import Optional, Dict, Any, Set, List, Union
@@ -52,24 +54,18 @@ PROCESSED_FILE = Path(__file__).parent / ".processed_emails.json"
 LOCK_FILE = Path(__file__).parent / ".processed_emails.lock"
 
 
-def get_config() -> tuple[str, str, str, List[str], str]:
+def get_config() -> tuple[str, str, str, list[str], str]:
     """
     Get configuration values at runtime (after .env is loaded).
-    Returns: (mcp_server_url, assistant_email, user_google_email, authorized_emails, user_id)
+    Returns: (assistant_email, user_google_email, authorized_emails, user_id)
     """
-    mcp_server_url = os.getenv("MCP_SERVERS", "http://localhost:8000/mcp").split(",")[0]
-    # ASSISTANT_EMAIL: The email address that Sabine responds FROM (her identity)
     assistant_email = os.getenv("ASSISTANT_EMAIL", "sabine@strugcity.com").lower()
-    # USER_GOOGLE_EMAIL: The Google account to operate on (read inbox, calendar, etc.)
     user_google_email = os.getenv("USER_GOOGLE_EMAIL", "rknollmaier@gmail.com").lower()
     authorized_raw = os.getenv("GMAIL_AUTHORIZED_EMAILS", "")
     authorized_emails = [e.strip().lower() for e in authorized_raw.split(",") if e.strip()]
-    # User ID for agent context (from Supabase) - use DEFAULT_USER_ID as fallback
     user_id = os.getenv("AGENT_USER_ID") or os.getenv("DEFAULT_USER_ID", "00000000-0000-0000-0000-000000000001")
-
-    logger.debug(f"Config loaded - MCP: {mcp_server_url}, Assistant: {assistant_email}, User Google: {user_google_email}, Authorized: {authorized_emails}")
-
-    return mcp_server_url, assistant_email, user_google_email, authorized_emails, user_id
+    logger.debug(f"Config loaded - Assistant: {assistant_email}, User Google: {user_google_email}, Authorized: {authorized_emails}")
+    return assistant_email, user_google_email, authorized_emails, user_id
 
 
 def acquire_lock() -> Optional[Any]:
@@ -403,144 +399,131 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
 
     try:
         # Get config at runtime (after .env is loaded)
-        _, assistant_email, _, authorized_emails, user_id = get_config()
+        assistant_email, user_google_email, authorized_emails, user_id = get_config()
         logger.info(f"Authorized emails: {authorized_emails}")
-
-        # Initialize MCP session
-        session_id = await initialize_mcp_session()
-        if not session_id:
-            return {"success": False, "error": "Failed to initialize MCP session"}
 
         processed_ids = load_processed_ids()
 
-        # Search for recent inbox emails (includes both read and unread)
-        # This catches emails even if they were auto-marked as read
-        logger.info("Searching for recent inbox emails...")
-        search_result = await call_mcp_tool(
-            session_id,
-            "search_gmail_messages",
-            {"query": "in:inbox newer_than:1h -from:me"}
-        )
+        async with MCPClient(transport='stdio') as mcp:
+            # Search for recent inbox emails
+            logger.info("Searching for recent inbox emails...")
+            search_result = await mcp.call_tool(
+                "search_gmail_messages",
+                {"query": "in:inbox newer_than:1h -from:me", "user_google_email": user_google_email}
+            )
 
-        if not search_result:
-            logger.error("Search returned empty result")
-            return {"success": False, "error": "Failed to search emails"}
+            if not search_result:
+                logger.error("Search returned empty result")
+                return {"success": False, "error": "Failed to search emails"}
 
-        # Check if no emails found
-        if "No messages found" in search_result or "0 messages" in search_result.lower():
-            logger.info("No recent inbox emails found")
-            return {"success": True, "action": "no_emails"}
+            if "No messages found" in search_result or "0 messages" in search_result.lower():
+                logger.info("No recent inbox emails found")
+                return {"success": True, "action": "no_emails"}
 
-        logger.info(f"Search result: {search_result[:300]}...")
+            logger.info(f"Search result: {search_result[:300]}...")
 
-        # Extract message ID from search result
-        message_id = extract_message_id(search_result)
-        if not message_id:
-            logger.warning("Could not extract message ID from search result")
-            return {"success": True, "action": "no_parseable_message"}
+            message_id = extract_message_id(search_result)
+            if not message_id:
+                logger.warning("Could not extract message ID from search result")
+                return {"success": True, "action": "no_parseable_message"}
 
-        # Check if already processed (race condition prevention)
-        if message_id in processed_ids:
-            logger.info(f"Message {message_id} already processed, skipping")
-            return {"success": True, "action": "already_processed", "message_id": message_id}
+            if message_id in processed_ids:
+                logger.info(f"Message {message_id} already processed, skipping")
+                return {"success": True, "action": "already_processed", "message_id": message_id}
 
-        # Mark as processing IMMEDIATELY to prevent race conditions
-        save_processed_id(message_id)
-        logger.info(f"Message {message_id} marked as processing")
+            save_processed_id(message_id)
+            logger.info(f"Message {message_id} marked as processing")
 
-        # Get full message content to find sender
-        logger.info(f"Getting content for message {message_id}...")
-        message_content = await call_mcp_tool(
-            session_id,
-            "get_gmail_message_content",
-            {"message_id": message_id}
-        )
+            logger.info(f"Getting content for message {message_id}...")
+            message_content = await mcp.call_tool(
+                "get_gmail_message_content",
+                {"message_id": message_id, "user_google_email": user_google_email}
+            )
 
-        if not message_content:
-            logger.warning(f"Could not get content for message {message_id}")
-            return {"success": False, "error": "Failed to get message content"}
+            if not message_content:
+                logger.warning(f"Could not get content for message {message_id}")
+                return {"success": False, "error": "Failed to get message content"}
 
-        logger.info(f"Message content: {message_content[:500]}...")
+            logger.info(f"Message content: {message_content[:500]}...")
 
-        # Extract sender
-        sender = extract_sender_email(message_content)
-        if not sender:
-            logger.warning("Could not extract sender from message")
-            return {"success": False, "error": "Could not determine sender"}
+            sender = extract_sender_email(message_content)
+            if not sender:
+                logger.warning("Could not extract sender from message")
+                return {"success": False, "error": "Could not determine sender"}
 
-        sender_name = extract_sender_name(message_content)
-        logger.info(f"Sender: {sender_name} <{sender}>")
+            sender_name = extract_sender_name(message_content)
+            logger.info(f"Sender: {sender_name} <{sender}>")
 
-        # LOOP PREVENTION: Skip if sender is the assistant itself
-        if sender.lower() == assistant_email:
-            logger.info(f"Sender is the assistant ({sender}), skipping to prevent loop")
-            return {"success": True, "action": "self_email_skipped", "sender": sender}
+            if sender.lower() == assistant_email:
+                logger.info(f"Sender is the assistant ({sender}), skipping to prevent loop")
+                return {"success": True, "action": "self_email_skipped", "sender": sender}
 
-        # Check if sender is authorized
-        if sender.lower() not in authorized_emails:
-            logger.info(f"Sender {sender} not in authorized list, skipping reply")
-            return {"success": True, "action": "unauthorized_sender", "sender": sender}
+            if sender.lower() not in authorized_emails:
+                logger.info(f"Sender {sender} not in authorized list, skipping reply")
+                return {"success": True, "action": "unauthorized_sender", "sender": sender}
 
-        # LOOP PREVENTION: Check if this is an auto-reply (check subject and sender)
-        original_subject = extract_subject(message_content) or ""
-        subject_lower = original_subject.lower()
+            original_subject = extract_subject(message_content) or ""
+            subject_lower = original_subject.lower()
 
-        for indicator in AUTO_REPLY_INDICATORS:
-            if indicator in subject_lower:
-                logger.info(f"Subject contains auto-reply indicator '{indicator}', skipping to prevent loop")
-                return {"success": True, "action": "auto_reply_skipped", "subject": original_subject}
+            for indicator in AUTO_REPLY_INDICATORS:
+                if indicator in subject_lower:
+                    logger.info(f"Subject contains auto-reply indicator '{indicator}', skipping to prevent loop")
+                    return {"success": True, "action": "auto_reply_skipped", "subject": original_subject}
 
-        # Also check if sender email contains noreply indicators
-        if any(ind in sender.lower() for ind in ['noreply', 'no-reply', 'donotreply', 'mailer-daemon']):
-            logger.info(f"Sender {sender} appears to be a no-reply address, skipping")
-            return {"success": True, "action": "noreply_sender_skipped", "sender": sender}
+            if any(ind in sender.lower() for ind in ['noreply', 'no-reply', 'donotreply', 'mailer-daemon']):
+                logger.info(f"Sender {sender} appears to be a no-reply address, skipping")
+                return {"success": True, "action": "noreply_sender_skipped", "sender": sender}
 
-        # Extract email body
-        email_body = extract_body(message_content)
-        logger.info(f"Email body ({len(email_body)} chars): {email_body[:200]}...")
+            email_body = extract_body(message_content)
+            logger.info(f"Email body ({len(email_body)} chars): {email_body[:200]}...")
 
-        # Build reply subject
-        if not original_subject:
-            original_subject = "your email"
-        reply_subject = f"Re: {original_subject}" if not original_subject.lower().startswith("re:") else original_subject
+            if not original_subject:
+                original_subject = "your email"
+            reply_subject = f"Re: {original_subject}" if not original_subject.lower().startswith("re:") else original_subject
 
-        # Generate AI response
-        logger.info(f"Generating AI response for email from {sender}...")
-        ai_response = await generate_ai_response(
-            sender_email=sender,
-            sender_name=sender_name,
-            subject=original_subject,
-            body=email_body,
-            user_id=user_id
-        )
+            logger.info(f"Generating AI response for email from {sender}...")
+            ai_response = await generate_ai_response(
+                sender_email=sender,
+                sender_name=sender_name,
+                subject=original_subject,
+                body=email_body,
+                user_id=user_id
+            )
 
-        logger.info(f"AI response: {ai_response[:200]}...")
+            logger.info(f"AI response: {ai_response[:200]}...")
 
-        # Send reply to the actual sender
-        logger.info(f"Sending AI-generated reply to {sender}...")
-        send_result = await call_mcp_tool(
-            session_id,
-            "send_gmail_message",
-            {
-                "to": sender,
-                "subject": reply_subject,
-                "body": ai_response
-            }
-        )
+            logger.info(f"Sending AI-generated reply to {sender}...")
+            send_result = await mcp.call_tool(
+                "send_gmail_message",
+                {
+                    "to": sender,
+                    "subject": reply_subject,
+                    "body": ai_response,
+                    "user_google_email": user_google_email
+                }
+            )
 
-        if send_result and ("sent" in send_result.lower() or "message id" in send_result.lower()):
-            logger.info(f"✓ AI response sent to {sender}")
-            return {
-                "success": True,
-                "action": "replied",
-                "recipient": sender,
-                "message_id": message_id,
-                "subject": reply_subject,
-                "response_type": "ai_generated"
-            }
-        else:
-            logger.warning(f"Failed to send reply to {sender}: {send_result}")
-            return {"success": False, "error": f"Failed to send reply: {send_result}"}
+            if send_result and ("sent" in send_result.lower() or "message id" in send_result.lower()):
+                logger.info(f"✓ AI response sent to {sender}")
+                return {
+                    "success": True,
+                    "action": "replied",
+                    "recipient": sender,
+                    "message_id": message_id,
+                    "subject": reply_subject,
+                    "response_type": "ai_generated"
+                }
+            else:
+                logger.warning(f"Failed to send reply to {sender}: {send_result}")
+                return {"success": False, "error": f"Failed to send reply: {send_result}"}
+
+    except Exception as e:
+        logger.error(f"Error handling email notification: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+    finally:
+        if lock_fd is not None:
+            release_lock(lock_fd)
 
     except Exception as e:
         logger.error(f"Error handling email notification: {e}", exc_info=True)
