@@ -404,7 +404,7 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
 
         processed_ids = load_processed_ids()
 
-            from lib.agent.mcp_client import MCPClient
+        from lib.agent.mcp_client import MCPClient
         async with MCPClient(transport='stdio') as mcp:
             # Search for recent inbox emails
             logger.info("Searching for recent inbox emails...")
