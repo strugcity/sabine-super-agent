@@ -18,8 +18,12 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
+import pytz
 
 logger = logging.getLogger(__name__)
+
+# User's timezone - US Central
+USER_TIMEZONE = pytz.timezone("America/Chicago")
 
 # Family member detection patterns (customize per family)
 FAMILY_MEMBERS = {
@@ -286,10 +290,16 @@ def format_event(event: Dict[str, Any], include_member: bool = True) -> str:
     end = event.get("end", {})
 
     if "dateTime" in start:
+        # Parse datetime and convert to user's timezone (Central)
         start_dt = datetime.fromisoformat(start["dateTime"].replace("Z", "+00:00"))
         end_dt = datetime.fromisoformat(end["dateTime"].replace("Z", "+00:00"))
-        time_str = f"{start_dt.strftime('%I:%M %p')} - {end_dt.strftime('%I:%M %p')}"
-        date_str = start_dt.strftime('%A, %B %d')
+
+        # Convert to Central time
+        start_local = start_dt.astimezone(USER_TIMEZONE)
+        end_local = end_dt.astimezone(USER_TIMEZONE)
+
+        time_str = f"{start_local.strftime('%I:%M %p')} - {end_local.strftime('%I:%M %p')}"
+        date_str = start_local.strftime('%A, %B %d')
     else:
         # All-day event
         date_str = start.get("date", "Unknown date")
@@ -513,7 +523,9 @@ async def execute(params: dict) -> dict:
         for c in conflicts:
             e1 = c["event1"].get("summary", "Event 1")
             e2 = c["event2"].get("summary", "Event 2")
-            overlap_time = c["overlap_start"].strftime("%I:%M %p")
+            # Convert overlap time to Central
+            overlap_local = c["overlap_start"].astimezone(USER_TIMEZONE)
+            overlap_time = overlap_local.strftime("%I:%M %p")
             conflict_warnings.append(f"⚠️ CONFLICT: '{e1}' and '{e2}' overlap at {overlap_time}")
         output_parts.append("**Scheduling Conflicts:**\n" + "\n".join(conflict_warnings))
 
