@@ -74,26 +74,32 @@ def acquire_lock() -> Optional[Any]:
     """
     try:
         LOCK_FILE.touch(exist_ok=True)
+        logger.debug(f"Lock file exists: {LOCK_FILE}")
 
         if sys.platform == 'win32':
             f = open(LOCK_FILE, 'r+')
             try:
                 msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                logger.info("Lock acquired successfully (Windows)")
                 return f
-            except (IOError, OSError):
+            except (IOError, OSError) as e:
+                logger.info(f"Lock already held by another process (Windows): {e}")
                 f.close()
                 return None
         else:
-            fd = os.open(str(LOCK_FILE), os.O_RDWR)
+            fd = os.open(str(LOCK_FILE), os.O_RDWR | os.O_CREAT, 0o666)
             try:
-                fcntl.flock(fd, LOCK_EX)
+                # Use non-blocking lock (LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                logger.info("Lock acquired successfully (Unix)")
                 return fd
-            except (BlockingIOError, OSError):
+            except (BlockingIOError, OSError) as e:
+                logger.info(f"Lock already held by another process (Unix): {e}")
                 os.close(fd)
                 return None
 
     except Exception as e:
-        logger.info(f"Could not acquire lock (another process is handling): {e}")
+        logger.error(f"Error acquiring lock: {e}", exc_info=True)
         return None
 
 
@@ -104,9 +110,11 @@ def release_lock(lock_handle: Any):
             if hasattr(lock_handle, 'fileno'):
                 msvcrt.locking(lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
                 lock_handle.close()
+                logger.debug("Lock released (Windows)")
         else:
-            fcntl.flock(lock_handle, LOCK_UN)
+            fcntl.flock(lock_handle, fcntl.LOCK_UN)
             os.close(lock_handle)
+            logger.debug("Lock released (Unix)")
     except Exception as e:
         logger.warning(f"Error releasing lock: {e}")
 
