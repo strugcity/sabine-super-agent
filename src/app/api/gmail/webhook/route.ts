@@ -12,8 +12,8 @@ import {
   type PubSubMessage,
 } from '@/lib/gmail/parser';
 
-// Get environment variables
-const PYTHON_API_URL = process.env.PYTHON_API_URL || 'http://127.0.0.1:8001';
+// Get environment variables (remove trailing slash from URL if present)
+const PYTHON_API_URL = (process.env.PYTHON_API_URL || 'http://127.0.0.1:8001').replace(/\/+$/, '');
 const AGENT_API_KEY = process.env.AGENT_API_KEY || '';
 const DEFAULT_USER_ID = process.env.DEFAULT_USER_ID || '00000000-0000-0000-0000-000000000000';
 const GMAIL_AUTHORIZED_EMAILS = (process.env.GMAIL_AUTHORIZED_EMAILS || '').split(',').map(e => e.trim());
