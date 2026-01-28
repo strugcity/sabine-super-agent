@@ -72,8 +72,9 @@ RUN chmod +x /app/setup-mcp-credentials.sh /app/deploy/start-mcp-server.sh
 ENV PYTHONUNBUFFERED=1
 ENV API_HOST=0.0.0.0
 # MCP server uses Stdio transport (direct subprocess communication via stdin/stdout)
-# workspace-mcp CLI will be spawned as subprocess by Python Stdio client
-ENV MCP_SERVERS=workspace-mcp
+# The start-mcp-server.sh wrapper script launches workspace-mcp via npx
+# registry.py parses this to create StructuredTool wrappers
+ENV MCP_SERVERS=/app/deploy/start-mcp-server.sh
 ENV NODE_ENV=production
 ENV WORKSPACE_MCP_PORT=8000
 
