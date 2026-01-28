@@ -576,13 +576,23 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
 
             logger.info(f"AI response: {ai_response[:200]}...")
 
+            # Convert plain text to simple HTML for email rendering
+            # The MCP gmail_send_email tool requires html_body to display content
+            html_response = ai_response.replace('\n', '<br>\n')
+            html_body = f"""<html>
+<body style="font-family: Arial, sans-serif; line-height: 1.6;">
+{html_response}
+</body>
+</html>"""
+
             # Send reply using AGENT token (sends FROM sabine@strugcity.com)
             logger.info(f"Sending AI-generated reply to {sender} from agent account...")
             send_result = await mcp.call_tool("gmail_send_email", {
                 "google_access_token": agent_access_token,
                 "to": sender,
                 "subject": reply_subject,
-                "body": ai_response
+                "body": ai_response,
+                "html_body": html_body
             })
 
             logger.info(f"Send result: {send_result}")
