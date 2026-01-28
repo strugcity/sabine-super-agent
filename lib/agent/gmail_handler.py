@@ -48,6 +48,31 @@ AUTO_REPLY_INDICATORS = [
     "no-reply",
 ]
 
+# Thread IDs we've already replied to (to prevent replying multiple times to same thread)
+REPLIED_THREADS_FILE = Path(__file__).parent / ".replied_threads.json"
+
+
+def load_replied_threads() -> Set[str]:
+    """Load set of thread IDs we've already replied to."""
+    try:
+        if REPLIED_THREADS_FILE.exists():
+            data = json.loads(REPLIED_THREADS_FILE.read_text())
+            return set(data.get("threads", [])[-500:])
+    except Exception as e:
+        logger.warning(f"Could not load replied threads: {e}")
+    return set()
+
+
+def save_replied_thread(thread_id: str):
+    """Save a thread ID we've replied to."""
+    try:
+        threads = load_replied_threads()
+        threads.add(thread_id)
+        thread_list = list(threads)[-500:]
+        REPLIED_THREADS_FILE.write_text(json.dumps({"threads": thread_list}))
+    except Exception as e:
+        logger.warning(f"Could not save replied thread: {e}")
+
 # Track processed message IDs to avoid duplicate replies
 PROCESSED_FILE = Path(__file__).parent / ".processed_emails.json"
 LOCK_FILE = Path(__file__).parent / ".processed_emails.lock"
@@ -471,9 +496,13 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                     return {"success": True, "action": "no_emails"}
                 emails = []
 
-            # Find first email from an authorized sender
+            # Load thread tracking to prevent double-replies
+            replied_threads = load_replied_threads()
+
+            # Find first email from an authorized sender that we haven't replied to
             email_data = None
             message_id = None
+            thread_id = None
             sender = None
             sender_name = None
             subject = None
@@ -481,7 +510,9 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
 
             for candidate in emails:
                 candidate_id = candidate.get("id") or candidate.get("message_id")
+                candidate_thread_id = candidate.get("threadId") or candidate.get("thread_id") or candidate_id
                 candidate_sender = candidate.get("from", "").lower()
+                candidate_subject = candidate.get("subject", "").lower()
 
                 # Extract email from "Name <email>" format
                 if candidate_sender and '<' in candidate_sender:
@@ -493,21 +524,42 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                 else:
                     candidate_sender_email = candidate_sender
 
-                logger.info(f"Checking email {candidate_id} from {candidate_sender_email}")
+                logger.info(f"Checking email {candidate_id} (thread: {candidate_thread_id}) from {candidate_sender_email}")
 
-                # Skip already processed
+                # Skip already processed message
                 if candidate_id in processed_ids:
-                    logger.info(f"  -> Already processed, skipping")
+                    logger.info(f"  -> Already processed (message ID), skipping")
+                    continue
+
+                # Skip threads we've already replied to (prevents replying to same conversation twice)
+                if candidate_thread_id in replied_threads:
+                    logger.info(f"  -> Already replied to this thread, skipping")
+                    save_processed_id(candidate_id)  # Mark as processed so we don't check again
                     continue
 
                 # Skip self-emails (loop prevention)
                 if candidate_sender_email == config["assistant_email"] or candidate_sender_email == config["agent_email"]:
-                    logger.info(f"  -> Self-email, skipping")
+                    logger.info(f"  -> Self-email from Sabine, skipping")
+                    save_processed_id(candidate_id)
+                    continue
+
+                # Skip emails that look like they're part of a reply chain FROM Sabine
+                # (e.g., if someone forwarded Sabine's reply back)
+                if "sabine" in candidate_sender_email:
+                    logger.info(f"  -> Email from Sabine-related address, skipping")
+                    save_processed_id(candidate_id)
                     continue
 
                 # Skip noreply addresses
                 if any(ind in candidate_sender_email for ind in ['noreply', 'no-reply', 'donotreply', 'mailer-daemon', 'postmaster']):
                     logger.info(f"  -> No-reply address, skipping")
+                    save_processed_id(candidate_id)
+                    continue
+
+                # Skip subjects with auto-reply indicators BEFORE processing
+                if any(indicator in candidate_subject for indicator in AUTO_REPLY_INDICATORS):
+                    logger.info(f"  -> Subject contains auto-reply indicator, skipping")
+                    save_processed_id(candidate_id)
                     continue
 
                 # Check authorization
@@ -519,6 +571,7 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                 logger.info(f"  -> AUTHORIZED! Processing this email")
                 email_data = candidate
                 message_id = candidate_id
+                thread_id = candidate_thread_id
                 sender = candidate_sender_email
                 if '<' in candidate.get("from", ""):
                     sender_name = candidate.get("from", "").split('<')[0].strip()
@@ -608,11 +661,16 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
 
             if send_result and ("success" in send_result.lower() or "sent" in send_result.lower() or "id" in send_result.lower()):
                 logger.info(f"AI response sent to {sender}")
+                # Mark thread as replied to prevent double-replies
+                if thread_id:
+                    save_replied_thread(thread_id)
+                    logger.info(f"Thread {thread_id} marked as replied")
                 return {
                     "success": True,
                     "action": "replied",
                     "recipient": sender,
                     "message_id": message_id,
+                    "thread_id": thread_id,
                     "subject": reply_subject,
                     "response_type": "ai_generated"
                 }
