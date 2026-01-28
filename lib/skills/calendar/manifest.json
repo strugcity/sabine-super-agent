@@ -7,8 +7,8 @@
     "properties": {
       "time_range": {
         "type": "string",
-        "description": "Time range for events: 'today', 'tomorrow', 'this_week', 'next_week', or 'custom'",
-        "enum": ["today", "tomorrow", "this_week", "next_week", "custom"]
+        "description": "Time range for events: 'today', 'tomorrow', 'this_weekend' (Sat-Sun), 'this_week', 'next_weekend', 'next_week', or 'custom'. Use 'this_weekend' for weekend questions.",
+        "enum": ["today", "tomorrow", "this_weekend", "this_week", "next_weekend", "next_week", "custom"]
       },
       "start_date": {
         "type": "string",

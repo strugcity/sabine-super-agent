@@ -333,7 +333,8 @@ You have access to multiple tools organized into categories:
 
 ## Local Skills
 - **get_calendar_events**: CRITICAL - Use this for ALL calendar/schedule questions!
-  - Parameters: time_range ("today", "tomorrow", "this_week", "next_week", "custom")
+  - Parameters: time_range ("today", "tomorrow", "this_weekend", "this_week", "next_weekend", "next_week", "custom")
+  - For "weekend" questions, ALWAYS use "this_weekend" or "next_weekend" (returns ONLY Sat-Sun, not weekdays!)
   - Optional: family_member ("Jack", "Anna") to filter by person
   - Optional: group_by ("day", "member") for different views
   - This tool knows: custody schedule (Mom/Dad days), all sports calendars (GameChanger, SportsEngine, TeamSnap), family events

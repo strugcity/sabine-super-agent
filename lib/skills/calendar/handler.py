@@ -93,11 +93,17 @@ def get_time_range(time_range: str, start_date: Optional[str] = None, end_date: 
     """
     Calculate start and end datetime based on time_range parameter.
 
+    IMPORTANT: Uses user's timezone (Central) for all calculations to ensure
+    "today", "this weekend", etc. are correct regardless of server timezone.
+
     Returns:
-        Tuple of (start_datetime, end_datetime) in ISO format
+        Tuple of (start_datetime, end_datetime) in ISO format with timezone
     """
-    now = datetime.now()
+    # Get current time in user's timezone (Central), NOT server time
+    now = datetime.now(USER_TIMEZONE)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    logger.info(f"Time range calculation: now={now.strftime('%Y-%m-%d %H:%M %Z')}, weekday={now.weekday()} (0=Mon, 6=Sun)")
 
     if time_range == "today":
         start = today_start
@@ -105,6 +111,19 @@ def get_time_range(time_range: str, start_date: Optional[str] = None, end_date: 
     elif time_range == "tomorrow":
         start = today_start + timedelta(days=1)
         end = today_start + timedelta(days=2)
+    elif time_range == "this_weekend":
+        # Saturday and Sunday of THIS week
+        # weekday(): Mon=0, Tue=1, Wed=2, Thu=3, Fri=4, Sat=5, Sun=6
+        days_until_saturday = (5 - now.weekday()) % 7
+        if days_until_saturday == 0 and now.weekday() == 5:
+            # It's Saturday, start today
+            days_until_saturday = 0
+        elif now.weekday() == 6:
+            # It's Sunday, just show today
+            days_until_saturday = -1  # Go back to yesterday (Saturday)
+        start = today_start + timedelta(days=days_until_saturday)
+        end = start + timedelta(days=2)  # Saturday + Sunday
+        logger.info(f"this_weekend: days_until_saturday={days_until_saturday}, start={start.strftime('%Y-%m-%d')}, end={end.strftime('%Y-%m-%d')}")
     elif time_range == "this_week":
         # Start from today, end at end of week (Sunday)
         start = today_start
@@ -115,18 +134,29 @@ def get_time_range(time_range: str, start_date: Optional[str] = None, end_date: 
         days_until_monday = 7 - now.weekday() if now.weekday() != 0 else 7
         start = today_start + timedelta(days=days_until_monday)
         end = start + timedelta(days=7)
+    elif time_range == "next_weekend":
+        # Saturday and Sunday of NEXT week
+        days_until_saturday = (5 - now.weekday()) % 7
+        if days_until_saturday <= 1:  # If it's Fri, Sat, or Sun, go to next week's Saturday
+            days_until_saturday += 7
+        start = today_start + timedelta(days=days_until_saturday)
+        end = start + timedelta(days=2)
     elif time_range == "custom" and start_date and end_date:
         start = datetime.fromisoformat(start_date)
+        if start.tzinfo is None:
+            start = USER_TIMEZONE.localize(start)
         end = datetime.fromisoformat(end_date) + timedelta(days=1)  # Include end date
+        if end.tzinfo is None:
+            end = USER_TIMEZONE.localize(end)
     else:
         # Default to today
         start = today_start
         end = today_start + timedelta(days=1)
 
-    # Format as RFC3339
+    # Format as RFC3339 with timezone offset (not naive Z suffix)
     return (
-        start.isoformat() + "Z",
-        end.isoformat() + "Z"
+        start.isoformat(),
+        end.isoformat()
     )
 
 

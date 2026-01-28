@@ -331,7 +331,8 @@ Instructions for your response:
 3. If they are asking about weather, use your `get_weather` tool to get accurate information
 4. **CRITICAL - For ANY calendar/schedule questions:**
    - Use the `get_calendar_events` tool to get REAL data
-   - Parameters: time_range ("today", "tomorrow", "this_week", "next_week")
+   - Parameters: time_range ("today", "tomorrow", "this_weekend", "this_week", "next_weekend", "next_week")
+   - For "weekend" questions, ALWAYS use "this_weekend" or "next_weekend" - these return ONLY Saturday and Sunday
    - Optional: family_member ("Jack" or "Anna") to filter by person
    - Optional: group_by ("day" or "member") for different views
    - NEVER make up events - always call the tool first!
