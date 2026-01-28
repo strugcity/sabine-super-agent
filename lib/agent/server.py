@@ -453,6 +453,8 @@ async def gmail_diagnostic():
     agent_token = os.getenv("AGENT_REFRESH_TOKEN", "")
     auth_emails = os.getenv("GMAIL_AUTHORIZED_EMAILS", "")
 
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+
     return {
         "google_client_id": {
             "set": bool(client_id),
@@ -473,6 +475,11 @@ async def gmail_diagnostic():
             "set": bool(agent_token),
             "prefix": agent_token[:20] + "..." if len(agent_token) > 20 else agent_token,
             "length": len(agent_token)
+        },
+        "anthropic_api_key": {
+            "set": bool(anthropic_key),
+            "prefix": anthropic_key[:15] + "..." if len(anthropic_key) > 15 else anthropic_key,
+            "length": len(anthropic_key)
         },
         "gmail_authorized_emails": auth_emails,
         "assistant_email": os.getenv("ASSISTANT_EMAIL", ""),
