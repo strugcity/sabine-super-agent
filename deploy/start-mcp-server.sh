@@ -13,6 +13,20 @@ echo "[MCP Server] Launching Google Workspace MCP server (Stdio transport)..." >
 export PYTHONFAULTHANDLER=1
 export PYTHONUNBUFFERED=1
 
+# Ensure correct env var names are set for the MCP server
+# Support both GOOGLE_OAUTH_* and GOOGLE_* naming conventions
+if [ -n "$GOOGLE_OAUTH_CLIENT_ID" ] && [ -z "$GOOGLE_CLIENT_ID" ]; then
+    export GOOGLE_CLIENT_ID="$GOOGLE_OAUTH_CLIENT_ID"
+fi
+if [ -n "$GOOGLE_OAUTH_CLIENT_SECRET" ] && [ -z "$GOOGLE_CLIENT_SECRET" ]; then
+    export GOOGLE_CLIENT_SECRET="$GOOGLE_OAUTH_CLIENT_SECRET"
+fi
+
+# Set the config home for the MCP server
+export GOOGLE_WORKSPACE_MCP_HOME="/root/.config/google-workspace-mcp"
+
+echo "[MCP Server] Config home: $GOOGLE_WORKSPACE_MCP_HOME" >&2
+echo "[MCP Server] Client ID set: $([ -n "$GOOGLE_CLIENT_ID" ] && echo 'yes' || echo 'no')" >&2
 echo "[MCP Server] Starting: npx @presto-ai/google-workspace-mcp --transport stdio" >&2
 
 # Launch the MCP server via Stdio transport (explicit flag)

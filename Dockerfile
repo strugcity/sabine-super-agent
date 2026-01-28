@@ -56,8 +56,11 @@ COPY scripts/ ./scripts/
 # Create directories for runtime files
 RUN mkdir -p /app/logs /app/data
 
-# Create credentials directory that MCP server will use
-RUN mkdir -p /root/.google_workspace_mcp/credentials && \
+# Create credentials directories that MCP server may use
+# @presto-ai/google-workspace-mcp uses ~/.config/google-workspace-mcp/
+RUN mkdir -p /root/.config/google-workspace-mcp && \
+    chmod 700 /root/.config/google-workspace-mcp && \
+    mkdir -p /root/.google_workspace_mcp/credentials && \
     chmod 700 /root/.google_workspace_mcp/credentials
 
 # Copy supervisor configuration
