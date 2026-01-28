@@ -1,21 +1,23 @@
 #!/bin/bash
-# Wrapper script to start workspace-mcp (Node.js MCP server) with proper environment
-# This ensures Railway's PORT doesn't conflict and captures any errors
+# MCP Server Launcher - Stdio Transport (Direct stdin/stdout pipe)
+#
+# This script launches the Google Workspace MCP server via Stdio transport.
+# The Python agent communicates via direct stdin/stdout pipes (JSON-RPC 2.0).
+#
+# CRITICAL: All logging must go to stderr (>&2) to preserve stdout for JSON-RPC stream.
 
-# Unset Railway's PORT to prevent workspace-mcp from using it
-unset PORT
+# Log startup info to stderr only (preserves stdout for JSON-RPC)
+echo "[MCP Server] Launching Google Workspace MCP server (Stdio transport)..." >&2
 
-# Explicitly set workspace-mcp port
-export WORKSPACE_MCP_PORT=8000
-
-# Enable Python to show full tracebacks
+# Enable Python to show full tracebacks (for any Python subprocess)
 export PYTHONFAULTHANDLER=1
 export PYTHONUNBUFFERED=1
 
-echo "[MCP Wrapper] Starting workspace-mcp (via npx) on port ${WORKSPACE_MCP_PORT}..."
-echo "[MCP Wrapper] Environment: WORKSPACE_MCP_PORT=${WORKSPACE_MCP_PORT}"
+echo "[MCP Server] Starting: npx @modelcontextprotocol/server-google-workspace" >&2
 
-# Run workspace-mcp via npx (Node Package eXecute)
-# npx resolves and runs the executable from node_modules
-# Using @presto-ai/google-workspace-mcp which provides CLI via streamable-http transport
-exec npx -y @presto-ai/google-workspace-mcp --transport streamable-http 2>&1
+# Launch the MCP server via Stdio transport
+# - npx resolves and executes the Node.js package
+# - Stdio is the default/native transport for MCP (stdin/stdout pipes)
+# - JSON-RPC 2.0 messages flow via stdout to parent Python process
+# - stderr is available for server diagnostics/logging
+exec npx -y @modelcontextprotocol/server-google-workspace
