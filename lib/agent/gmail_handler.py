@@ -1,3 +1,173 @@
+import os
+import sys
+import logging
+import json
+import time
+import re
+import threading
+import contextlib
+import platform
+import asyncio
+from typing import Dict, Any, Optional, Set
+from pathlib import Path
+
+# --- MCP Email Notification Handler ---
+async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
+    """
+    Handle a new email notification by:
+    1. Acquiring a lock to prevent race conditions
+    2. Finding the most recent inbox email from an authorized sender
+    3. Generating an AI response using the LangGraph agent
+    4. Sending the response via MCP
+    5. Tracking processed emails to avoid duplicates
+
+    Returns:
+        Dict with status and details
+    """
+    logger.info(f"Handling email notification for historyId: {history_id}")
+
+    # Try to acquire lock - if we can't, another process is handling this
+    lock_fd = acquire_lock()
+    if lock_fd is None:
+        logger.info("Another process is handling email notifications, skipping")
+        return {"success": True, "action": "skipped_concurrent"}
+
+    try:
+        # Get config at runtime (after .env is loaded)
+        assistant_email, user_google_email, authorized_emails, user_id = get_config()
+        logger.info(f"Authorized emails: {authorized_emails}")
+
+        processed_ids = load_processed_ids()
+
+        tools = await get_mcp_tools(command="/app/deploy/start-mcp-server.sh", args=["--transport", "stdio"])
+
+        # Find and invoke search_gmail_messages tool
+        search_tool = next((t for t in tools if t.name == "search_gmail_messages"), None)
+        if not search_tool:
+            logger.error("search_gmail_messages tool not found")
+            return {"success": False, "error": "search_gmail_messages tool not found"}
+
+        logger.info("Searching for recent inbox emails...")
+        search_result = await search_tool.ainvoke({"query": "in:inbox newer_than:1h -from:me", "user_google_email": user_google_email})
+
+        if not search_result:
+            logger.error("Search returned empty result")
+            return {"success": False, "error": "Failed to search emails"}
+
+        if "No messages found" in search_result or "0 messages" in search_result.lower():
+            logger.info("No recent inbox emails found")
+            return {"success": True, "action": "no_emails"}
+
+        logger.info(f"Search result: {search_result[:300]}...")
+
+        message_id = extract_message_id(search_result)
+        if not message_id:
+            logger.warning("Could not extract message ID from search result")
+            return {"success": True, "action": "no_parseable_message"}
+
+        if message_id in processed_ids:
+            logger.info(f"Message {message_id} already processed, skipping")
+            return {"success": True, "action": "already_processed", "message_id": message_id}
+
+        save_processed_id(message_id)
+        logger.info(f"Message {message_id} marked as processing")
+
+        # Find and invoke get_gmail_message_content tool
+        get_content_tool = next((t for t in tools if t.name == "get_gmail_message_content"), None)
+        if not get_content_tool:
+            logger.error("get_gmail_message_content tool not found")
+            return {"success": False, "error": "get_gmail_message_content tool not found"}
+
+        logger.info(f"Getting content for message {message_id}...")
+        message_content = await get_content_tool.ainvoke({"message_id": message_id, "user_google_email": user_google_email})
+
+        if not message_content:
+            logger.warning(f"Could not get content for message {message_id}")
+            return {"success": False, "error": "Failed to get message content"}
+
+        logger.info(f"Message content: {message_content[:500]}...")
+
+        sender = extract_sender_email(message_content)
+        if not sender:
+            logger.warning("Could not extract sender from message")
+            return {"success": False, "error": "Could not determine sender"}
+
+        sender_name = extract_sender_name(message_content)
+        logger.info(f"Sender: {sender_name} <{sender}>")
+
+        if sender.lower() == assistant_email:
+            logger.info(f"Sender is the assistant ({sender}), skipping to prevent loop")
+            return {"success": True, "action": "self_email_skipped", "sender": sender}
+
+        if sender.lower() not in authorized_emails:
+            logger.info(f"Sender {sender} not in authorized list, skipping reply")
+            return {"success": True, "action": "unauthorized_sender", "sender": sender}
+
+        original_subject = extract_subject(message_content) or ""
+        subject_lower = original_subject.lower()
+
+        for indicator in AUTO_REPLY_INDICATORS:
+            if indicator in subject_lower:
+                logger.info(f"Subject contains auto-reply indicator '{indicator}', skipping to prevent loop")
+                return {"success": True, "action": "auto_reply_skipped", "subject": original_subject}
+
+        if any(ind in sender.lower() for ind in ['noreply', 'no-reply', 'donotreply', 'mailer-daemon']):
+            logger.info(f"Sender {sender} appears to be a no-reply address, skipping")
+            return {"success": True, "action": "noreply_sender_skipped", "sender": sender}
+
+        email_body = extract_body(message_content)
+        logger.info(f"Email body ({len(email_body)} chars): {email_body[:200]}...")
+
+        if not original_subject:
+            original_subject = "your email"
+        reply_subject = f"Re: {original_subject}" if not original_subject.lower().startswith("re:") else original_subject
+
+        logger.info(f"Generating AI response for email from {sender}...")
+        ai_response = await generate_ai_response(
+            sender_email=sender,
+            sender_name=sender_name,
+            subject=original_subject,
+            body=email_body,
+            user_id=user_id
+        )
+
+        logger.info(f"AI response: {ai_response[:200]}...")
+
+        # Find and invoke send_gmail_message tool
+        send_tool = next((t for t in tools if t.name == "send_gmail_message"), None)
+        if not send_tool:
+            logger.error("send_gmail_message tool not found")
+            return {"success": False, "error": "send_gmail_message tool not found"}
+
+        logger.info(f"Sending AI-generated reply to {sender}...")
+        send_result = await send_tool.ainvoke({
+            "to": sender,
+            "subject": reply_subject,
+            "body": ai_response,
+            "user_google_email": user_google_email
+        })
+
+        if send_result and ("sent" in send_result.lower() or "message id" in send_result.lower()):
+            logger.info(f"✓ AI response sent to {sender}")
+            return {
+                "success": True,
+                "action": "replied",
+                "recipient": sender,
+                "message_id": message_id,
+                "subject": reply_subject,
+                "response_type": "ai_generated"
+            }
+        else:
+            logger.warning(f"Failed to send reply to {sender}: {send_result}")
+            return {"success": False, "error": f"Failed to send reply: {send_result}"}
+
+    except Exception as e:
+        logger.error(f"Error handling email notification: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+    finally:
+        if lock_fd is not None:
+            release_lock(lock_fd)
 
 """
 Gmail Handler - AI-Powered Email Responses (Stdio MCP Refactor)
@@ -14,17 +184,20 @@ Features:
 """
 
 import asyncio
-import json
-import logging
 import os
-import re
 import sys
-from lib.agent.mcp_client import MCPClient
+import logging
+import json
 import time
-from pathlib import Path
-from typing import Optional, Dict, Any, Set, List, Union
+import re
+import threading
+import contextlib
+import pathlib
+import platform
+import asyncio
+from typing import Dict, Any
 
-# Cross-platform file locking
+# Platform-specific locking constants
 if sys.platform == 'win32':
     import msvcrt
     LOCK_EX = msvcrt.LK_NBLCK
@@ -43,11 +216,11 @@ AUTO_REPLY_INDICATORS = [
     "auto-reply",
     "automatic reply",
     "out of office",
-    "automated response",
     "do not reply",
     "noreply",
     "no-reply",
 ]
+from lib.agent.mcp_client import get_mcp_tools
 
 # Track processed message IDs to avoid duplicate replies
 PROCESSED_FILE = Path(__file__).parent / ".processed_emails.json"
@@ -142,89 +315,6 @@ def save_processed_id(message_id: str):
         logger.warning(f"Could not save processed ID: {e}")
 
 
-async def initialize_mcp_session() -> Optional[str]:
-    """Initialize MCP session and return session ID."""
-    mcp_server_url, _, _, _, _ = get_config()
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                mcp_server_url,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": "init",
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {},
-                        "clientInfo": {"name": "gmail-handler", "version": "1.0.0"}
-                    }
-                },
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream"
-                }
-            )
-
-            if response.status_code == 200:
-                session_id = response.headers.get("mcp-session-id")
-                logger.info(f"MCP session initialized: {session_id}")
-                return session_id
-
-    except Exception as e:
-        logger.error(f"Failed to initialize MCP session: {e}")
-
-    return None
-
-
-async def call_mcp_tool(session_id: str, tool_name: str, arguments: Dict[str, Any]) -> Optional[str]:
-    """Call an MCP tool and return the result."""
-    mcp_server_url, _, user_google_email, _, _ = get_config()
-    try:
-        # Auto-inject email for Gmail tools - use USER_GOOGLE_EMAIL (the account to operate on)
-        if tool_name.startswith(('search_gmail', 'get_gmail', 'send_gmail', 'list_gmail')):
-            if 'user_google_email' not in arguments:
-                arguments['user_google_email'] = user_google_email
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                mcp_server_url,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": f"call_{tool_name}",
-                    "method": "tools/call",
-                    "params": {
-                        "name": tool_name,
-                        "arguments": arguments
-                    }
-                },
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
-                    "mcp-session-id": session_id
-                }
-            )
-
-            if response.status_code == 200:
-                # Parse SSE response
-                lines = response.text.strip().split('\n')
-                for line in lines:
-                    if line.startswith('data: '):
-                        data = json.loads(line[6:])
-
-                        if "result" in data:
-                            result = data["result"]
-                            if isinstance(result, dict) and "content" in result:
-                                content = result["content"]
-                                if isinstance(content, list) and len(content) > 0:
-                                    return content[0].get("text", str(result))
-                                return str(content)
-                            return str(result)
-                        elif "error" in data:
-                            error_msg = data["error"].get("message", "Unknown error")
-                            logger.error(f"MCP tool error: {error_msg}")
-                            return None
-
-    except Exception as e:
         logger.error(f"Error calling MCP tool {tool_name}: {e}")
 
     return None
@@ -309,14 +399,7 @@ async def generate_ai_response(
 ) -> str:
     """
     Generate an AI response using the LangGraph agent.
-
-    This calls the run_agent function from core.py which:
-    - Loads deep context (user rules, custody schedule, memories)
-    - Has access to all MCP tools (weather, calendar, etc.)
-    - Can perform multi-step reasoning
     """
-    from lib.agent.core import run_agent
-
     # Format the email as a message for the agent
     sender_display = sender_name if sender_name else sender_email
 
@@ -333,12 +416,12 @@ async def generate_ai_response(
 Instructions for your response:
 1. Address the sender by their first name if known, otherwise use a friendly greeting
 2. Be helpful and provide relevant information based on the email content
-3. If they're asking about weather, use your weather tool to get accurate information
-4. If they're asking about schedule or calendar, check the relevant information
+3. If they are asking about weather, use your weather tool to get accurate information
+4. If they are asking about schedule or calendar, check the relevant information
 5. Keep your response concise but complete
-6. Sign off warmly as Sabine's assistant
+6. Sign off warmly as Sabine assistant
 
-Please write ONLY the email body (no subject line, no "To:" header). The response will be sent directly."""
+Please write ONLY the email body (no subject line, no 'To:' header). The response will be sent directly."""
 
     try:
         # Generate a unique session ID for this email response
@@ -367,161 +450,15 @@ Please write ONLY the email body (no subject line, no "To:" header). The respons
 
 def generate_fallback_response(sender_name: str, subject: str) -> str:
     """Generate a fallback response if AI generation fails."""
-    return f"""Hi {sender_name},
+    return (
+        f"""
+Hi {sender_name},
 
 Thank you for your email regarding "{subject}".
 
 I've received your message and will review it shortly. I'll get back to you with a more detailed response soon.
 
 Best regards,
-Sabine's Assistant"""
-
-
-async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
-    """
-    Handle a new email notification by:
-    1. Acquiring a lock to prevent race conditions
-    2. Finding the most recent inbox email from an authorized sender
-    3. Generating an AI response using the LangGraph agent
-    4. Sending the response via MCP
-    5. Tracking processed emails to avoid duplicates
-
-    Returns:
-        Dict with status and details
-    """
-    logger.info(f"Handling email notification for historyId: {history_id}")
-
-    # Try to acquire lock - if we can't, another process is handling this
-    lock_fd = acquire_lock()
-    if lock_fd is None:
-        logger.info("Another process is handling email notifications, skipping")
-        return {"success": True, "action": "skipped_concurrent"}
-
-    try:
-        # Get config at runtime (after .env is loaded)
-        assistant_email, user_google_email, authorized_emails, user_id = get_config()
-        logger.info(f"Authorized emails: {authorized_emails}")
-
-        processed_ids = load_processed_ids()
-
-        from lib.agent.mcp_client import MCPClient
-        async with MCPClient(transport='stdio') as mcp:
-            # Search for recent inbox emails
-            logger.info("Searching for recent inbox emails...")
-            search_result = await mcp.call_tool(
-                "search_gmail_messages",
-                {"query": "in:inbox newer_than:1h -from:me", "user_google_email": user_google_email}
-            )
-
-            if not search_result:
-                logger.error("Search returned empty result")
-                return {"success": False, "error": "Failed to search emails"}
-
-            if "No messages found" in search_result or "0 messages" in search_result.lower():
-                logger.info("No recent inbox emails found")
-                return {"success": True, "action": "no_emails"}
-
-            logger.info(f"Search result: {search_result[:300]}...")
-
-            message_id = extract_message_id(search_result)
-            if not message_id:
-                logger.warning("Could not extract message ID from search result")
-                return {"success": True, "action": "no_parseable_message"}
-
-            if message_id in processed_ids:
-                logger.info(f"Message {message_id} already processed, skipping")
-                return {"success": True, "action": "already_processed", "message_id": message_id}
-
-            save_processed_id(message_id)
-            logger.info(f"Message {message_id} marked as processing")
-
-            logger.info(f"Getting content for message {message_id}...")
-            message_content = await mcp.call_tool(
-                "get_gmail_message_content",
-                {"message_id": message_id, "user_google_email": user_google_email}
-            )
-
-            if not message_content:
-                logger.warning(f"Could not get content for message {message_id}")
-                return {"success": False, "error": "Failed to get message content"}
-
-            logger.info(f"Message content: {message_content[:500]}...")
-
-            sender = extract_sender_email(message_content)
-            if not sender:
-                logger.warning("Could not extract sender from message")
-                return {"success": False, "error": "Could not determine sender"}
-
-            sender_name = extract_sender_name(message_content)
-            logger.info(f"Sender: {sender_name} <{sender}>")
-
-            if sender.lower() == assistant_email:
-                logger.info(f"Sender is the assistant ({sender}), skipping to prevent loop")
-                return {"success": True, "action": "self_email_skipped", "sender": sender}
-
-            if sender.lower() not in authorized_emails:
-                logger.info(f"Sender {sender} not in authorized list, skipping reply")
-                return {"success": True, "action": "unauthorized_sender", "sender": sender}
-
-            original_subject = extract_subject(message_content) or ""
-            subject_lower = original_subject.lower()
-
-            for indicator in AUTO_REPLY_INDICATORS:
-                if indicator in subject_lower:
-                    logger.info(f"Subject contains auto-reply indicator '{indicator}', skipping to prevent loop")
-                    return {"success": True, "action": "auto_reply_skipped", "subject": original_subject}
-
-            if any(ind in sender.lower() for ind in ['noreply', 'no-reply', 'donotreply', 'mailer-daemon']):
-                logger.info(f"Sender {sender} appears to be a no-reply address, skipping")
-                return {"success": True, "action": "noreply_sender_skipped", "sender": sender}
-
-            email_body = extract_body(message_content)
-            logger.info(f"Email body ({len(email_body)} chars): {email_body[:200]}...")
-
-            if not original_subject:
-                original_subject = "your email"
-            reply_subject = f"Re: {original_subject}" if not original_subject.lower().startswith("re:") else original_subject
-
-            logger.info(f"Generating AI response for email from {sender}...")
-            ai_response = await generate_ai_response(
-                sender_email=sender,
-                sender_name=sender_name,
-                subject=original_subject,
-                body=email_body,
-                user_id=user_id
-            )
-
-            logger.info(f"AI response: {ai_response[:200]}...")
-
-            logger.info(f"Sending AI-generated reply to {sender}...")
-            send_result = await mcp.call_tool(
-                "send_gmail_message",
-                {
-                    "to": sender,
-                    "subject": reply_subject,
-                    "body": ai_response,
-                    "user_google_email": user_google_email
-                }
-            )
-
-            if send_result and ("sent" in send_result.lower() or "message id" in send_result.lower()):
-                logger.info(f"✓ AI response sent to {sender}")
-                return {
-                    "success": True,
-                    "action": "replied",
-                    "recipient": sender,
-                    "message_id": message_id,
-                    "subject": reply_subject,
-                    "response_type": "ai_generated"
-                }
-            else:
-                logger.warning(f"Failed to send reply to {sender}: {send_result}")
-                return {"success": False, "error": f"Failed to send reply: {send_result}"}
-
-    except Exception as e:
-        logger.error(f"Error handling email notification: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
-
-    finally:
-        if lock_fd is not None:
-            release_lock(lock_fd)
+Sabine Assistant
+"""
+    )
