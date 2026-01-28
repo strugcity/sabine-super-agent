@@ -32,13 +32,13 @@ DEFAULT_USER_GOOGLE_EMAIL = os.environ.get('USER_GOOGLE_EMAIL', 'rknollmaier@gma
 class MCPConnectionConfig(BaseModel):
     """Configuration for an MCP server connection."""
     name: str
-    command: str  # The MCP server command (e.g., "workspace-mcp")
+    command: str  # The MCP server command (e.g., "/app/deploy/start-mcp-server.sh")
     args: List[str] = Field(default_factory=list)  # Command arguments
     env: Dict[str, str] = Field(default_factory=dict)  # Environment variables
 
 
 async def get_mcp_tools(
-    command: str = "workspace-mcp",
+    command: str = "/app/deploy/start-mcp-server.sh",
     args: List[str] = None,
     timeout: int = 30,
     max_retries: int = 3,
@@ -65,7 +65,7 @@ async def get_mcp_tools(
         List of LangChain StructuredTool objects (empty list if connection fails)
 
     Example:
-        >>> tools = await get_mcp_tools("workspace-mcp")
+        >>> tools = await get_mcp_tools("/app/deploy/start-mcp-server.sh")
         >>> print(f"Loaded {len(tools)} tools from MCP server")
     """
     if args is None:
@@ -186,7 +186,7 @@ def _convert_mcp_to_langchain_tool(
 
 
 async def test_mcp_connection(
-    command: str = "workspace-mcp",
+    command: str = "/app/deploy/start-mcp-server.sh",
     args: List[str] = None,
     timeout: int = 10
 ) -> bool:
@@ -217,7 +217,7 @@ async def test_mcp_connection(
 
 
 def get_mcp_tools_sync(
-    command: str = "workspace-mcp",
+    command: str = "/app/deploy/start-mcp-server.sh",
     args: List[str] = None,
     timeout: int = 30
 ) -> List[StructuredTool]:
