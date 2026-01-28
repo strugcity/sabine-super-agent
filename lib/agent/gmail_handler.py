@@ -11,6 +11,7 @@ Features:
 - Authorized sender filtering
 - Uses headless Gmail MCP (credentials passed as tool parameters)
 - Dual-token architecture: USER_REFRESH_TOKEN for reading, AGENT_REFRESH_TOKEN for sending
+- Supabase-backed tracking for persistence across Railway deploys
 """
 
 import asyncio
@@ -20,8 +21,11 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
+
+from supabase import create_client, Client
 
 # Cross-platform file locking
 if sys.platform == 'win32':
@@ -34,6 +38,23 @@ else:
     LOCK_UN = fcntl.LOCK_UN
 
 logger = logging.getLogger(__name__)
+
+# Initialize Supabase client for persistent tracking
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+
+_supabase: Optional[Client] = None
+
+def get_supabase() -> Optional[Client]:
+    """Get or create Supabase client."""
+    global _supabase
+    if _supabase is None and SUPABASE_URL and SUPABASE_SERVICE_KEY:
+        try:
+            _supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+            logger.info("Supabase client initialized for email tracking")
+        except Exception as e:
+            logger.error(f"Failed to initialize Supabase: {e}")
+    return _supabase
 
 # Subjects that indicate auto-replies (to prevent loops)
 AUTO_REPLY_INDICATORS = [
@@ -48,32 +69,139 @@ AUTO_REPLY_INDICATORS = [
     "no-reply",
 ]
 
-# Thread IDs we've already replied to (to prevent replying multiple times to same thread)
-REPLIED_THREADS_FILE = Path(__file__).parent / ".replied_threads.json"
-
+# =============================================================================
+# Supabase-backed tracking (persists across Railway deploys)
+# =============================================================================
 
 def load_replied_threads() -> Set[str]:
-    """Load set of thread IDs we've already replied to."""
+    """Load thread IDs we've replied to from Supabase."""
+    threads = set()
+
+    # Try Supabase first
+    supabase = get_supabase()
+    if supabase:
+        try:
+            # Get threads from last 7 days
+            cutoff = (datetime.now() - timedelta(days=7)).isoformat()
+            response = supabase.table("email_tracking") \
+                .select("thread_id") \
+                .eq("tracking_type", "replied_thread") \
+                .gte("created_at", cutoff) \
+                .execute()
+
+            if response.data:
+                threads = set(row["thread_id"] for row in response.data if row.get("thread_id"))
+                logger.info(f"Loaded {len(threads)} replied threads from Supabase")
+                return threads
+        except Exception as e:
+            logger.warning(f"Could not load threads from Supabase: {e}")
+
+    # Fallback to local file
     try:
-        if REPLIED_THREADS_FILE.exists():
-            data = json.loads(REPLIED_THREADS_FILE.read_text())
-            return set(data.get("threads", [])[-500:])
+        local_file = Path(__file__).parent / ".replied_threads.json"
+        if local_file.exists():
+            data = json.loads(local_file.read_text())
+            threads = set(data.get("threads", [])[-500:])
     except Exception as e:
-        logger.warning(f"Could not load replied threads: {e}")
-    return set()
+        logger.warning(f"Could not load local replied threads: {e}")
+
+    return threads
 
 
 def save_replied_thread(thread_id: str):
-    """Save a thread ID we've replied to."""
+    """Save a thread ID to Supabase (and local file as backup)."""
+    # Save to Supabase
+    supabase = get_supabase()
+    if supabase:
+        try:
+            supabase.table("email_tracking").upsert({
+                "thread_id": thread_id,
+                "tracking_type": "replied_thread",
+                "created_at": datetime.now().isoformat()
+            }, on_conflict="thread_id").execute()
+            logger.info(f"Saved thread {thread_id} to Supabase")
+        except Exception as e:
+            logger.warning(f"Could not save thread to Supabase: {e}")
+
+    # Also save to local file as backup
     try:
-        threads = load_replied_threads()
+        local_file = Path(__file__).parent / ".replied_threads.json"
+        threads = set()
+        if local_file.exists():
+            data = json.loads(local_file.read_text())
+            threads = set(data.get("threads", []))
         threads.add(thread_id)
         thread_list = list(threads)[-500:]
-        REPLIED_THREADS_FILE.write_text(json.dumps({"threads": thread_list}))
+        local_file.write_text(json.dumps({"threads": thread_list}))
     except Exception as e:
-        logger.warning(f"Could not save replied thread: {e}")
+        logger.warning(f"Could not save local replied thread: {e}")
 
-# Track processed message IDs to avoid duplicate replies
+
+def load_processed_ids() -> Set[str]:
+    """Load processed message IDs from Supabase."""
+    ids = set()
+
+    # Try Supabase first
+    supabase = get_supabase()
+    if supabase:
+        try:
+            # Get IDs from last 7 days
+            cutoff = (datetime.now() - timedelta(days=7)).isoformat()
+            response = supabase.table("email_tracking") \
+                .select("message_id") \
+                .eq("tracking_type", "processed_message") \
+                .gte("created_at", cutoff) \
+                .execute()
+
+            if response.data:
+                ids = set(row["message_id"] for row in response.data if row.get("message_id"))
+                logger.info(f"Loaded {len(ids)} processed IDs from Supabase")
+                return ids
+        except Exception as e:
+            logger.warning(f"Could not load IDs from Supabase: {e}")
+
+    # Fallback to local file
+    try:
+        local_file = Path(__file__).parent / ".processed_emails.json"
+        if local_file.exists():
+            data = json.loads(local_file.read_text())
+            ids = set(data.get("ids", [])[-1000:])
+    except Exception as e:
+        logger.warning(f"Could not load local processed IDs: {e}")
+
+    return ids
+
+
+def save_processed_id(message_id: str):
+    """Save a processed message ID to Supabase (and local file as backup)."""
+    # Save to Supabase
+    supabase = get_supabase()
+    if supabase:
+        try:
+            supabase.table("email_tracking").upsert({
+                "message_id": message_id,
+                "tracking_type": "processed_message",
+                "created_at": datetime.now().isoformat()
+            }, on_conflict="message_id").execute()
+            logger.debug(f"Saved message {message_id} to Supabase")
+        except Exception as e:
+            logger.warning(f"Could not save message to Supabase: {e}")
+
+    # Also save to local file as backup
+    try:
+        local_file = Path(__file__).parent / ".processed_emails.json"
+        ids = set()
+        if local_file.exists():
+            data = json.loads(local_file.read_text())
+            ids = set(data.get("ids", []))
+        ids.add(message_id)
+        id_list = list(ids)[-1000:]
+        local_file.write_text(json.dumps({"ids": id_list}))
+    except Exception as e:
+        logger.warning(f"Could not save local processed ID: {e}")
+
+
+# Track processed message IDs to avoid duplicate replies (local file backup)
 PROCESSED_FILE = Path(__file__).parent / ".processed_emails.json"
 LOCK_FILE = Path(__file__).parent / ".processed_emails.lock"
 
@@ -159,28 +287,6 @@ def release_lock(lock_handle: Any):
             logger.debug("Lock released (Unix)")
     except Exception as e:
         logger.warning(f"Error releasing lock: {e}")
-
-
-def load_processed_ids() -> Set[str]:
-    """Load set of already processed message IDs."""
-    try:
-        if PROCESSED_FILE.exists():
-            data = json.loads(PROCESSED_FILE.read_text())
-            return set(data.get("ids", [])[-1000:])
-    except Exception as e:
-        logger.warning(f"Could not load processed IDs: {e}")
-    return set()
-
-
-def save_processed_id(message_id: str):
-    """Save a processed message ID."""
-    try:
-        ids = load_processed_ids()
-        ids.add(message_id)
-        id_list = list(ids)[-1000:]
-        PROCESSED_FILE.write_text(json.dumps({"ids": id_list}))
-    except Exception as e:
-        logger.warning(f"Could not save processed ID: {e}")
 
 
 def extract_sender_email(message_content: str) -> Optional[str]:
@@ -356,8 +462,14 @@ Instructions for your response:
 3. If they are asking about weather, use your `get_weather` tool to get accurate information
 4. **CRITICAL - For ANY calendar/schedule questions:**
    - Use the `get_calendar_events` tool to get REAL data
-   - Parameters: time_range ("today", "tomorrow", "this_weekend", "this_week", "next_weekend", "next_week")
-   - For "weekend" questions, ALWAYS use "this_weekend" or "next_weekend" - these return ONLY Saturday and Sunday
+   - Parameters for time_range:
+     * "today", "tomorrow" - single day
+     * "this_weekend", "next_weekend" - Saturday and Sunday only
+     * "this_week", "next_week" - full week
+     * "custom" - USE THIS for specific dates like "2/13-2/15" or "February 13th weekend"
+   - For SPECIFIC DATES (like "weekend of 2/13"), use time_range="custom" with:
+     * start_date: "2026-02-13" (YYYY-MM-DD format)
+     * end_date: "2026-02-15" (YYYY-MM-DD format)
    - Optional: family_member ("Jack" or "Anna") to filter by person
    - Optional: group_by ("day" or "member") for different views
    - NEVER make up events - always call the tool first!

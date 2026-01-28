@@ -333,8 +333,13 @@ You have access to multiple tools organized into categories:
 
 ## Local Skills
 - **get_calendar_events**: CRITICAL - Use this for ALL calendar/schedule questions!
-  - Parameters: time_range ("today", "tomorrow", "this_weekend", "this_week", "next_weekend", "next_week", "custom")
-  - For "weekend" questions, ALWAYS use "this_weekend" or "next_weekend" (returns ONLY Sat-Sun, not weekdays!)
+  - Parameters for time_range:
+    * "today", "tomorrow" - single day queries
+    * "this_weekend", "next_weekend" - returns ONLY Saturday and Sunday
+    * "this_week", "next_week" - full week
+    * "custom" - for SPECIFIC DATES (e.g., "weekend of 2/13", "February 13-15")
+  - For SPECIFIC DATE queries, use time_range="custom" with start_date and end_date in YYYY-MM-DD format
+    Example: time_range="custom", start_date="2026-02-13", end_date="2026-02-15"
   - Optional: family_member ("Jack", "Anna") to filter by person
   - Optional: group_by ("day", "member") for different views
   - This tool knows: custody schedule (Mom/Dad days), all sports calendars (GameChanger, SportsEngine, TeamSnap), family events
