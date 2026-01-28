@@ -462,30 +462,71 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                     return {"success": True, "action": "no_emails"}
                 emails = []
 
-            # Get first email
-            if len(emails) > 0:
-                email_data = emails[0]
-                message_id = email_data.get("id") or email_data.get("message_id")
-                sender = email_data.get("from", "").lower()
-                subject = email_data.get("subject", "")
-                body_preview = email_data.get("body") or email_data.get("snippet", "")
-            else:
-                logger.warning("No emails in parsed result")
-                return {"success": True, "action": "no_parseable_emails"}
+            # Find first email from an authorized sender
+            email_data = None
+            message_id = None
+            sender = None
+            sender_name = None
+            subject = None
+            body_preview = None
 
-            if not message_id:
-                logger.warning("Could not extract message ID from result")
-                return {"success": True, "action": "no_parseable_message"}
+            for candidate in emails:
+                candidate_id = candidate.get("id") or candidate.get("message_id")
+                candidate_sender = candidate.get("from", "").lower()
 
-            if message_id in processed_ids:
-                logger.info(f"Message {message_id} already processed, skipping")
-                return {"success": True, "action": "already_processed", "message_id": message_id}
+                # Extract email from "Name <email>" format
+                if candidate_sender and '<' in candidate_sender:
+                    match = re.search(r'<([^>]+)>', candidate_sender)
+                    if match:
+                        candidate_sender_email = match.group(1).lower()
+                    else:
+                        candidate_sender_email = candidate_sender
+                else:
+                    candidate_sender_email = candidate_sender
 
+                logger.info(f"Checking email {candidate_id} from {candidate_sender_email}")
+
+                # Skip already processed
+                if candidate_id in processed_ids:
+                    logger.info(f"  -> Already processed, skipping")
+                    continue
+
+                # Skip self-emails (loop prevention)
+                if candidate_sender_email == config["assistant_email"] or candidate_sender_email == config["agent_email"]:
+                    logger.info(f"  -> Self-email, skipping")
+                    continue
+
+                # Skip noreply addresses
+                if any(ind in candidate_sender_email for ind in ['noreply', 'no-reply', 'donotreply', 'mailer-daemon', 'postmaster']):
+                    logger.info(f"  -> No-reply address, skipping")
+                    continue
+
+                # Check authorization
+                if candidate_sender_email not in config["authorized_emails"]:
+                    logger.info(f"  -> Not authorized ({config['authorized_emails']}), skipping")
+                    continue
+
+                # Found a valid email!
+                logger.info(f"  -> AUTHORIZED! Processing this email")
+                email_data = candidate
+                message_id = candidate_id
+                sender = candidate_sender_email
+                if '<' in candidate.get("from", ""):
+                    sender_name = candidate.get("from", "").split('<')[0].strip()
+                subject = candidate.get("subject", "")
+                body_preview = candidate.get("body") or candidate.get("snippet", "")
+                break
+
+            if not email_data:
+                logger.info("No unread emails from authorized senders found")
+                return {"success": True, "action": "no_authorized_emails"}
+
+            # Mark as processing
             save_processed_id(message_id)
             logger.info(f"Message {message_id} marked as processing")
 
             # Get full message content if needed (from agent's inbox)
-            if not sender or not body_preview:
+            if not body_preview:
                 logger.info(f"Getting full content for message {message_id}...")
                 message_content = await mcp.call_tool("gmail_get_email_body_chunk", {
                     "google_access_token": agent_access_token,
@@ -495,46 +536,12 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                 if message_content:
                     try:
                         content_data = json.loads(message_content)
-                        if not sender:
-                            sender = content_data.get("from", "").lower()
-                        if not subject:
-                            subject = content_data.get("subject", "")
                         if not body_preview:
                             body_preview = content_data.get("body", "")
                     except json.JSONDecodeError:
-                        if not sender:
-                            sender = extract_sender_email(message_content)
-                        if not subject:
-                            subject = extract_subject(message_content)
-                        if not body_preview:
-                            body_preview = extract_body(message_content)
+                        body_preview = extract_body(message_content)
 
-            # Extract sender email if we have a "Name <email>" format
-            if sender and '<' in sender:
-                match = re.search(r'<([^>]+)>', sender)
-                if match:
-                    sender_name = sender.split('<')[0].strip()
-                    sender = match.group(1).lower()
-                else:
-                    sender_name = None
-            else:
-                sender_name = None
-
-            if not sender:
-                logger.warning("Could not determine sender")
-                return {"success": False, "error": "Could not determine sender"}
-
-            logger.info(f"Sender: {sender_name} <{sender}>")
-
-            # Loop prevention: skip self-emails
-            if sender == config["assistant_email"] or sender == config["agent_email"]:
-                logger.info(f"Sender is the assistant ({sender}), skipping to prevent loop")
-                return {"success": True, "action": "self_email_skipped", "sender": sender}
-
-            # Authorization check
-            if sender not in config["authorized_emails"]:
-                logger.info(f"Sender {sender} not in authorized list {config['authorized_emails']}, skipping reply")
-                return {"success": True, "action": "unauthorized_sender", "sender": sender}
+            logger.info(f"Processing email from: {sender_name} <{sender}>")
 
             original_subject = subject or ""
             subject_lower = original_subject.lower()
