@@ -481,6 +481,66 @@ async def gmail_diagnostic():
     }
 
 
+@app.get("/gmail/debug-inbox")
+async def gmail_debug_inbox(_: bool = Depends(verify_api_key)):
+    """
+    Debug endpoint to see what emails Railway can see in the agent's inbox.
+    """
+    import json
+    from lib.agent.mcp_client import MCPClient
+    from lib.agent.gmail_handler import get_config, get_access_token, load_processed_ids
+
+    config = get_config()
+    processed_ids = load_processed_ids()
+
+    try:
+        async with MCPClient(
+            command="/app/deploy/start-mcp-server.sh",
+            args=[]
+        ) as mcp:
+            # Get agent access token
+            agent_access_token = await get_access_token(mcp, config, "agent")
+            if not agent_access_token:
+                return {"error": "Failed to get agent access token"}
+
+            # Get recent emails
+            search_result = await mcp.call_tool("gmail_get_recent_emails", {
+                "google_access_token": agent_access_token,
+                "max_results": 5,
+                "unread_only": True
+            })
+
+            result_data = json.loads(search_result)
+            if isinstance(result_data, dict) and "emails" in result_data:
+                emails = result_data["emails"]
+            else:
+                emails = result_data if isinstance(result_data, list) else []
+
+            # Summarize emails
+            email_summary = []
+            for email in emails:
+                email_id = email.get("id", "")
+                email_summary.append({
+                    "id": email_id,
+                    "from": email.get("from", ""),
+                    "to": email.get("to", ""),
+                    "subject": email.get("subject", ""),
+                    "already_processed": email_id in processed_ids
+                })
+
+            return {
+                "success": True,
+                "authorized_emails": config["authorized_emails"],
+                "processed_ids_count": len(processed_ids),
+                "processed_ids_sample": list(processed_ids)[:5],
+                "emails_found": len(emails),
+                "emails": email_summary
+            }
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.post("/gmail/renew-watch")
 async def renew_gmail_watch(request: GmailWatchRenewRequest, _: bool = Depends(verify_api_key)):
     """
