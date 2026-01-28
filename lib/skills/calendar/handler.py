@@ -3,16 +3,41 @@ Google Calendar Skill Handler
 
 Retrieves calendar events using Google Calendar API with OAuth2 refresh tokens.
 Uses the same credential architecture as the Gmail handler (USER_REFRESH_TOKEN).
+
+Enhanced for family use cases:
+- Custody schedule awareness (Mom/Dad all-day events)
+- Multi-kid sports calendar aggregation
+- Conflict detection across family members
+- "Who has what" queries
 """
 
 import os
 import logging
+import re
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Family member detection patterns (customize per family)
+FAMILY_MEMBERS = {
+    "jack": ["jack", "jacks"],
+    "anna": ["anna", "annas", "annalee"],
+    # Add more kids here as needed
+}
+
+# Sports calendar patterns - helps identify which calendars are sports-related
+SPORTS_CALENDAR_PATTERNS = [
+    r"bandits", r"blast", r"red", r"team", r"schuer",
+    r"gamechange", r"sports?engine", r"teamsnap",
+    r"\d+[au]",  # Age groups like 12U, 14A
+]
+
+# Custody calendar name
+CUSTODY_CALENDAR_NAME = "The Kids"
+CUSTODY_PATTERNS = ["mom", "dad", "mother", "father"]
 
 # Google Calendar API endpoint
 CALENDAR_API_BASE = "https://www.googleapis.com/calendar/v3"
@@ -160,11 +185,101 @@ async def get_events(
         return []
 
 
-def format_event(event: Dict[str, Any]) -> str:
+def is_custody_event(event: Dict[str, Any], calendar_name: str = "") -> Tuple[bool, str]:
+    """
+    Check if an event is a custody indicator (Mom/Dad all-day event).
+
+    Returns:
+        Tuple of (is_custody, parent_name) e.g., (True, "Mom") or (False, "")
+    """
+    summary = event.get("summary", "").lower().strip()
+    start = event.get("start", {})
+
+    # Must be from "The Kids" calendar (or similar) and be an all-day event
+    is_custody_calendar = CUSTODY_CALENDAR_NAME.lower() in calendar_name.lower()
+    is_all_day = "date" in start and "dateTime" not in start
+
+    if is_custody_calendar and is_all_day:
+        for pattern in CUSTODY_PATTERNS:
+            if pattern in summary:
+                # Capitalize nicely
+                parent = "Mom" if "mom" in summary or "mother" in summary else "Dad"
+                return (True, parent)
+
+    return (False, "")
+
+
+def is_sports_calendar(calendar_name: str) -> bool:
+    """Check if a calendar is likely a sports team calendar."""
+    name_lower = calendar_name.lower()
+    for pattern in SPORTS_CALENDAR_PATTERNS:
+        if re.search(pattern, name_lower):
+            return True
+    return False
+
+
+def detect_family_member(event: Dict[str, Any], calendar_name: str) -> Optional[str]:
+    """
+    Try to detect which family member an event is for.
+
+    Checks event summary and calendar name for family member names.
+    """
+    text_to_check = f"{event.get('summary', '')} {calendar_name}".lower()
+
+    for member, patterns in FAMILY_MEMBERS.items():
+        for pattern in patterns:
+            if pattern in text_to_check:
+                return member.capitalize()
+
+    return None
+
+
+def find_conflicts(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Find scheduling conflicts (overlapping events).
+
+    Returns list of conflict groups, where each group contains overlapping events.
+    """
+    conflicts = []
+
+    # Only check timed events (not all-day)
+    timed_events = [e for e in events if "dateTime" in e.get("start", {})]
+
+    for i, event1 in enumerate(timed_events):
+        for event2 in timed_events[i+1:]:
+            start1 = datetime.fromisoformat(event1["start"]["dateTime"].replace("Z", "+00:00"))
+            end1 = datetime.fromisoformat(event1["end"]["dateTime"].replace("Z", "+00:00"))
+            start2 = datetime.fromisoformat(event2["start"]["dateTime"].replace("Z", "+00:00"))
+            end2 = datetime.fromisoformat(event2["end"]["dateTime"].replace("Z", "+00:00"))
+
+            # Check for overlap
+            if start1 < end2 and start2 < end1:
+                conflicts.append({
+                    "event1": event1,
+                    "event2": event2,
+                    "overlap_start": max(start1, start2),
+                    "overlap_end": min(end1, end2)
+                })
+
+    return conflicts
+
+
+def format_event(event: Dict[str, Any], include_member: bool = True) -> str:
     """
     Format a calendar event for display.
     """
     summary = event.get("summary", "No Title")
+    calendar_name = event.get("_calendar_name", "")
+
+    # Check for custody event
+    is_custody, parent = is_custody_event(event, calendar_name)
+    if is_custody:
+        date_str = event.get("start", {}).get("date", "Unknown date")
+        return f"🏠 {parent}'s day ({date_str})"
+
+    # Detect family member
+    member = detect_family_member(event, calendar_name) if include_member else None
+    member_prefix = f"[{member}] " if member else ""
 
     # Handle all-day events vs timed events
     start = event.get("start", {})
@@ -181,13 +296,79 @@ def format_event(event: Dict[str, Any]) -> str:
         time_str = "All day"
 
     location = event.get("location", "")
-    location_str = f"\n   Location: {location}" if location else ""
+    location_str = f"\n   📍 {location}" if location else ""
 
     description = event.get("description", "")
     desc_preview = description[:100] + "..." if len(description) > 100 else description
-    desc_str = f"\n   Notes: {desc_preview}" if desc_preview else ""
+    desc_str = f"\n   📝 {desc_preview}" if desc_preview else ""
 
-    return f"- {summary}\n   {date_str}, {time_str}{location_str}{desc_str}"
+    # Add sports emoji if it's a sports calendar
+    sports_emoji = "⚽ " if is_sports_calendar(calendar_name) else ""
+
+    return f"- {member_prefix}{sports_emoji}{summary}\n   {date_str}, {time_str}{location_str}{desc_str}"
+
+
+def get_custody_for_range(events: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """
+    Extract custody information from events.
+
+    Returns list of {date, parent} for each custody day found.
+    """
+    custody_days = []
+
+    for event in events:
+        calendar_name = event.get("_calendar_name", "")
+        is_custody, parent = is_custody_event(event, calendar_name)
+        if is_custody:
+            date = event.get("start", {}).get("date", "")
+            custody_days.append({"date": date, "parent": parent})
+
+    return custody_days
+
+
+def group_events_by_day(events: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Group events by date for daily summary view."""
+    by_day = {}
+
+    for event in events:
+        start = event.get("start", {})
+        if "dateTime" in start:
+            date = start["dateTime"][:10]  # Extract YYYY-MM-DD
+        else:
+            date = start.get("date", "unknown")
+
+        if date not in by_day:
+            by_day[date] = []
+        by_day[date].append(event)
+
+    return by_day
+
+
+def group_events_by_member(events: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Group events by family member for 'who has what' queries."""
+    by_member = {"Unassigned": []}
+
+    for event in events:
+        calendar_name = event.get("_calendar_name", "")
+
+        # Skip custody events in member grouping
+        is_custody, _ = is_custody_event(event, calendar_name)
+        if is_custody:
+            continue
+
+        member = detect_family_member(event, calendar_name)
+        if member:
+            if member not in by_member:
+                by_member[member] = []
+            by_member[member].append(event)
+        else:
+            by_member["Unassigned"].append(event)
+
+    # Remove empty Unassigned category
+    if not by_member["Unassigned"]:
+        del by_member["Unassigned"]
+
+    return by_member
 
 
 async def execute(params: dict) -> dict:
@@ -195,15 +376,26 @@ async def execute(params: dict) -> dict:
     Get calendar events based on the specified time range.
 
     Args:
-        params: Dict with 'time_range' (required), 'start_date', 'end_date', 'max_results'
+        params: Dict with:
+            - 'time_range' (required): today, tomorrow, this_week, next_week, custom
+            - 'start_date', 'end_date': for custom range
+            - 'max_results': limit results (default 25)
+            - 'include_custody': whether to highlight custody schedule (default True)
+            - 'check_conflicts': whether to detect scheduling conflicts (default True)
+            - 'group_by': 'day', 'member', or None (default None)
+            - 'family_member': filter to specific person (e.g., "Jack")
 
     Returns:
-        Dict with calendar events or error message
+        Dict with calendar events, custody info, and any conflicts
     """
     time_range = params.get("time_range", "today")
     start_date = params.get("start_date")
     end_date = params.get("end_date")
-    max_results = params.get("max_results", 10)
+    max_results = params.get("max_results", 25)
+    include_custody = params.get("include_custody", True)
+    check_conflicts = params.get("check_conflicts", True)
+    group_by = params.get("group_by")
+    family_member_filter = params.get("family_member", "").lower()
 
     logger.info(f"Getting calendar events for time_range={time_range}")
 
@@ -256,54 +448,125 @@ async def execute(params: dict) -> dict:
 
     all_events.sort(key=get_start_time)
 
+    # Filter by family member if specified
+    if family_member_filter:
+        filtered_events = []
+        for event in all_events:
+            calendar_name = event.get("_calendar_name", "")
+            member = detect_family_member(event, calendar_name)
+            if member and member.lower() == family_member_filter:
+                filtered_events.append(event)
+        all_events = filtered_events
+
     # Limit total results
     all_events = all_events[:max_results]
 
-    if not all_events:
-        range_desc = {
-            "today": "today",
-            "tomorrow": "tomorrow",
-            "this_week": "this week",
-            "next_week": "next week",
-            "custom": f"from {start_date} to {end_date}"
-        }.get(time_range, time_range)
+    # Extract custody information
+    custody_info = []
+    if include_custody:
+        custody_info = get_custody_for_range(all_events)
 
+    # Check for conflicts
+    conflicts = []
+    if check_conflicts:
+        conflicts = find_conflicts(all_events)
+
+    range_desc_map = {
+        "today": ("today", "Today's"),
+        "tomorrow": ("tomorrow", "Tomorrow's"),
+        "this_week": ("this week", "This week's"),
+        "next_week": ("next week", "Next week's"),
+        "custom": (f"from {start_date} to {end_date}", "Scheduled")
+    }
+    range_desc_lower, range_desc_title = range_desc_map.get(time_range, (time_range, "Upcoming"))
+
+    if not all_events:
+        msg = f"No events scheduled for {range_desc_lower}."
+        if family_member_filter:
+            msg = f"No events found for {family_member_filter.capitalize()} {range_desc_lower}."
         return {
             "status": "success",
-            "message": f"No events scheduled for {range_desc}.",
+            "message": msg,
             "events": [],
+            "custody": custody_info,
             "calendars_checked": calendar_names
         }
 
-    # Format events for display
-    formatted_events = []
-    for event in all_events:
-        formatted = format_event(event)
-        calendar_name = event.get("_calendar_name", "")
-        if calendar_name and len(calendar_names) > 1:
-            formatted = f"[{calendar_name}] {formatted}"
-        formatted_events.append(formatted)
+    # Build response message
+    output_parts = []
 
-    range_desc = {
-        "today": "Today's",
-        "tomorrow": "Tomorrow's",
-        "this_week": "This week's",
-        "next_week": "Next week's",
-        "custom": "Scheduled"
-    }.get(time_range, "Upcoming")
+    # Add custody summary at the top if relevant
+    if custody_info:
+        custody_summary = []
+        for cd in custody_info:
+            try:
+                date_obj = datetime.strptime(cd["date"], "%Y-%m-%d")
+                date_str = date_obj.strftime("%A, %b %d")
+            except:
+                date_str = cd["date"]
+            custody_summary.append(f"🏠 {date_str}: {cd['parent']}'s day")
+        output_parts.append("**Custody Schedule:**\n" + "\n".join(custody_summary))
+
+    # Add conflicts warning if any
+    if conflicts:
+        conflict_warnings = []
+        for c in conflicts:
+            e1 = c["event1"].get("summary", "Event 1")
+            e2 = c["event2"].get("summary", "Event 2")
+            overlap_time = c["overlap_start"].strftime("%I:%M %p")
+            conflict_warnings.append(f"⚠️ CONFLICT: '{e1}' and '{e2}' overlap at {overlap_time}")
+        output_parts.append("**Scheduling Conflicts:**\n" + "\n".join(conflict_warnings))
+
+    # Group events if requested
+    if group_by == "member":
+        by_member = group_events_by_member(all_events)
+        member_sections = []
+        for member, events in by_member.items():
+            formatted = [format_event(e, include_member=False) for e in events]
+            member_sections.append(f"**{member}:**\n" + "\n\n".join(formatted))
+        output_parts.append("\n\n".join(member_sections))
+    elif group_by == "day":
+        by_day = group_events_by_day(all_events)
+        day_sections = []
+        for date_str, events in sorted(by_day.items()):
+            try:
+                date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+                day_label = date_obj.strftime("%A, %B %d")
+            except:
+                day_label = date_str
+            formatted = [format_event(e) for e in events]
+            day_sections.append(f"**{day_label}:**\n" + "\n\n".join(formatted))
+        output_parts.append("\n\n".join(day_sections))
+    else:
+        # Default: simple list
+        formatted_events = [format_event(event) for event in all_events]
+        title = f"{range_desc_title} events ({len(all_events)} found)"
+        if family_member_filter:
+            title = f"{family_member_filter.capitalize()}'s {range_desc_lower} events ({len(all_events)} found)"
+        output_parts.append(f"**{title}:**\n" + "\n\n".join(formatted_events))
 
     return {
         "status": "success",
-        "message": f"{range_desc} calendar events ({len(all_events)} found):\n\n" + "\n\n".join(formatted_events),
+        "message": "\n\n".join(output_parts),
         "events": [
             {
                 "summary": e.get("summary"),
                 "start": e.get("start"),
                 "end": e.get("end"),
                 "location": e.get("location"),
-                "calendar": e.get("_calendar_name")
+                "calendar": e.get("_calendar_name"),
+                "family_member": detect_family_member(e, e.get("_calendar_name", ""))
             }
             for e in all_events
+        ],
+        "custody": custody_info,
+        "conflicts": [
+            {
+                "event1": c["event1"].get("summary"),
+                "event2": c["event2"].get("summary"),
+                "overlap_time": c["overlap_start"].isoformat()
+            }
+            for c in conflicts
         ],
         "calendars_checked": calendar_names
     }

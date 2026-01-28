@@ -1,7 +1,7 @@
 {
   "name": "get_calendar_events",
-  "description": "Get upcoming calendar events from Google Calendar. Can retrieve events for today, tomorrow, this week, or a specific date range.",
-  "version": "1.0.0",
+  "description": "Get family calendar events from Google Calendar. Aggregates events from all synced calendars including kids' sports schedules (GameChanger, SportsEngine, TeamSnap, etc.), custody calendar ('The Kids' with Mom/Dad days), and family events. Detects scheduling conflicts and can filter by family member.",
+  "version": "2.0.0",
   "parameters": {
     "type": "object",
     "properties": {
@@ -20,8 +20,27 @@
       },
       "max_results": {
         "type": "integer",
-        "description": "Maximum number of events to return (default: 10)",
-        "default": 10
+        "description": "Maximum number of events to return (default: 25)",
+        "default": 25
+      },
+      "family_member": {
+        "type": "string",
+        "description": "Filter events to a specific family member (e.g., 'Jack', 'Anna'). Leave empty for all family members."
+      },
+      "group_by": {
+        "type": "string",
+        "description": "How to group results: 'day' (by date), 'member' (by family member), or null for chronological list",
+        "enum": ["day", "member"]
+      },
+      "include_custody": {
+        "type": "boolean",
+        "description": "Whether to highlight custody schedule (Mom/Dad days). Default: true",
+        "default": true
+      },
+      "check_conflicts": {
+        "type": "boolean",
+        "description": "Whether to detect and warn about scheduling conflicts. Default: true",
+        "default": true
       }
     },
     "required": ["time_range"]
