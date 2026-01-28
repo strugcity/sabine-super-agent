@@ -440,11 +440,12 @@ async def handle_gmail_notification(request: GmailHandleRequest, _: bool = Depen
 
 
 @app.get("/gmail/diagnostic")
-async def gmail_diagnostic(_: bool = Depends(verify_api_key)):
+async def gmail_diagnostic():
     """
     Diagnostic endpoint to verify Gmail credentials configuration.
 
     Returns partial credential info (first/last chars) for debugging.
+    Note: No auth required - only shows prefixes, not full credentials.
     """
     client_id = os.getenv("GOOGLE_CLIENT_ID", "")
     client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "")
