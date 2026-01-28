@@ -13,11 +13,11 @@ echo "[MCP Server] Launching Google Workspace MCP server (Stdio transport)..." >
 export PYTHONFAULTHANDLER=1
 export PYTHONUNBUFFERED=1
 
-echo "[MCP Server] Starting: npx @modelcontextprotocol/server-google-workspace" >&2
+echo "[MCP Server] Starting: npx @presto-ai/google-workspace-mcp --transport stdio" >&2
 
-# Launch the MCP server via Stdio transport
+# Launch the MCP server via Stdio transport (explicit flag)
 # - npx resolves and executes the Node.js package
-# - Stdio is the default/native transport for MCP (stdin/stdout pipes)
+# - --transport stdio ensures Stdio mode even if default changes
 # - JSON-RPC 2.0 messages flow via stdout to parent Python process
 # - stderr is available for server diagnostics/logging
-exec npx -y @modelcontextprotocol/server-google-workspace
+exec npx -y @presto-ai/google-workspace-mcp --transport stdio
