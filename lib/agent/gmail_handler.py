@@ -1,5 +1,5 @@
 """
-Gmail Handler - AI-Powered Email Responses (Stdio MCP)
+Gmail Handler - AI-Powered Email Responses (Headless MCP)
 
 This module handles incoming Gmail notifications and generates intelligent
 AI responses using the LangGraph agent with full context awareness.
@@ -9,7 +9,8 @@ Features:
 - File-based locking to prevent duplicate processing (race condition fix)
 - Loop prevention (skips auto-replies, self-emails)
 - Authorized sender filtering
-- Uses Stdio-based MCP client for all MCP tool calls
+- Uses headless Gmail MCP (credentials passed as tool parameters)
+- Dual-token architecture: USER_REFRESH_TOKEN for reading, AGENT_REFRESH_TOKEN for sending
 """
 
 import asyncio
@@ -52,18 +53,35 @@ PROCESSED_FILE = Path(__file__).parent / ".processed_emails.json"
 LOCK_FILE = Path(__file__).parent / ".processed_emails.lock"
 
 
-def get_config() -> tuple[str, str, list[str], str]:
+def get_config() -> Dict[str, Any]:
     """
     Get configuration values at runtime (after .env is loaded).
-    Returns: (assistant_email, user_google_email, authorized_emails, user_id)
+    Returns dict with all config values.
     """
-    assistant_email = os.getenv("ASSISTANT_EMAIL", "sabine@strugcity.com").lower()
-    user_google_email = os.getenv("USER_GOOGLE_EMAIL", "rknollmaier@gmail.com").lower()
-    authorized_raw = os.getenv("GMAIL_AUTHORIZED_EMAILS", "")
-    authorized_emails = [e.strip().lower() for e in authorized_raw.split(",") if e.strip()]
-    user_id = os.getenv("AGENT_USER_ID") or os.getenv("DEFAULT_USER_ID", "00000000-0000-0000-0000-000000000001")
-    logger.debug(f"Config loaded - Assistant: {assistant_email}, User Google: {user_google_email}, Authorized: {authorized_emails}")
-    return assistant_email, user_google_email, authorized_emails, user_id
+    config = {
+        "assistant_email": os.getenv("ASSISTANT_EMAIL", "sabine@strugcity.com").lower(),
+        "agent_email": os.getenv("AGENT_EMAIL", "sabine@strugcity.com").lower(),
+        "user_google_email": os.getenv("USER_GOOGLE_EMAIL", "rknollmaier@gmail.com").lower(),
+        "authorized_emails": [
+            e.strip().lower()
+            for e in os.getenv("GMAIL_AUTHORIZED_EMAILS", "").split(",")
+            if e.strip()
+        ],
+        "user_id": os.getenv("AGENT_USER_ID") or os.getenv("DEFAULT_USER_ID", "00000000-0000-0000-0000-000000000001"),
+        # OAuth credentials
+        "google_client_id": os.getenv("GOOGLE_CLIENT_ID", ""),
+        "google_client_secret": os.getenv("GOOGLE_CLIENT_SECRET", ""),
+        "user_refresh_token": os.getenv("USER_REFRESH_TOKEN", ""),
+        "agent_refresh_token": os.getenv("AGENT_REFRESH_TOKEN", ""),
+    }
+
+    logger.debug(f"Config loaded - Assistant: {config['assistant_email']}, User: {config['user_google_email']}")
+    logger.debug(f"Authorized emails: {config['authorized_emails']}")
+    logger.debug(f"Client ID present: {bool(config['google_client_id'])}")
+    logger.debug(f"User refresh token present: {bool(config['user_refresh_token'])}")
+    logger.debug(f"Agent refresh token present: {bool(config['agent_refresh_token'])}")
+
+    return config
 
 
 def acquire_lock() -> Optional[Any]:
@@ -89,7 +107,6 @@ def acquire_lock() -> Optional[Any]:
         else:
             fd = os.open(str(LOCK_FILE), os.O_RDWR | os.O_CREAT, 0o666)
             try:
-                # Use non-blocking lock (LOCK_NB)
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 logger.info("Lock acquired successfully (Unix)")
                 return fd
@@ -167,15 +184,27 @@ def extract_sender_name(message_content: str) -> Optional[str]:
     return None
 
 
-def extract_message_id(search_result: str) -> Optional[str]:
-    """Extract message ID from search result."""
+def extract_message_id(result: str) -> Optional[str]:
+    """Extract message ID from get_recent_emails result (JSON format)."""
+    try:
+        # Try parsing as JSON first (headless-gmail returns JSON)
+        data = json.loads(result)
+        if isinstance(data, list) and len(data) > 0:
+            return data[0].get("id") or data[0].get("message_id")
+        if isinstance(data, dict):
+            return data.get("id") or data.get("message_id")
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback to regex patterns
     patterns = [
+        r'"id"\s*:\s*"([^"]+)"',
+        r'"message_id"\s*:\s*"([^"]+)"',
         r'ID[:\s]+([a-zA-Z0-9]+)',
-        r'message[_\s]?id[:\s]+([a-zA-Z0-9]+)',
     ]
 
     for pattern in patterns:
-        match = re.search(pattern, search_result, re.IGNORECASE)
+        match = re.search(pattern, result, re.IGNORECASE)
         if match:
             return match.group(1)
 
@@ -184,6 +213,15 @@ def extract_message_id(search_result: str) -> Optional[str]:
 
 def extract_subject(message_content: str) -> Optional[str]:
     """Extract subject from message content."""
+    # Try JSON format first
+    try:
+        data = json.loads(message_content)
+        if isinstance(data, dict):
+            return data.get("subject")
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback to header parsing
     match = re.search(r'Subject:\s*(.+?)(?:\n|$)', message_content, re.IGNORECASE)
     if match:
         return match.group(1).strip()
@@ -191,7 +229,17 @@ def extract_subject(message_content: str) -> Optional[str]:
 
 
 def extract_body(message_content: str) -> str:
-    """Extract email body from message content (after headers)."""
+    """Extract email body from message content."""
+    # Try JSON format first (headless-gmail returns structured data)
+    try:
+        data = json.loads(message_content)
+        if isinstance(data, dict):
+            body = data.get("body") or data.get("snippet") or data.get("body_preview") or ""
+            return body.strip()
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback to header parsing (after headers)
     parts = re.split(r'\n\n|\r\n\r\n', message_content, maxsplit=1)
     if len(parts) > 1:
         body = parts[1].strip()
@@ -203,6 +251,53 @@ def extract_body(message_content: str) -> str:
             clean_lines.append(line)
         return '\n'.join(clean_lines).strip()
     return message_content.strip()
+
+
+async def get_access_token(mcp, config: Dict[str, Any], token_type: str = "user") -> Optional[str]:
+    """
+    Get a fresh access token using the refresh token.
+
+    Args:
+        mcp: MCPClient instance
+        config: Configuration dict with credentials
+        token_type: "user" for USER_REFRESH_TOKEN, "agent" for AGENT_REFRESH_TOKEN
+
+    Returns:
+        Access token string or None if failed
+    """
+    refresh_token = config["user_refresh_token"] if token_type == "user" else config["agent_refresh_token"]
+
+    if not refresh_token:
+        logger.error(f"No {token_type} refresh token configured")
+        return None
+
+    try:
+        result = await mcp.call_tool("gmail_refresh_token", {
+            "google_refresh_token": refresh_token,
+            "google_client_id": config["google_client_id"],
+            "google_client_secret": config["google_client_secret"],
+        })
+
+        # Parse result to get access token
+        try:
+            data = json.loads(result)
+            access_token = data.get("access_token")
+            if access_token:
+                logger.info(f"Successfully refreshed {token_type} access token")
+                return access_token
+        except json.JSONDecodeError:
+            # Try regex fallback
+            match = re.search(r'"access_token"\s*:\s*"([^"]+)"', result)
+            if match:
+                logger.info(f"Successfully refreshed {token_type} access token (regex)")
+                return match.group(1)
+
+        logger.error(f"Could not extract access token from refresh result: {result[:200]}")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error refreshing {token_type} token: {e}")
+        return None
 
 
 async def generate_ai_response(
@@ -280,9 +375,9 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
     """
     Handle a new email notification by:
     1. Acquiring a lock to prevent race conditions
-    2. Finding the most recent inbox email from an authorized sender
+    2. Finding the most recent inbox email from an authorized sender (using USER token)
     3. Generating an AI response using the LangGraph agent
-    4. Sending the response via MCP
+    4. Sending the response via MCP (using AGENT token)
     5. Tracking processed emails to avoid duplicates
 
     Returns:
@@ -299,36 +394,87 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
         return {"success": True, "action": "skipped_concurrent"}
 
     try:
-        assistant_email, user_google_email, authorized_emails, user_id = get_config()
-        logger.info(f"Authorized emails: {authorized_emails}")
+        config = get_config()
+
+        # Validate credentials
+        if not config["google_client_id"] or not config["google_client_secret"]:
+            logger.error("Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET")
+            return {"success": False, "error": "Missing OAuth credentials"}
+
+        if not config["user_refresh_token"]:
+            logger.error("Missing USER_REFRESH_TOKEN")
+            return {"success": False, "error": "Missing user refresh token"}
+
+        if not config["agent_refresh_token"]:
+            logger.error("Missing AGENT_REFRESH_TOKEN")
+            return {"success": False, "error": "Missing agent refresh token"}
 
         processed_ids = load_processed_ids()
 
         # Use MCPClient context manager to keep session open for all tool calls
         async with MCPClient(
             command="/app/deploy/start-mcp-server.sh",
-            args=["--transport", "stdio"]
+            args=[]  # headless-gmail doesn't need --transport stdio flag
         ) as mcp:
-            # Search for recent inbox emails
-            logger.info("Searching for recent inbox emails...")
-            search_result = await mcp.call_tool("gmail.search", {
-                "query": "in:inbox newer_than:1h -from:me",
-                "maxResults": 10
+            # Get access tokens
+            logger.info("Refreshing user access token...")
+            user_access_token = await get_access_token(mcp, config, "user")
+            if not user_access_token:
+                return {"success": False, "error": "Failed to get user access token"}
+
+            logger.info("Refreshing agent access token...")
+            agent_access_token = await get_access_token(mcp, config, "agent")
+            if not agent_access_token:
+                return {"success": False, "error": "Failed to get agent access token"}
+
+            # Search for recent inbox emails in AGENT's inbox (sabine@strugcity.com)
+            # This is where user emails TO Sabine arrive
+            logger.info("Getting recent emails from agent's inbox (sabine@strugcity.com)...")
+            search_result = await mcp.call_tool("gmail_get_recent_emails", {
+                "google_access_token": agent_access_token,
+                "max_results": 10,
+                "unread_only": True
             })
 
             if not search_result:
-                logger.error("Search returned empty result")
+                logger.error("get_recent_emails returned empty result")
                 return {"success": False, "error": "Failed to search emails"}
 
-            if "No messages found" in search_result or "0 messages" in search_result.lower():
-                logger.info("No recent inbox emails found")
-                return {"success": True, "action": "no_emails"}
+            logger.info(f"get_recent_emails result: {search_result[:500]}...")
 
-            logger.info(f"Search result: {search_result[:300]}...")
+            # Parse result - response format is {"emails": [...]}
+            try:
+                result_data = json.loads(search_result)
+                # Handle {"emails": [...]} format
+                if isinstance(result_data, dict) and "emails" in result_data:
+                    emails = result_data["emails"]
+                elif isinstance(result_data, list):
+                    emails = result_data
+                else:
+                    emails = []
 
-            message_id = extract_message_id(search_result)
+                if not emails or len(emails) == 0:
+                    logger.info("No recent unread emails found")
+                    return {"success": True, "action": "no_emails"}
+            except json.JSONDecodeError:
+                if "No messages" in search_result or "0 messages" in search_result.lower():
+                    logger.info("No recent inbox emails found")
+                    return {"success": True, "action": "no_emails"}
+                emails = []
+
+            # Get first email
+            if len(emails) > 0:
+                email_data = emails[0]
+                message_id = email_data.get("id") or email_data.get("message_id")
+                sender = email_data.get("from", "").lower()
+                subject = email_data.get("subject", "")
+                body_preview = email_data.get("body") or email_data.get("snippet", "")
+            else:
+                logger.warning("No emails in parsed result")
+                return {"success": True, "action": "no_parseable_emails"}
+
             if not message_id:
-                logger.warning("Could not extract message ID from search result")
+                logger.warning("Could not extract message ID from result")
                 return {"success": True, "action": "no_parseable_message"}
 
             if message_id in processed_ids:
@@ -338,38 +484,59 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
             save_processed_id(message_id)
             logger.info(f"Message {message_id} marked as processing")
 
-            # Get message content
-            logger.info(f"Getting content for message {message_id}...")
-            message_content = await mcp.call_tool("gmail.get", {
-                "messageId": message_id,
-                "format": "full"
-            })
+            # Get full message content if needed (from agent's inbox)
+            if not sender or not body_preview:
+                logger.info(f"Getting full content for message {message_id}...")
+                message_content = await mcp.call_tool("gmail_get_email_body_chunk", {
+                    "google_access_token": agent_access_token,
+                    "message_id": message_id
+                })
 
-            if not message_content:
-                logger.warning(f"Could not get content for message {message_id}")
-                return {"success": False, "error": "Failed to get message content"}
+                if message_content:
+                    try:
+                        content_data = json.loads(message_content)
+                        if not sender:
+                            sender = content_data.get("from", "").lower()
+                        if not subject:
+                            subject = content_data.get("subject", "")
+                        if not body_preview:
+                            body_preview = content_data.get("body", "")
+                    except json.JSONDecodeError:
+                        if not sender:
+                            sender = extract_sender_email(message_content)
+                        if not subject:
+                            subject = extract_subject(message_content)
+                        if not body_preview:
+                            body_preview = extract_body(message_content)
 
-            logger.info(f"Message content: {message_content[:500]}...")
+            # Extract sender email if we have a "Name <email>" format
+            if sender and '<' in sender:
+                match = re.search(r'<([^>]+)>', sender)
+                if match:
+                    sender_name = sender.split('<')[0].strip()
+                    sender = match.group(1).lower()
+                else:
+                    sender_name = None
+            else:
+                sender_name = None
 
-            sender = extract_sender_email(message_content)
             if not sender:
-                logger.warning("Could not extract sender from message")
+                logger.warning("Could not determine sender")
                 return {"success": False, "error": "Could not determine sender"}
 
-            sender_name = extract_sender_name(message_content)
             logger.info(f"Sender: {sender_name} <{sender}>")
 
             # Loop prevention: skip self-emails
-            if sender.lower() == assistant_email:
+            if sender == config["assistant_email"] or sender == config["agent_email"]:
                 logger.info(f"Sender is the assistant ({sender}), skipping to prevent loop")
                 return {"success": True, "action": "self_email_skipped", "sender": sender}
 
             # Authorization check
-            if sender.lower() not in authorized_emails:
-                logger.info(f"Sender {sender} not in authorized list, skipping reply")
+            if sender not in config["authorized_emails"]:
+                logger.info(f"Sender {sender} not in authorized list {config['authorized_emails']}, skipping reply")
                 return {"success": True, "action": "unauthorized_sender", "sender": sender}
 
-            original_subject = extract_subject(message_content) or ""
+            original_subject = subject or ""
             subject_lower = original_subject.lower()
 
             # Loop prevention: skip auto-replies
@@ -379,11 +546,11 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                     return {"success": True, "action": "auto_reply_skipped", "subject": original_subject}
 
             # Loop prevention: skip noreply addresses
-            if any(ind in sender.lower() for ind in ['noreply', 'no-reply', 'donotreply', 'mailer-daemon']):
+            if any(ind in sender for ind in ['noreply', 'no-reply', 'donotreply', 'mailer-daemon']):
                 logger.info(f"Sender {sender} appears to be a no-reply address, skipping")
                 return {"success": True, "action": "noreply_sender_skipped", "sender": sender}
 
-            email_body = extract_body(message_content)
+            email_body = body_preview or ""
             logger.info(f"Email body ({len(email_body)} chars): {email_body[:200]}...")
 
             if not original_subject:
@@ -397,20 +564,23 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                 sender_name=sender_name,
                 subject=original_subject,
                 body=email_body,
-                user_id=user_id
+                user_id=config["user_id"]
             )
 
             logger.info(f"AI response: {ai_response[:200]}...")
 
-            # Send reply
-            logger.info(f"Sending AI-generated reply to {sender}...")
-            send_result = await mcp.call_tool("gmail.send", {
+            # Send reply using AGENT token (sends FROM sabine@strugcity.com)
+            logger.info(f"Sending AI-generated reply to {sender} from agent account...")
+            send_result = await mcp.call_tool("gmail_send_email", {
+                "google_access_token": agent_access_token,
                 "to": sender,
                 "subject": reply_subject,
                 "body": ai_response
             })
 
-            if send_result and ("sent" in send_result.lower() or "message id" in send_result.lower() or "id" in send_result.lower()):
+            logger.info(f"Send result: {send_result}")
+
+            if send_result and ("success" in send_result.lower() or "sent" in send_result.lower() or "id" in send_result.lower()):
                 logger.info(f"AI response sent to {sender}")
                 return {
                     "success": True,
