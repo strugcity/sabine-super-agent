@@ -524,12 +524,3 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
     finally:
         if lock_fd is not None:
             release_lock(lock_fd)
-
-    except Exception as e:
-        logger.error(f"Error handling email notification: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
-
-    finally:
-        # Always release the lock
-        if lock_fd is not None:
-            release_lock(lock_fd)
