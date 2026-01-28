@@ -35,11 +35,9 @@ export async function POST(request: NextRequest) {
 
     console.log(`[Gmail Webhook] Notification received for ${emailAddress}, historyId: ${historyId}`);
 
-    // Check if this email address is authorized
-    if (!GMAIL_AUTHORIZED_EMAILS.includes(emailAddress.toLowerCase())) {
-      console.log(`[Gmail Webhook] Email address ${emailAddress} not in authorized list, ignoring`);
-      return NextResponse.json({ success: true, ignored: true });
-    }
+    // The emailAddress here is the MONITORED inbox (sabine@strugcity.com), not the sender.
+    // We forward all notifications to Railway, which will check if the SENDER is authorized.
+    // This allows Sabine's inbox to receive notifications about incoming emails.
 
     // Forward to Python agent with special instruction
     // Agent will use MCP tools to:
