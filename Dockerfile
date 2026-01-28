@@ -42,6 +42,11 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install workspace-mcp from npm (Node.js CLI for Google Workspace integration)
+# This is installed globally so npx can find and execute it
+RUN npm install -g @presto-ai/google-workspace-mcp && \
+    npm cache clean --force
+
 # Copy application code
 COPY lib/ ./lib/
 COPY scripts/ ./scripts/
