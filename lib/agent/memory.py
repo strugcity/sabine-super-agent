@@ -77,11 +77,11 @@ def get_llm() -> ChatAnthropic:
         if not ANTHROPIC_API_KEY:
             raise ValueError("ANTHROPIC_API_KEY must be set")
         _llm = ChatAnthropic(
-            model="claude-3-5-sonnet-latest",
+            model="claude-3-haiku-20240307",  # Use same model as core agent
             temperature=0.0,  # Deterministic extraction
             anthropic_api_key=ANTHROPIC_API_KEY,
         )
-        logger.info("✓ Claude 3.5 Sonnet initialized for entity extraction")
+        logger.info("✓ Claude 3 Haiku initialized for entity extraction")
     return _llm
 
 
@@ -397,7 +397,12 @@ async def store_memory(
         response = supabase.table("memories").insert(memory_dict).execute()
 
         if response.data and len(response.data) > 0:
-            created = Memory(**response.data[0])
+            memory_data = response.data[0]
+            # Supabase may return embedding as JSON string - parse it
+            if isinstance(memory_data.get('embedding'), str):
+                import json
+                memory_data['embedding'] = json.loads(memory_data['embedding'])
+            created = Memory(**memory_data)
             logger.info(
                 f"✓ Stored memory (ID: {created.id}) linked to {len(entity_ids)} entities")
             return created
