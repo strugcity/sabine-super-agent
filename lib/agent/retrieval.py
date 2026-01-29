@@ -87,11 +87,14 @@ async def search_similar_memories(
     try:
         supabase = get_supabase_client()
 
+        # Format embedding as pgvector-compatible string: "[0.1, 0.2, ...]"
+        pgvector_embedding = f"[{','.join(str(x) for x in query_embedding)}]"
+
         # Call the match_memories RPC function
         response = supabase.rpc(
             "match_memories",
             {
-                "query_embedding": query_embedding,
+                "query_embedding": pgvector_embedding,
                 "match_threshold": threshold,
                 "match_count": limit,
                 "user_id_filter": str(user_id) if user_id else None

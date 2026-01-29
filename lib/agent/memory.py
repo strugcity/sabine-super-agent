@@ -394,6 +394,11 @@ async def store_memory(
         memory_dict = memory_create.model_dump(exclude_none=True)
         memory_dict['entity_links'] = [str(eid) for eid in entity_ids]
 
+        # Format embedding as pgvector-compatible string: "[0.1, 0.2, ...]"
+        # Supabase/pgvector requires this format, not a raw Python list
+        if embedding:
+            memory_dict['embedding'] = f"[{','.join(str(x) for x in embedding)}]"
+
         response = supabase.table("memories").insert(memory_dict).execute()
 
         if response.data and len(response.data) > 0:
