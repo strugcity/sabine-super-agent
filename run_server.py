@@ -24,8 +24,9 @@ if __name__ == "__main__":
     load_dotenv(dotenv_path=env_path, override=True)
 
     # Get configuration
+    # Railway uses PORT env var (default 8080), fallback to API_PORT for local dev
     host = os.getenv("API_HOST", "0.0.0.0")
-    port = int(os.getenv("PORT") or os.getenv("API_PORT", "8001"))
+    port = int(os.getenv("PORT", os.getenv("API_PORT", "8080")))
     reload = os.getenv("UVICORN_RELOAD", "false").lower() == "true"
 
     print(f"Starting server on {host}:{port}")
