@@ -2,6 +2,15 @@
 
 Build a device-agnostic "Super Agent" that manages family logistics, complex tasks, and "Deep Context" (Custody Schedules) via SMS and Voice using Twilio.
 
+## ✨ What's New: Context Engine
+
+The agent now has **long-term memory**! It automatically:
+- 📝 **Remembers** every conversation (people, places, events, documents)
+- 🔍 **Retrieves** relevant context before responding
+- 🧠 **Learns** about your world through natural conversation
+
+👉 See [Context Engine Documentation](CONTEXT_ENGINE_QUICKREF.md) for details.
+
 ## ⚡ Quick Start
 
 ```bash
@@ -28,7 +37,7 @@ Visit:
 
 ## 🏗️ Architecture
 
-The Personal Super Agent uses a **dual-server architecture**:
+The Personal Super Agent uses a **dual-server architecture** with **Context Engine**:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -37,6 +46,10 @@ The Personal Super Agent uses a **dual-server architecture**:
 │                    Python FastAPI (Port 8000)           │
 │                    • LangGraph Agent                    │
 │                    • Claude 3.5 Sonnet                  │
+│                    • Context Engine (NEW!)              │
+│                      - Memory Ingestion                 │
+│                      - Vector Search                    │
+│                      - Entity Graph                     │
 │                    • Deep Context Injection             │
 │                    • Local Skills + MCP Tools           │
 │                            ↓                            │

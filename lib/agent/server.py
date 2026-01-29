@@ -15,6 +15,11 @@ Note: Railway sets PORT env var automatically. The server respects both
 PORT and API_PORT environment variables for flexibility.
 """
 
+from lib.agent.core import run_agent, run_agent_with_caching, create_agent, get_cache_metrics, reset_cache_metrics
+from lib.agent.registry import get_all_tools
+from lib.agent.gmail_handler import handle_new_email_notification
+from lib.agent.memory import ingest_user_message
+from lib.agent.retrieval import retrieve_context
 import asyncio
 import hmac
 import logging
@@ -24,19 +29,17 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Request, Depends, Header
+from fastapi import FastAPI, HTTPException, Request, Depends, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 import uvicorn
 
-# Add project root to path
+# Add project root to path BEFORE importing local modules
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from lib.agent.core import run_agent, run_agent_with_caching, create_agent, get_cache_metrics, reset_cache_metrics
-from lib.agent.registry import get_all_tools
-from lib.agent.gmail_handler import handle_new_email_notification
+# Now import local modules after path is set
 
 # Configure logging
 logging.basicConfig(
@@ -113,11 +116,13 @@ app.add_middleware(
 # Request/Response Models
 # =============================================================================
 
+
 class InvokeRequest(BaseModel):
     """Request body for /invoke endpoint."""
     message: str = Field(..., description="User message to send to the agent")
     user_id: str = Field(..., description="User UUID")
-    session_id: Optional[str] = Field(None, description="Conversation session ID")
+    session_id: Optional[str] = Field(
+        None, description="Conversation session ID")
     conversation_history: Optional[List[Dict[str, str]]] = Field(
         None,
         description="Previous conversation history"
@@ -144,6 +149,26 @@ class HealthResponse(BaseModel):
     version: str
     tools_loaded: int
     database_connected: bool
+
+
+class MemoryIngestRequest(BaseModel):
+    """Request body for /memory/ingest endpoint."""
+    user_id: str = Field(..., description="User UUID")
+    content: str = Field(..., description="Content to ingest as memory")
+    source: str = Field(
+        default="api", description="Source of the memory (sms, email, api, etc.)")
+
+
+class MemoryQueryRequest(BaseModel):
+    """Request body for /memory/query endpoint."""
+    user_id: str = Field(..., description="User UUID")
+    query: str = Field(..., description="Query to search for relevant context")
+    memory_threshold: Optional[float] = Field(
+        default=0.6, description="Similarity threshold (0-1)")
+    memory_limit: Optional[int] = Field(
+        default=5, description="Max memories to retrieve")
+    entity_limit: Optional[int] = Field(
+        default=10, description="Max entities to retrieve")
 
 
 # =============================================================================
@@ -220,7 +245,8 @@ async def health_check():
         )
     except Exception as e:
         logger.error(f"Health check failed: {e}")
-        raise HTTPException(status_code=503, detail=f"Service unhealthy: {str(e)}")
+        raise HTTPException(
+            status_code=503, detail=f"Service unhealthy: {str(e)}")
 
 
 @app.get("/tools")
@@ -246,46 +272,89 @@ async def list_tools():
         }
     except Exception as e:
         logger.error(f"Error listing tools: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to list tools: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to list tools: {str(e)}")
 
 
 @app.post("/invoke", response_model=InvokeResponse)
-async def invoke_agent(request: InvokeRequest, _: bool = Depends(verify_api_key)):
+async def invoke_agent(
+    request: InvokeRequest,
+    background_tasks: BackgroundTasks,
+    _: bool = Depends(verify_api_key)
+):
     """
     Invoke the Personal Super Agent with a user message.
 
     This is the main endpoint that the Next.js proxy calls.
     It runs the LangGraph agent and returns the response.
 
+    Phase 4 Integration: Context Engine
+    - Retrieves relevant memories and entities before generating response
+    - Ingests the user message in the background after response is sent
+
     Args:
         request: InvokeRequest with message, user_id, session_id, etc.
                  Set use_caching=True for faster responses with prompt caching
+        background_tasks: FastAPI background tasks for async ingestion
 
     Returns:
         InvokeResponse with agent's reply
     """
-    logger.info(f"Received invoke request for user {request.user_id} (caching: {request.use_caching})")
+    logger.info(
+        f"Received invoke request for user {request.user_id} (caching: {request.use_caching})")
     logger.info(f"Message: {request.message}")
 
     try:
         # Generate session ID if not provided
         session_id = request.session_id or f"session-{request.user_id[:8]}"
 
+        # PHASE 4: Retrieve context from Context Engine
+        try:
+            from uuid import UUID
+            retrieved_context = await retrieve_context(
+                user_id=UUID(request.user_id),
+                query=request.message
+            )
+            logger.info(
+                f"✓ Retrieved context ({len(retrieved_context)} chars)")
+
+            # Prepend context to the message for the agent
+            # The agent will receive both the context and the user's query
+            enhanced_message = f"Context from Memory:\n{retrieved_context}\n\nUser Query: {request.message}"
+
+        except Exception as e:
+            logger.warning(
+                f"Context retrieval failed, continuing without: {e}")
+            enhanced_message = request.message
+            retrieved_context = None
+
         # Run the agent (with optional caching)
         result = await run_agent(
             user_id=request.user_id,
             session_id=session_id,
-            user_message=request.message,
+            user_message=enhanced_message,  # Use enhanced message with context
             conversation_history=request.conversation_history,
             use_caching=request.use_caching
         )
+
+        # PHASE 4: Ingest message as background task (after response)
+        # This prevents adding latency to the user's response
+        if result["success"]:
+            from uuid import UUID
+            background_tasks.add_task(
+                ingest_user_message,
+                user_id=UUID(request.user_id),
+                content=request.message,  # Ingest original message, not enhanced
+                source="api"
+            )
+            logger.info("✓ Queued message ingestion as background task")
 
         if result["success"]:
             # Log cache metrics if available
             cache_info = result.get("cache_metrics", {})
             if cache_info.get("status"):
                 logger.info(f"Cache: {cache_info.get('status')} | "
-                           f"Read: {cache_info.get('cache_read_tokens', 0)} tokens")
+                            f"Read: {cache_info.get('cache_read_tokens', 0)} tokens")
 
             logger.info(f"Agent response: {result['response'][:100]}...")
             return InvokeResponse(
@@ -370,7 +439,8 @@ async def invoke_agent_cached(request: InvokeRequest, _: bool = Depends(verify_a
             }
 
     except Exception as e:
-        logger.error(f"Exception in cached invoke endpoint: {e}", exc_info=True)
+        logger.error(
+            f"Exception in cached invoke endpoint: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to invoke cached agent: {str(e)}"
@@ -563,7 +633,8 @@ async def renew_gmail_watch(request: GmailWatchRenewRequest, _: bool = Depends(v
         # Run the setup script
         script_path = project_root / "scripts" / "setup_gmail_watch.py"
         result = subprocess.run(
-            [sys.executable, str(script_path), "--webhook-url", request.webhookUrl],
+            [sys.executable, str(script_path),
+             "--webhook-url", request.webhookUrl],
             capture_output=True,
             text=True,
             timeout=60
@@ -598,6 +669,135 @@ async def renew_gmail_watch(request: GmailWatchRenewRequest, _: bool = Depends(v
 
 
 # =============================================================================
+# Context Engine Endpoints (Phase 4)
+# =============================================================================
+
+@app.post("/memory/ingest")
+async def memory_ingest_endpoint(
+    request: MemoryIngestRequest,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Manually trigger memory ingestion (for testing/dashboard).
+
+    This endpoint allows explicit ingestion of content into the Context Engine.
+    Normally ingestion happens automatically in the background after /invoke.
+
+    Args:
+        request: MemoryIngestRequest with user_id, content, and optional source
+
+    Returns:
+        {
+            "success": bool,
+            "message": str,
+            "entities_created": int,
+            "entities_updated": int,
+            "memory_id": str (UUID)
+        }
+    """
+    logger.info(f"Manual memory ingestion for user {request.user_id}")
+    logger.info(
+        f"Content length: {len(request.content)} chars, Source: {request.source}")
+
+    try:
+        from uuid import UUID
+        result = await ingest_user_message(
+            user_id=UUID(request.user_id),
+            content=request.content,
+            source=request.source or "manual"
+        )
+
+        logger.info(f"✓ Ingestion complete: {result.get('entities_created', 0)} entities created, "
+                    f"{result.get('entities_updated', 0)} updated")
+
+        return {
+            "success": True,
+            "message": "Memory ingestion completed successfully",
+            "entities_created": result.get("entities_created", 0),
+            "entities_updated": result.get("entities_updated", 0),
+            "memory_id": str(result.get("memory_id")) if result.get("memory_id") else None
+        }
+
+    except Exception as e:
+        logger.error(f"Memory ingestion failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Memory ingestion failed: {str(e)}"
+        )
+
+
+@app.post("/memory/query")
+async def memory_query_endpoint(
+    request: MemoryQueryRequest,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Debug endpoint to test context retrieval.
+
+    Returns the formatted context string that would be injected
+    into the agent's prompt for a given query.
+
+    Args:
+        request: MemoryQueryRequest with user_id, query, and optional thresholds/limits
+
+    Returns:
+        {
+            "success": bool,
+            "context": str (formatted context),
+            "context_length": int (characters),
+            "metadata": {
+                "memories_found": int,
+                "entities_found": int,
+                "query": str
+            }
+        }
+    """
+    logger.info(f"Memory query for user {request.user_id}")
+    logger.info(f"Query: {request.query}")
+
+    try:
+        from uuid import UUID
+        context = await retrieve_context(
+            user_id=UUID(request.user_id),
+            query=request.query,
+            memory_threshold=request.memory_threshold or 0.7,
+            memory_limit=request.memory_limit or 10,
+            entity_limit=request.entity_limit or 20
+        )
+
+        # Parse the context to extract metadata
+        memories_section = context.split("[RELATED ENTITIES]")[
+            0] if "[RELATED ENTITIES]" in context else context
+        entities_section = context.split("[RELATED ENTITIES]")[
+            1] if "[RELATED ENTITIES]" in context else ""
+
+        memories_count = memories_section.count(
+            "Memory:") if "Memory:" in memories_section else 0
+        entities_count = entities_section.count("•") if entities_section else 0
+
+        logger.info(
+            f"✓ Retrieved {memories_count} memories, {entities_count} entities")
+
+        return {
+            "success": True,
+            "context": context,
+            "context_length": len(context),
+            "metadata": {
+                "memories_found": memories_count,
+                "entities_found": entities_count,
+                "query": request.query
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Memory query failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Memory query failed: {str(e)}"
+        )
+
+
+# =============================================================================
 # Startup/Shutdown Events
 # =============================================================================
 
@@ -614,11 +814,13 @@ async def startup_event():
     load_dotenv(dotenv_path=env_path, override=True)
 
     # Check required environment variables
-    required_vars = ["ANTHROPIC_API_KEY", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]
+    required_vars = ["ANTHROPIC_API_KEY",
+                     "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]
     missing_vars = [var for var in required_vars if not os.getenv(var)]
 
     if missing_vars:
-        logger.warning(f"Missing environment variables: {', '.join(missing_vars)}")
+        logger.warning(
+            f"Missing environment variables: {', '.join(missing_vars)}")
         logger.warning("Some functionality may be limited")
     else:
         logger.info("✓ All required environment variables present")
