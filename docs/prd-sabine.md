@@ -37,6 +37,15 @@ Sabine is a context-aware personal assistant agent accessible via SMS (Twilio). 
 * **Database:** Supabase (PostgreSQL + pgvector).
 * **Protocol:** Model Context Protocol (MCP) to bridge Python Agent <-> Google Tools.
 
+#### Strategic Architecture Decision: Monolithic Brain
+**Decision:** We are adopting a **"Monolithic Brain"** architecture using Supabase for both relational data (Postgres) and semantic search (pgvector).
+
+**Rationale:** To enable unified queries and reduce synchronization drift between distinct graph and vector databases. This approach provides:
+- **Unified Storage:** Single source of truth for both structured entities and unstructured memories
+- **Transactional Consistency:** Atomic updates across relational and vector data
+- **Simplified Operations:** Reduced infrastructure complexity and maintenance overhead
+- **Query Efficiency:** Native SQL joins between entities and their vector embeddings
+
 ### 3.2 Data Flow
 1.  **Input:** User sends SMS -> Twilio -> Next.js Webhook.
 2.  **Routing:** Next.js pushes message to Python Agent (via Queue or HTTP).
