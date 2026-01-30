@@ -204,11 +204,14 @@ def convert_local_skill_to_tool(skill: LoadedSkill) -> StructuredTool:
     async def async_wrapper(**kwargs) -> str:
         """Async wrapper for skill handler."""
         try:
+            logger.info(f"Executing skill {skill.name} with args: {kwargs}")
             result = skill.handler(kwargs)
 
             # Handle async handlers
             if asyncio.iscoroutine(result):
                 result = await result
+
+            logger.info(f"Skill {skill.name} returned: {type(result)} - status={result.get('status') if isinstance(result, dict) else 'N/A'}")
 
             # Convert result to string
             if isinstance(result, dict):
@@ -218,6 +221,7 @@ def convert_local_skill_to_tool(skill: LoadedSkill) -> StructuredTool:
                 # For error results, include full details
                 if result.get("status") == "error":
                     error_msg = result.get("error", result.get("message", "Unknown error"))
+                    logger.warning(f"Skill {skill.name} returned error: {error_msg}")
                     return f"ERROR: {error_msg}"
                 # For other results with status/message, show full JSON to preserve data
                 return json.dumps(result, indent=2)
@@ -225,7 +229,7 @@ def convert_local_skill_to_tool(skill: LoadedSkill) -> StructuredTool:
             return str(result)
 
         except Exception as e:
-            logger.error(f"Error executing skill {skill.name}: {e}")
+            logger.error(f"Error executing skill {skill.name}: {e}", exc_info=True)
             return f"Error: {str(e)}"
 
     # Create args_schema from manifest for proper LangChain integration
