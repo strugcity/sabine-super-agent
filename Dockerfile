@@ -51,6 +51,7 @@ RUN npm install -g @presto-ai/google-workspace-mcp && \
 
 # Copy application code
 COPY lib/ ./lib/
+COPY app/ ./app/
 COPY scripts/ ./scripts/
 COPY run_server.py ./run_server.py
 
@@ -74,6 +75,7 @@ RUN chmod +x /app/setup-mcp-credentials.sh /app/deploy/start-mcp-server.sh
 
 # Environment variables (defaults, override in Railway)
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 ENV API_HOST=0.0.0.0
 # MCP server uses Stdio transport (direct subprocess communication via stdin/stdout)
 # The start-mcp-server.sh wrapper script launches workspace-mcp via npx
