@@ -70,15 +70,17 @@ async def execute(params: Dict[str, Any]) -> Dict[str, Any]:
 
         logger.info(f"Creating E2B sandbox (timeout: {timeout}s)")
 
-        # Create sandbox with timeout
-        with Sandbox(api_key=api_key, timeout=timeout) as sandbox:
-            results = {
-                "stdout": [],
-                "stderr": [],
-                "results": [],
-                "errors": []
-            }
+        results = {
+            "stdout": [],
+            "stderr": [],
+            "results": [],
+            "errors": []
+        }
 
+        # Create sandbox - use async context manager
+        sandbox = Sandbox(api_key=api_key, timeout=timeout)
+
+        try:
             # Install packages if requested
             if install_packages:
                 logger.info(f"Installing packages: {install_packages}")
@@ -95,15 +97,23 @@ async def execute(params: Dict[str, Any]) -> Dict[str, Any]:
             logger.info(f"Executing code ({len(code)} chars)")
             execution = sandbox.run_code(code)
 
-            # Collect stdout
-            if execution.logs and execution.logs.stdout:
-                results["stdout"] = execution.logs.stdout
-                logger.debug(f"Stdout: {execution.logs.stdout}")
+            # Collect stdout - handle both list and single string formats
+            if execution.logs:
+                if hasattr(execution.logs, 'stdout'):
+                    stdout = execution.logs.stdout
+                    if isinstance(stdout, list):
+                        results["stdout"] = stdout
+                    elif stdout:
+                        results["stdout"] = [stdout]
+                    logger.debug(f"Stdout: {results['stdout']}")
 
-            # Collect stderr
-            if execution.logs and execution.logs.stderr:
-                results["stderr"] = execution.logs.stderr
-                logger.debug(f"Stderr: {execution.logs.stderr}")
+                if hasattr(execution.logs, 'stderr'):
+                    stderr = execution.logs.stderr
+                    if isinstance(stderr, list):
+                        results["stderr"] = stderr
+                    elif stderr:
+                        results["stderr"] = [stderr]
+                    logger.debug(f"Stderr: {results['stderr']}")
 
             # Collect results (for things like plots, dataframes, etc.)
             if execution.results:
@@ -112,14 +122,14 @@ async def execute(params: Dict[str, Any]) -> Dict[str, Any]:
                         "type": type(result).__name__
                     }
                     # Handle different result types
-                    if hasattr(result, "text"):
+                    if hasattr(result, "text") and result.text:
                         result_item["text"] = result.text
-                    if hasattr(result, "html"):
-                        result_item["html"] = result.html
-                    if hasattr(result, "png"):
-                        result_item["png"] = "(base64 image data)"
-                    if hasattr(result, "data"):
-                        result_item["data"] = str(result.data)[:1000]  # Truncate large data
+                    if hasattr(result, "html") and result.html:
+                        result_item["html"] = result.html[:500] if len(result.html) > 500 else result.html
+                    if hasattr(result, "png") and result.png:
+                        result_item["png"] = "(base64 image data available)"
+                    if hasattr(result, "data") and result.data:
+                        result_item["data"] = str(result.data)[:1000]
                     results["results"].append(result_item)
 
             # Check for execution errors
@@ -136,18 +146,32 @@ async def execute(params: Dict[str, Any]) -> Dict[str, Any]:
                 }
 
             logger.info("Code execution completed successfully")
+
+            # Format output nicely
+            output_summary = ""
+            if results["stdout"]:
+                output_summary = "\n".join(results["stdout"])
+
             return {
                 "status": "success",
                 "message": "Code executed successfully",
+                "output": output_summary,
                 **results
             }
 
-    except ImportError:
-        logger.error("e2b-code-interpreter package not installed")
+        finally:
+            # Clean up sandbox
+            try:
+                sandbox.kill()
+            except Exception as cleanup_error:
+                logger.warning(f"Error cleaning up sandbox: {cleanup_error}")
+
+    except ImportError as e:
+        logger.error(f"e2b-code-interpreter package import error: {e}")
         return {
             "status": "error",
-            "error": "e2b-code-interpreter package not installed",
-            "message": "Run: pip install e2b-code-interpreter"
+            "error": "e2b-code-interpreter package not installed or import error",
+            "message": f"Run: pip install e2b-code-interpreter. Error: {e}"
         }
 
     except TimeoutError:
@@ -159,9 +183,10 @@ async def execute(params: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     except Exception as e:
-        logger.error(f"E2B sandbox error: {e}")
+        logger.error(f"E2B sandbox error: {e}", exc_info=True)
         return {
             "status": "error",
             "error": str(e),
+            "error_type": type(e).__name__,
             "message": "An unexpected error occurred during sandbox execution"
         }
