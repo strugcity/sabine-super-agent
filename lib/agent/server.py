@@ -412,11 +412,12 @@ async def mcp_diagnostics():
 
 
 @app.get("/e2b/test")
-async def test_e2b_sandbox():
+async def test_e2b_sandbox(code: str = "print('Hello from E2B!')"):
     """
     Diagnostic endpoint to test E2B sandbox directly.
 
     Returns detailed error information for debugging.
+    Pass ?code=... to execute custom code.
     """
     import os
 
@@ -432,7 +433,7 @@ async def test_e2b_sandbox():
         from lib.skills.e2b_sandbox.handler import execute
 
         result = await execute({
-            "code": "print('Hello from E2B!')",
+            "code": code,
             "timeout": 30
         })
 
@@ -440,6 +441,7 @@ async def test_e2b_sandbox():
             "success": result.get("status") == "success",
             "key_present": True,
             "key_prefix": e2b_key[:10] + "...",
+            "code_executed": code,
             "result": result
         }
     except Exception as e:
