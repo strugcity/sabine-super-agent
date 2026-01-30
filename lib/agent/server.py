@@ -22,6 +22,7 @@ from lib.agent.memory import ingest_user_message
 from lib.agent.retrieval import retrieve_context
 from lib.agent.parsing import parse_file, is_supported_mime_type, SUPPORTED_MIME_TYPES
 from lib.agent.scheduler import get_scheduler, SabineScheduler
+from app.services.wal import WALService
 import asyncio
 import hmac
 import logging
@@ -222,6 +223,105 @@ async def cache_reset():
     }
 
 
+# =============================================================================
+# Write-Ahead Log (WAL) Endpoints - Sabine 2.0
+# =============================================================================
+
+@app.get("/wal/stats")
+async def wal_stats(_: bool = Depends(verify_api_key)):
+    """
+    Get Write-Ahead Log statistics.
+
+    Returns counts by status (pending, processing, completed, failed).
+    Useful for monitoring the Fast Path -> Slow Path pipeline.
+    """
+    try:
+        wal_service = WALService()
+        stats = await wal_service.get_stats()
+        return {
+            "success": True,
+            "stats": stats,
+            "description": {
+                "pending": "Awaiting Slow Path processing",
+                "processing": "Currently being processed by worker",
+                "completed": "Successfully processed and consolidated",
+                "failed": "Processing failed after max retries (requires manual review)"
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting WAL stats: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get WAL stats: {str(e)}")
+
+
+@app.get("/wal/pending")
+async def wal_pending(limit: int = 10, _: bool = Depends(verify_api_key)):
+    """
+    Get pending WAL entries (for debugging/monitoring).
+
+    Args:
+        limit: Maximum number of entries to return (default: 10)
+
+    Returns:
+        List of pending WAL entries with their payloads.
+    """
+    try:
+        wal_service = WALService()
+        entries = await wal_service.get_pending_entries(limit=limit)
+        return {
+            "success": True,
+            "count": len(entries),
+            "entries": [
+                {
+                    "id": str(entry.id),
+                    "created_at": entry.created_at.isoformat(),
+                    "status": entry.status,
+                    "retry_count": entry.retry_count,
+                    "payload_preview": str(entry.raw_payload.get("message", ""))[:100]
+                }
+                for entry in entries
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error getting pending WAL entries: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get pending entries: {str(e)}")
+
+
+@app.get("/wal/failed")
+async def wal_failed(limit: int = 10, _: bool = Depends(verify_api_key)):
+    """
+    Get permanently failed WAL entries (requires manual review).
+
+    Args:
+        limit: Maximum number of entries to return (default: 10)
+
+    Returns:
+        List of failed WAL entries with error details.
+    """
+    try:
+        wal_service = WALService()
+        entries = await wal_service.get_failed_entries(limit=limit)
+        return {
+            "success": True,
+            "count": len(entries),
+            "entries": [
+                {
+                    "id": str(entry.id),
+                    "created_at": entry.created_at.isoformat(),
+                    "retry_count": entry.retry_count,
+                    "last_error": entry.last_error,
+                    "payload_preview": str(entry.raw_payload.get("message", ""))[:100]
+                }
+                for entry in entries
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error getting failed WAL entries: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get failed entries: {str(e)}")
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """
@@ -309,6 +409,30 @@ async def invoke_agent(
     try:
         # Generate session ID if not provided
         session_id = request.session_id or f"session-{request.user_id[:8]}"
+
+        # SABINE 2.0: Write-Ahead Log (Fast Path)
+        # Capture the interaction BEFORE processing for durability
+        wal_entry_id = None
+        try:
+            from datetime import datetime, timezone
+            wal_service = WALService()
+            wal_payload = {
+                "user_id": request.user_id,
+                "message": request.message,
+                "source": "api_invoke",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "session_id": session_id,
+                "metadata": {
+                    "use_caching": request.use_caching,
+                    "has_conversation_history": bool(request.conversation_history),
+                }
+            }
+            wal_entry = await wal_service.create_entry(wal_payload)
+            wal_entry_id = wal_entry.id
+            logger.info(f"✓ WAL entry created: {wal_entry_id}")
+        except Exception as wal_error:
+            # WAL failure should not block the request - log and continue
+            logger.warning(f"WAL write failed (non-blocking): {wal_error}")
 
         # PHASE 4: Retrieve context from Context Engine
         try:
