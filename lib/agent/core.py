@@ -29,8 +29,124 @@ from langgraph.prebuilt import create_react_agent
 from supabase import create_client, Client
 
 from .registry import get_all_tools
+from .models import RoleManifest
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Role-Based Persona Loading
+# =============================================================================
+
+# Cache for loaded role manifests (avoid re-reading files)
+_role_manifest_cache: Dict[str, RoleManifest] = {}
+
+# Path to role definition files
+ROLES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "docs", "roles")
+
+
+def load_role_manifest(role_id: str) -> Optional[RoleManifest]:
+    """
+    Load a role manifest from docs/roles/{role_id}.md.
+
+    Role manifests define specialized agent personas with specific skills,
+    responsibilities, and instructions. The markdown file content becomes
+    the agent's system prompt prefix.
+
+    Args:
+        role_id: The role identifier (e.g., "backend-architect-sabine", "SABINE_ARCHITECT")
+
+    Returns:
+        RoleManifest if found, None otherwise
+
+    Example:
+        manifest = load_role_manifest("backend-architect-sabine")
+        # Returns RoleManifest with title="Lead Python & Systems Engineer"
+    """
+    # Check cache first
+    if role_id in _role_manifest_cache:
+        logger.debug(f"Role manifest cache hit: {role_id}")
+        return _role_manifest_cache[role_id]
+
+    # Build file path
+    role_file = os.path.join(ROLES_DIR, f"{role_id}.md")
+
+    if not os.path.exists(role_file):
+        logger.warning(f"Role file not found: {role_file}")
+        return None
+
+    try:
+        with open(role_file, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # Extract title from first lines
+        # Format 1: "# SYSTEM ROLE: backend-architect-sabine" + "**Identity:** You are the Lead..."
+        # Format 2: "# ROLE: Senior Agentic Architect (Sabine 2.0)"
+        title = role_id  # Default to role_id if we can't extract
+        lines = content.split("\n")
+
+        for line in lines:
+            # Check for Identity line (Format 1)
+            if line.startswith("**Identity:**"):
+                # Extract role title from "**Identity:** You are the Lead Python & Systems Engineer..."
+                identity_text = line.replace("**Identity:**", "").strip()
+                # Try to extract the title part before "for Project"
+                if " for " in identity_text:
+                    title = identity_text.split(" for ")[0].replace("You are the ", "").strip()
+                else:
+                    title = identity_text.replace("You are the ", "").strip()
+                break
+            # Check for Role header (Format 2)
+            elif line.startswith("# ROLE:"):
+                title = line.replace("# ROLE:", "").strip()
+                break
+            elif line.startswith("# SYSTEM ROLE:"):
+                # Continue looking for Identity line
+                continue
+
+        manifest = RoleManifest(
+            role_id=role_id,
+            title=title,
+            instructions=content,
+            allowed_tools=[],  # Future: parse from file or config
+            model_preference=None  # Future: parse from file or config
+        )
+
+        # Cache the manifest
+        _role_manifest_cache[role_id] = manifest
+        logger.info(f"Loaded role manifest: {role_id} ({title})")
+
+        return manifest
+
+    except Exception as e:
+        logger.error(f"Error loading role manifest {role_id}: {e}")
+        return None
+
+
+def get_available_roles() -> List[str]:
+    """
+    List all available role IDs from docs/roles/*.md files.
+
+    Returns:
+        List of role IDs (without .md extension)
+    """
+    if not os.path.exists(ROLES_DIR):
+        logger.warning(f"Roles directory not found: {ROLES_DIR}")
+        return []
+
+    roles = []
+    for filename in os.listdir(ROLES_DIR):
+        if filename.endswith(".md"):
+            role_id = filename[:-3]  # Remove .md extension
+            roles.append(role_id)
+
+    return sorted(roles)
+
+
+def clear_role_manifest_cache():
+    """Clear the role manifest cache (useful for development/testing)."""
+    global _role_manifest_cache
+    _role_manifest_cache = {}
 
 
 # =============================================================================
@@ -244,11 +360,12 @@ async def load_deep_context(user_id: str) -> Dict[str, Any]:
     return context
 
 
-def build_static_context(deep_context: Dict[str, Any]) -> str:
+def build_static_context(deep_context: Dict[str, Any], role: Optional[str] = None) -> str:
     """
     Build the STATIC portion of system prompt (cacheable).
 
     This content changes infrequently and benefits from prompt caching:
+    - Role-specific identity (if role provided)
     - Agent identity and capabilities
     - User rules and triggers
     - Custody schedule
@@ -257,6 +374,7 @@ def build_static_context(deep_context: Dict[str, Any]) -> str:
 
     Args:
         deep_context: The loaded deep context
+        role: Optional role ID to load specific persona (e.g., "backend-architect-sabine")
 
     Returns:
         Static context string (to be cached)
@@ -267,7 +385,26 @@ def build_static_context(deep_context: Dict[str, Any]) -> str:
     custody_state = deep_context.get("custody_state", {})
     user_config = deep_context.get("user_config", {})
 
-    prompt = f"""You are the Personal Super Agent, an AI assistant specialized in managing family logistics, complex tasks, and deep contextual information.
+    # Start with role-specific instructions if a role is provided
+    prompt = ""
+    role_manifest = None
+    if role:
+        role_manifest = load_role_manifest(role)
+        if role_manifest:
+            prompt += f"""# ROLE-SPECIFIC INSTRUCTIONS
+
+{role_manifest.instructions}
+
+---
+# SABINE CORE CAPABILITIES (Available to all roles)
+---
+
+"""
+            logger.info(f"Injected role instructions for: {role} ({role_manifest.title})")
+        else:
+            logger.warning(f"Role '{role}' not found, using default identity")
+
+    prompt += f"""You are the Personal Super Agent, an AI assistant specialized in managing family logistics, complex tasks, and deep contextual information.
 
 # YOUR IDENTITY
 - You have access to both internal skills and external integrations
@@ -731,7 +868,8 @@ async def create_agent(
     user_id: str,
     session_id: str,
     model_name: str = "claude-3-haiku-20240307",
-    enable_caching: bool = True
+    enable_caching: bool = True,
+    role: Optional[str] = None
 ) -> tuple[Any, Dict[str, Any]]:
     """
     Create a Personal Super Agent instance with full context.
@@ -739,19 +877,22 @@ async def create_agent(
     This function:
     1. Loads all available tools (local + MCP)
     2. Loads deep context for the user
-    3. Builds the system prompt (with caching support)
-    4. Creates a LangGraph ReAct agent
+    3. Loads role-specific persona if provided
+    4. Builds the system prompt (with caching support)
+    5. Creates a LangGraph ReAct agent
 
     Args:
         user_id: The user's UUID
         session_id: The conversation session ID
         model_name: The Anthropic model to use (default: Claude 3 Haiku)
         enable_caching: Whether to enable prompt caching (default: True)
+        role: Optional role ID for specialized persona (e.g., "backend-architect-sabine")
 
     Returns:
         Tuple of (agent, deep_context)
     """
-    logger.info(f"Creating agent for user {user_id}, session {session_id}")
+    role_info = f", role={role}" if role else ""
+    logger.info(f"Creating agent for user {user_id}, session {session_id}{role_info}")
 
     # Load all tools
     tools = await get_all_tools()
@@ -762,8 +903,15 @@ async def create_agent(
     context_hash = get_context_hash(deep_context)
     logger.info(f"Loaded deep context for user {user_id} (hash: {context_hash})")
 
-    # Build system prompt components
-    static_prompt = build_static_context(deep_context)
+    # Store role in deep_context for tracking
+    if role:
+        deep_context["_role"] = role
+        role_manifest = load_role_manifest(role)
+        if role_manifest:
+            deep_context["_role_title"] = role_manifest.title
+
+    # Build system prompt components (with role injection if provided)
+    static_prompt = build_static_context(deep_context, role=role)
     dynamic_prompt = build_dynamic_context(deep_context)
 
     # Create LLM with caching support
@@ -963,7 +1111,8 @@ async def run_agent(
     session_id: str,
     user_message: str,
     conversation_history: Optional[List[Dict[str, str]]] = None,
-    use_caching: bool = False
+    use_caching: bool = False,
+    role: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Run the Personal Super Agent with a user message.
@@ -975,6 +1124,7 @@ async def run_agent(
         conversation_history: Optional previous conversation history
         use_caching: If True, use direct API with prompt caching (default: False)
                     Note: Caching mode doesn't support tool execution loops yet
+        role: Optional role ID for specialized persona (e.g., "backend-architect-sabine")
 
     Returns:
         Dictionary with agent response and metadata
@@ -992,8 +1142,8 @@ async def run_agent(
     start_time = time.time()
 
     try:
-        # Create agent
-        agent, deep_context = await create_agent(user_id, session_id)
+        # Create agent (with optional role for specialized persona)
+        agent, deep_context = await create_agent(user_id, session_id, role=role)
 
         # Build message history
         messages: List[BaseMessage] = []
@@ -1023,7 +1173,7 @@ async def run_agent(
         else:
             response_text = "I apologize, but I couldn't generate a response."
 
-        return {
+        response_data = {
             "success": True,
             "response": response_text,
             "user_id": user_id,
@@ -1035,6 +1185,13 @@ async def run_agent(
             "cache_metrics": deep_context.get("_cache_info", {})
         }
 
+        # Include role info in response if a role was used
+        if role:
+            response_data["role"] = deep_context.get("_role")
+            response_data["role_title"] = deep_context.get("_role_title")
+
+        return response_data
+
     except Exception as e:
         logger.error(f"Error running agent: {e}")
         return {
@@ -1042,6 +1199,7 @@ async def run_agent(
             "error": str(e),
             "user_id": user_id,
             "session_id": session_id,
+            "role": role,
             "timestamp": datetime.now().isoformat()
         }
 

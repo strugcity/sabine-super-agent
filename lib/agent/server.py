@@ -134,6 +134,11 @@ class InvokeRequest(BaseModel):
         False,
         description="Use direct API with prompt caching (faster, but no tool execution loops)"
     )
+    role: Optional[str] = Field(
+        None,
+        description="Role ID for specialized persona (e.g., 'backend-architect-sabine'). "
+                    "See GET /roles for available roles."
+    )
 
 
 class InvokeResponse(BaseModel):
@@ -144,6 +149,8 @@ class InvokeResponse(BaseModel):
     session_id: str
     timestamp: str
     error: Optional[str] = None
+    role: Optional[str] = None
+    role_title: Optional[str] = None
 
 
 class HealthResponse(BaseModel):
@@ -404,6 +411,44 @@ async def mcp_diagnostics():
         }
 
 
+@app.get("/roles")
+async def list_roles():
+    """
+    List all available roles for specialized agent personas.
+
+    Roles are defined in docs/roles/*.md files and provide specialized
+    system prompts for different agent behaviors (architect, backend, frontend, etc.).
+
+    Returns role IDs and titles that can be passed to POST /invoke with the 'role' parameter.
+    """
+    try:
+        from .core import get_available_roles, load_role_manifest
+
+        role_ids = get_available_roles()
+        roles = []
+
+        for role_id in role_ids:
+            manifest = load_role_manifest(role_id)
+            if manifest:
+                roles.append({
+                    "role_id": manifest.role_id,
+                    "title": manifest.title,
+                    "allowed_tools": manifest.allowed_tools or "all",
+                    "model_preference": manifest.model_preference
+                })
+
+        return {
+            "success": True,
+            "count": len(roles),
+            "roles": roles,
+            "usage": "Pass 'role' parameter to POST /invoke to use a specific persona"
+        }
+    except Exception as e:
+        logger.error(f"Error listing roles: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to list roles: {str(e)}")
+
+
 @app.post("/invoke", response_model=InvokeResponse)
 async def invoke_agent(
     request: InvokeRequest,
@@ -480,13 +525,14 @@ async def invoke_agent(
             enhanced_message = request.message
             retrieved_context = None
 
-        # Run the agent (with optional caching)
+        # Run the agent (with optional caching and role-based persona)
         result = await run_agent(
             user_id=request.user_id,
             session_id=session_id,
             user_message=enhanced_message,  # Use enhanced message with context
             conversation_history=request.conversation_history,
-            use_caching=request.use_caching
+            use_caching=request.use_caching,
+            role=request.role  # Pass role for specialized persona
         )
 
         # PHASE 4: Ingest message as background task (after response)
@@ -514,7 +560,9 @@ async def invoke_agent(
                 response=result["response"],
                 user_id=request.user_id,
                 session_id=session_id,
-                timestamp=result["timestamp"]
+                timestamp=result["timestamp"],
+                role=result.get("role"),
+                role_title=result.get("role_title")
             )
         else:
             logger.error(f"Agent failed: {result.get('error')}")
@@ -524,7 +572,8 @@ async def invoke_agent(
                 user_id=request.user_id,
                 session_id=session_id,
                 timestamp=result["timestamp"],
-                error=result.get("error")
+                error=result.get("error"),
+                role=result.get("role")
             )
 
     except Exception as e:
