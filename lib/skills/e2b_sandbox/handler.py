@@ -78,10 +78,14 @@ async def execute(params: Dict[str, Any]) -> Dict[str, Any]:
         }
 
         # Create sandbox - SDK reads E2B_API_KEY from environment automatically
-        # timeout is in seconds for the sandbox lifetime
-        sandbox = Sandbox(timeout=timeout)
+        # No constructor args in latest SDK - use set_timeout after creation
+        sandbox = Sandbox()
 
         try:
+            # Set timeout after creation if method exists
+            if hasattr(sandbox, 'set_timeout'):
+                sandbox.set_timeout(timeout)
+
             # Install packages if requested
             if install_packages:
                 logger.info(f"Installing packages: {install_packages}")
