@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { EntityCard } from '@/components/EntityCard';
 import { MemoryStream } from '@/components/MemoryStream';
+import { DashboardHeader } from '@/components/DashboardHeader';
 import { Entity, Memory, DomainEnum, EntitiesByDomain } from '@/lib/types/database';
 
 async function getEntities(): Promise<EntitiesByDomain> {
@@ -69,31 +70,11 @@ export default async function MemoryDashboard() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold text-gray-900">
-                Memory Dashboard
-              </h1>
-              <p className="mt-2 text-sm text-gray-600">
-                Context Engine - Entities & Memories
-              </p>
-            </div>
-            <div className="flex gap-4">
-              <div className="text-center">
-                <div className="text-2xl font-bold text-gray-900">{totalEntities}</div>
-                <div className="text-xs text-gray-600">Entities</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold text-gray-900">{memories.length}</div>
-                <div className="text-xs text-gray-600">Memories</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </header>
+      {/* Header with New Entity button */}
+      <DashboardHeader
+        totalEntities={totalEntities}
+        totalMemories={memories.length}
+      />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Entities Section */}
