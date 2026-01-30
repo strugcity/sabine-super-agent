@@ -65,6 +65,7 @@ async def execute(params: Dict[str, Any]) -> Dict[str, Any]:
 
     install_packages = params.get("install_packages", [])
 
+    sandbox = None
     try:
         from e2b_code_interpreter import Sandbox
 
@@ -77,85 +78,86 @@ async def execute(params: Dict[str, Any]) -> Dict[str, Any]:
             "errors": []
         }
 
-        # Use context manager pattern which handles creation properly
-        with Sandbox() as sandbox:
-            # Install packages if requested
-            if install_packages:
-                logger.info(f"Installing packages: {install_packages}")
-                pip_cmd = f"pip install {' '.join(install_packages)}"
-                pip_result = sandbox.run_code(pip_cmd)
-                if pip_result.error:
-                    results["errors"].append({
-                        "phase": "package_installation",
-                        "error": str(pip_result.error)
-                    })
-                    logger.warning(f"Package installation error: {pip_result.error}")
+        # Create sandbox using class method - SDK v1.x pattern
+        sandbox = Sandbox.create(timeout=timeout)
 
-            # Execute the main code
-            logger.info(f"Executing code ({len(code)} chars)")
-            execution = sandbox.run_code(code)
-
-            # Collect stdout - handle both list and single string formats
-            if execution.logs:
-                if hasattr(execution.logs, 'stdout'):
-                    stdout = execution.logs.stdout
-                    if isinstance(stdout, list):
-                        results["stdout"] = stdout
-                    elif stdout:
-                        results["stdout"] = [stdout]
-                    logger.debug(f"Stdout: {results['stdout']}")
-
-                if hasattr(execution.logs, 'stderr'):
-                    stderr = execution.logs.stderr
-                    if isinstance(stderr, list):
-                        results["stderr"] = stderr
-                    elif stderr:
-                        results["stderr"] = [stderr]
-                    logger.debug(f"Stderr: {results['stderr']}")
-
-            # Collect results (for things like plots, dataframes, etc.)
-            if execution.results:
-                for result in execution.results:
-                    result_item = {
-                        "type": type(result).__name__
-                    }
-                    # Handle different result types
-                    if hasattr(result, "text") and result.text:
-                        result_item["text"] = result.text
-                    if hasattr(result, "html") and result.html:
-                        result_item["html"] = result.html[:500] if len(result.html) > 500 else result.html
-                    if hasattr(result, "png") and result.png:
-                        result_item["png"] = "(base64 image data available)"
-                    if hasattr(result, "data") and result.data:
-                        result_item["data"] = str(result.data)[:1000]
-                    results["results"].append(result_item)
-
-            # Check for execution errors
-            if execution.error:
+        # Install packages if requested
+        if install_packages:
+            logger.info(f"Installing packages: {install_packages}")
+            pip_cmd = f"pip install {' '.join(install_packages)}"
+            pip_result = sandbox.run_code(pip_cmd)
+            if pip_result.error:
                 results["errors"].append({
-                    "phase": "execution",
-                    "error": str(execution.error),
-                    "traceback": getattr(execution.error, "traceback", None)
+                    "phase": "package_installation",
+                    "error": str(pip_result.error)
                 })
-                return {
-                    "status": "error",
-                    "error": str(execution.error),
-                    **results
+                logger.warning(f"Package installation error: {pip_result.error}")
+
+        # Execute the main code
+        logger.info(f"Executing code ({len(code)} chars)")
+        execution = sandbox.run_code(code)
+
+        # Collect stdout - handle both list and single string formats
+        if execution.logs:
+            if hasattr(execution.logs, 'stdout'):
+                stdout = execution.logs.stdout
+                if isinstance(stdout, list):
+                    results["stdout"] = stdout
+                elif stdout:
+                    results["stdout"] = [stdout]
+                logger.debug(f"Stdout: {results['stdout']}")
+
+            if hasattr(execution.logs, 'stderr'):
+                stderr = execution.logs.stderr
+                if isinstance(stderr, list):
+                    results["stderr"] = stderr
+                elif stderr:
+                    results["stderr"] = [stderr]
+                logger.debug(f"Stderr: {results['stderr']}")
+
+        # Collect results (for things like plots, dataframes, etc.)
+        if execution.results:
+            for result in execution.results:
+                result_item = {
+                    "type": type(result).__name__
                 }
+                # Handle different result types
+                if hasattr(result, "text") and result.text:
+                    result_item["text"] = result.text
+                if hasattr(result, "html") and result.html:
+                    result_item["html"] = result.html[:500] if len(result.html) > 500 else result.html
+                if hasattr(result, "png") and result.png:
+                    result_item["png"] = "(base64 image data available)"
+                if hasattr(result, "data") and result.data:
+                    result_item["data"] = str(result.data)[:1000]
+                results["results"].append(result_item)
 
-            logger.info("Code execution completed successfully")
-
-            # Format output nicely
-            output_summary = ""
-            if results["stdout"]:
-                output_summary = "\n".join(results["stdout"])
-
+        # Check for execution errors
+        if execution.error:
+            results["errors"].append({
+                "phase": "execution",
+                "error": str(execution.error),
+                "traceback": getattr(execution.error, "traceback", None)
+            })
             return {
-                "status": "success",
-                "message": "Code executed successfully",
-                "output": output_summary,
+                "status": "error",
+                "error": str(execution.error),
                 **results
             }
+
+        logger.info("Code execution completed successfully")
+
+        # Format output nicely
+        output_summary = ""
+        if results["stdout"]:
+            output_summary = "\n".join(results["stdout"])
+
+        return {
+            "status": "success",
+            "message": "Code executed successfully",
+            "output": output_summary,
+            **results
+        }
 
     except ImportError as e:
         logger.error(f"e2b-code-interpreter package import error: {e}")
@@ -181,3 +183,11 @@ async def execute(params: Dict[str, Any]) -> Dict[str, Any]:
             "error_type": type(e).__name__,
             "message": "An unexpected error occurred during sandbox execution"
         }
+
+    finally:
+        # Clean up sandbox
+        if sandbox:
+            try:
+                sandbox.kill()
+            except Exception as cleanup_error:
+                logger.warning(f"Error cleaning up sandbox: {cleanup_error}")
