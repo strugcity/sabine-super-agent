@@ -1,0 +1,25 @@
+{
+  "name": "run_python_sandbox",
+  "description": "Execute Python code in a secure E2B sandbox environment. Use this for running tests, prototyping skills, or executing any Python code safely isolated from the main system. Returns stdout, stderr, and execution results. Supports data analysis with pandas, numpy, and common scientific libraries.",
+  "version": "1.0.0",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "code": {
+        "type": "string",
+        "description": "Python code to execute in the sandbox. Can include imports, function definitions, and any valid Python code."
+      },
+      "timeout": {
+        "type": "integer",
+        "description": "Maximum execution time in seconds (default: 30, max: 300)",
+        "default": 30
+      },
+      "install_packages": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Optional list of pip packages to install before execution (e.g., ['requests', 'beautifulsoup4'])"
+      }
+    },
+    "required": ["code"]
+  }
+}

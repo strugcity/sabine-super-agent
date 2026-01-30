@@ -47,3 +47,6 @@ pytz>=2024.2
 
 # Background Scheduling (Proactive Agent)
 APScheduler>=3.10.0
+
+# E2B Sandbox (Secure Code Execution)
+e2b-code-interpreter>=1.0.0

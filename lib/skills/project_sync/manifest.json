@@ -1,0 +1,30 @@
+{
+  "name": "sync_project_board",
+  "description": "Parse a Markdown planning document and sync tasks to GitHub Issues. Extracts '### TASK: [Title]' sections from the file and creates corresponding GitHub issues. Skips tasks that already have issues. Use dry_run=true to preview without creating issues. This tool is primarily for the SABINE_ARCHITECT role to manage the project backlog.",
+  "version": "1.0.0",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "file_path": {
+        "type": "string",
+        "description": "Path to the Markdown file to parse (relative to project root). Default: 'docs/roles/SABINE_ARCHITECT.md'",
+        "default": "docs/roles/SABINE_ARCHITECT.md"
+      },
+      "dry_run": {
+        "type": "boolean",
+        "description": "If true, preview what issues would be created without actually creating them. Default: false",
+        "default": false
+      },
+      "owner": {
+        "type": "string",
+        "description": "GitHub repository owner. Default: uses GITHUB_OWNER env or 'strugcity'"
+      },
+      "repo": {
+        "type": "string",
+        "description": "GitHub repository name. Default: uses GITHUB_REPO env or 'sabine-super-agent'"
+      }
+    },
+    "required": []
+  },
+  "role_restriction": ["SABINE_ARCHITECT"]
+}
