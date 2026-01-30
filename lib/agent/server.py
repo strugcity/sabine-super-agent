@@ -16,7 +16,7 @@ PORT and API_PORT environment variables for flexibility.
 """
 
 from lib.agent.core import run_agent, run_agent_with_caching, create_agent, get_cache_metrics, reset_cache_metrics
-from lib.agent.registry import get_all_tools
+from lib.agent.registry import get_all_tools, get_mcp_diagnostics, MCP_SERVERS
 from lib.agent.gmail_handler import handle_new_email_notification
 from lib.agent.memory import ingest_user_message
 from lib.agent.retrieval import retrieve_context
@@ -376,6 +376,32 @@ async def list_tools():
         logger.error(f"Error listing tools: {e}")
         raise HTTPException(
             status_code=500, detail=f"Failed to list tools: {str(e)}")
+
+
+@app.get("/tools/diagnostics")
+async def mcp_diagnostics():
+    """
+    Get detailed diagnostics about MCP server loading.
+
+    Returns per-server status, errors, and loaded tools.
+    Useful for debugging MCP integration issues.
+    """
+    try:
+        diagnostics = await get_mcp_diagnostics()
+        return {
+            "success": True,
+            "mcp_servers_env": os.getenv("MCP_SERVERS", "not set"),
+            "github_token_set": bool(os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_ACCESS_TOKEN")),
+            **diagnostics
+        }
+    except Exception as e:
+        logger.error(f"Error getting MCP diagnostics: {e}")
+        import traceback
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
 
 
 @app.post("/invoke", response_model=InvokeResponse)

@@ -221,6 +221,53 @@ async def load_mcp_tools() -> List[StructuredTool]:
     return all_mcp_tools
 
 
+async def get_mcp_diagnostics() -> Dict[str, Any]:
+    """
+    Get detailed diagnostics about MCP server loading.
+
+    Returns:
+        Dict with MCP server status, errors, and tool counts
+    """
+    diagnostics = {
+        "configured_servers": [s["command"] for s in MCP_SERVERS],
+        "server_count": len(MCP_SERVERS),
+        "servers": []
+    }
+
+    if not MCP_SERVERS:
+        diagnostics["message"] = "No MCP servers configured"
+        return diagnostics
+
+    # Test each server individually
+    for server in MCP_SERVERS:
+        server_info = {
+            "command": server["command"],
+            "args": server.get("args", ["--transport", "stdio"]),
+            "status": "unknown",
+            "tools": [],
+            "error": None
+        }
+
+        try:
+            tools = await get_mcp_tools(
+                command=server["command"],
+                args=server.get("args", ["--transport", "stdio"]),
+                timeout=15
+            )
+            server_info["status"] = "success"
+            server_info["tool_count"] = len(tools)
+            server_info["tools"] = [t.name for t in tools]
+        except Exception as e:
+            server_info["status"] = "failed"
+            server_info["error"] = str(e)
+            import traceback
+            server_info["traceback"] = traceback.format_exc()
+
+        diagnostics["servers"].append(server_info)
+
+    return diagnostics
+
+
 # =============================================================================
 # Unified Tool Registry
 # =============================================================================
