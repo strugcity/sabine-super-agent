@@ -46,11 +46,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Install MCP servers from npm (Node.js CLI tools)
 # - @presto-ai/google-workspace-mcp: Google Workspace integration (Gmail, Calendar)
-# - @modelcontextprotocol/server-github: GitHub repository operations (issues, PRs)
-#   Note: While deprecated, this package works reliably with proper tool exposure
-# These are installed globally so npx can find and execute them
+# Note: GitHub integration is via local Python skill (lib/skills/github/) due to
+# known bugs in npm-based GitHub MCP servers. See: github.com/modelcontextprotocol/servers/issues/493
 RUN npm install -g @presto-ai/google-workspace-mcp && \
-    npm install -g @modelcontextprotocol/server-github && \
     npm cache clean --force
 
 # Copy application code
@@ -84,10 +82,8 @@ ENV PYTHONPATH=/app
 ENV API_HOST=0.0.0.0
 # MCP servers use Stdio transport (direct subprocess communication via stdin/stdout)
 # Each script launches an MCP server via npx - registry.py parses this to create StructuredTool wrappers
-# Space-separated list of launcher scripts:
-#   - start-mcp-server.sh: Gmail MCP server (Google Workspace)
-#   - start-github-mcp.sh: GitHub MCP server (repository operations)
-ENV MCP_SERVERS="/app/deploy/start-mcp-server.sh /app/deploy/start-github-mcp.sh"
+# Note: GitHub integration is via local Python skill, not MCP (npm servers have bugs)
+ENV MCP_SERVERS="/app/deploy/start-mcp-server.sh"
 ENV NODE_ENV=production
 ENV WORKSPACE_MCP_PORT=8000
 

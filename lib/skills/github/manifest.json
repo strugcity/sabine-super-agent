@@ -1,0 +1,46 @@
+{
+  "name": "github_issues",
+  "description": "Manage GitHub issues - list, create, update, and comment on issues in a repository. Requires GITHUB_TOKEN environment variable.",
+  "version": "1.0.0",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["list", "create", "get", "update", "comment"],
+        "description": "The action to perform: list (list issues), create (new issue), get (single issue), update (modify issue), comment (add comment)"
+      },
+      "owner": {
+        "type": "string",
+        "description": "Repository owner (username or organization). Default: strugcity"
+      },
+      "repo": {
+        "type": "string",
+        "description": "Repository name. Default: sabine-super-agent"
+      },
+      "state": {
+        "type": "string",
+        "enum": ["open", "closed", "all"],
+        "description": "Filter issues by state (for list action). Default: open"
+      },
+      "issue_number": {
+        "type": "integer",
+        "description": "Issue number (required for get, update, comment actions)"
+      },
+      "title": {
+        "type": "string",
+        "description": "Issue title (required for create action)"
+      },
+      "body": {
+        "type": "string",
+        "description": "Issue body/description or comment text"
+      },
+      "labels": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Labels to apply to the issue"
+      }
+    },
+    "required": ["action"]
+  }
+}
