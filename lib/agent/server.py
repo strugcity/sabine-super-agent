@@ -20,6 +20,7 @@ from lib.agent.registry import get_all_tools
 from lib.agent.gmail_handler import handle_new_email_notification
 from lib.agent.memory import ingest_user_message
 from lib.agent.retrieval import retrieve_context
+from lib.agent.parsing import parse_file, is_supported_mime_type, SUPPORTED_MIME_TYPES
 import asyncio
 import hmac
 import logging
@@ -29,7 +30,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Request, Depends, Header, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request, Depends, Header, BackgroundTasks, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
@@ -795,6 +796,213 @@ async def memory_query_endpoint(
             status_code=500,
             detail=f"Memory query failed: {str(e)}"
         )
+
+
+@app.post("/memory/upload")
+async def memory_upload_endpoint(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    user_id: str = Form(...),
+    source: str = Form(default="file_upload"),
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Upload a file for knowledge ingestion.
+
+    This endpoint accepts files (PDF, CSV, Excel, Images), parses them to
+    extract text content, saves to Supabase Storage, and ingests the
+    extracted text into the Context Engine as a background task.
+
+    Supported file types:
+    - PDF: Text extraction with pypdf
+    - CSV: Row summaries with pandas
+    - Excel (.xlsx, .xls): Sheet/row summaries with pandas
+    - Images (JPEG, PNG, GIF, WebP): Claude vision description
+    - Text/JSON: Direct content extraction
+
+    Args:
+        file: The uploaded file (multipart form data)
+        user_id: User UUID (form field)
+        source: Source identifier (form field, default: "file_upload")
+
+    Returns:
+        {
+            "success": bool,
+            "message": str,
+            "file_name": str,
+            "file_size": int,
+            "mime_type": str,
+            "storage_path": str (Supabase Storage path),
+            "extracted_text_preview": str (first 500 chars),
+            "ingestion_status": "queued" | "started"
+        }
+    """
+    logger.info(f"📤 File upload received: {file.filename}")
+    logger.info(f"  MIME type: {file.content_type}")
+    logger.info(f"  User ID: {user_id}")
+
+    try:
+        # Validate MIME type
+        mime_type = file.content_type or "application/octet-stream"
+        if not is_supported_mime_type(mime_type):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type: {mime_type}. "
+                       f"Supported types: {list(SUPPORTED_MIME_TYPES.keys())}"
+            )
+
+        # Read file content
+        file_content = await file.read()
+        file_size = len(file_content)
+        filename = file.filename or "unknown_file"
+
+        logger.info(f"  File size: {file_size:,} bytes")
+
+        # Validate file size (50MB max)
+        max_size = 52428800  # 50MB
+        if file_size > max_size:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large: {file_size:,} bytes. Maximum: {max_size:,} bytes"
+            )
+
+        # Parse file to extract text
+        logger.info(f"🔄 Parsing file...")
+        extracted_text, parse_metadata = await parse_file(
+            file_content=file_content,
+            mime_type=mime_type,
+            filename=filename
+        )
+
+        logger.info(f"✓ Extracted {len(extracted_text):,} characters")
+
+        # Save to Supabase Storage
+        storage_path = None
+        try:
+            from supabase import create_client
+            supabase_url = os.getenv("SUPABASE_URL")
+            supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+            if supabase_url and supabase_key:
+                supabase = create_client(supabase_url, supabase_key)
+
+                # Generate unique storage path
+                from datetime import datetime
+                import uuid
+                timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                unique_id = str(uuid.uuid4())[:8]
+                safe_filename = "".join(c for c in filename if c.isalnum() or c in "._-")
+                storage_path = f"{user_id}/{timestamp}_{unique_id}_{safe_filename}"
+
+                # Upload to storage bucket
+                storage_response = supabase.storage.from_("knowledge_base").upload(
+                    path=storage_path,
+                    file=file_content,
+                    file_options={"content-type": mime_type}
+                )
+
+                logger.info(f"✓ Saved to storage: {storage_path}")
+
+                # Track in knowledge_files table
+                supabase.table("knowledge_files").insert({
+                    "file_name": filename,
+                    "file_path": storage_path,
+                    "file_size": file_size,
+                    "mime_type": mime_type,
+                    "status": "processing",
+                    "extracted_text": extracted_text,
+                    "extracted_at": datetime.utcnow().isoformat(),
+                    "metadata": parse_metadata
+                }).execute()
+
+                logger.info(f"✓ Tracked in knowledge_files table")
+
+        except Exception as storage_error:
+            logger.warning(f"Storage upload failed (continuing with ingestion): {storage_error}")
+            storage_path = None
+
+        # Queue memory ingestion as background task
+        from uuid import UUID as UUIDType
+
+        async def ingest_file_content():
+            """Background task to ingest extracted file content."""
+            try:
+                result = await ingest_user_message(
+                    user_id=UUIDType(user_id),
+                    content=f"[File: {filename}]\n\n{extracted_text}",
+                    source=source
+                )
+                logger.info(f"✓ File content ingested: {result.get('memory_id')}")
+
+                # Update knowledge_files status if we have storage_path
+                if storage_path:
+                    try:
+                        supabase_url = os.getenv("SUPABASE_URL")
+                        supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+                        if supabase_url and supabase_key:
+                            supabase = create_client(supabase_url, supabase_key)
+                            supabase.table("knowledge_files").update({
+                                "status": "completed",
+                                "memory_id": str(result.get("memory_id")) if result.get("memory_id") else None
+                            }).eq("file_path", storage_path).execute()
+                    except Exception as update_error:
+                        logger.warning(f"Failed to update knowledge_files status: {update_error}")
+
+            except Exception as ingest_error:
+                logger.error(f"File ingestion failed: {ingest_error}")
+                # Update status to failed
+                if storage_path:
+                    try:
+                        supabase_url = os.getenv("SUPABASE_URL")
+                        supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+                        if supabase_url and supabase_key:
+                            supabase = create_client(supabase_url, supabase_key)
+                            supabase.table("knowledge_files").update({
+                                "status": "failed",
+                                "error_message": str(ingest_error)
+                            }).eq("file_path", storage_path).execute()
+                    except Exception:
+                        pass
+
+        background_tasks.add_task(ingest_file_content)
+        logger.info("✓ Queued file content for background ingestion")
+
+        return {
+            "success": True,
+            "message": "File uploaded and queued for ingestion",
+            "file_name": filename,
+            "file_size": file_size,
+            "mime_type": mime_type,
+            "storage_path": storage_path,
+            "extracted_text_preview": extracted_text[:500] + "..." if len(extracted_text) > 500 else extracted_text,
+            "extracted_text_length": len(extracted_text),
+            "parse_metadata": parse_metadata,
+            "ingestion_status": "queued"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"File upload failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"File upload failed: {str(e)}"
+        )
+
+
+@app.get("/memory/upload/supported-types")
+async def get_supported_upload_types():
+    """
+    Get list of supported file types for upload.
+
+    Returns the MIME types and their categories for the file upload endpoint.
+    """
+    return {
+        "success": True,
+        "supported_types": SUPPORTED_MIME_TYPES,
+        "max_file_size_bytes": 52428800,  # 50MB
+        "max_file_size_human": "50 MB"
+    }
 
 
 # =============================================================================

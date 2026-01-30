@@ -26,6 +26,12 @@ httpx>=0.28.1
 aiofiles>=24.1.0
 httpx-sse
 
+# File Parsing (Context Engine File Ingestion)
+pypdf>=4.0.0
+pandas>=2.0.0
+openpyxl>=3.1.0
+python-multipart>=0.0.9
+
 # Model Context Protocol
 mcp>=1.1.1
 httpx-sse>=0.4.0
