@@ -44,9 +44,12 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install workspace-mcp from npm (Node.js CLI for Google Workspace integration)
-# This is installed globally so npx can find and execute it
+# Install MCP servers from npm (Node.js CLI tools)
+# - @presto-ai/google-workspace-mcp: Google Workspace integration (Gmail, Calendar)
+# - @modelcontextprotocol/server-github: GitHub repository operations (issues, PRs)
+# These are installed globally so npx can find and execute them
 RUN npm install -g @presto-ai/google-workspace-mcp && \
+    npm install -g @modelcontextprotocol/server-github && \
     npm cache clean --force
 
 # Copy application code
@@ -68,19 +71,22 @@ RUN mkdir -p /root/.config/google-workspace-mcp && \
 # Copy supervisor configuration
 COPY deploy/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# Copy MCP credential setup script and MCP server wrapper
+# Copy MCP credential setup script and MCP server wrappers
 COPY deploy/setup-mcp-credentials.sh /app/setup-mcp-credentials.sh
 COPY deploy/start-mcp-server.sh /app/deploy/start-mcp-server.sh
-RUN chmod +x /app/setup-mcp-credentials.sh /app/deploy/start-mcp-server.sh
+COPY deploy/start-github-mcp.sh /app/deploy/start-github-mcp.sh
+RUN chmod +x /app/setup-mcp-credentials.sh /app/deploy/start-mcp-server.sh /app/deploy/start-github-mcp.sh
 
 # Environment variables (defaults, override in Railway)
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 ENV API_HOST=0.0.0.0
-# MCP server uses Stdio transport (direct subprocess communication via stdin/stdout)
-# The start-mcp-server.sh wrapper script launches workspace-mcp via npx
-# registry.py parses this to create StructuredTool wrappers
-ENV MCP_SERVERS=/app/deploy/start-mcp-server.sh
+# MCP servers use Stdio transport (direct subprocess communication via stdin/stdout)
+# Each script launches an MCP server via npx - registry.py parses this to create StructuredTool wrappers
+# Space-separated list of launcher scripts:
+#   - start-mcp-server.sh: Gmail MCP server (Google Workspace)
+#   - start-github-mcp.sh: GitHub MCP server (repository operations)
+ENV MCP_SERVERS="/app/deploy/start-mcp-server.sh /app/deploy/start-github-mcp.sh"
 ENV NODE_ENV=production
 ENV WORKSPACE_MCP_PORT=8000
 
