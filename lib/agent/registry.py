@@ -141,6 +141,54 @@ def load_local_skills() -> List[LoadedSkill]:
     return skills
 
 
+def create_args_schema_from_manifest(skill: LoadedSkill) -> Optional[type]:
+    """
+    Dynamically create a Pydantic model from the skill manifest's parameters schema.
+
+    This allows LangChain to understand what parameters the tool accepts.
+    """
+    from pydantic import create_model
+    from typing import Optional as OptionalType, List as ListType
+
+    params = skill.manifest.parameters
+    if not params or "properties" not in params:
+        return None
+
+    properties = params.get("properties", {})
+    required = params.get("required", [])
+
+    # Map JSON schema types to Python types
+    type_mapping = {
+        "string": str,
+        "integer": int,
+        "number": float,
+        "boolean": bool,
+        "array": list,
+        "object": dict,
+    }
+
+    field_definitions = {}
+    for field_name, field_schema in properties.items():
+        field_type = type_mapping.get(field_schema.get("type", "string"), str)
+        description = field_schema.get("description", "")
+
+        # Handle arrays with items
+        if field_schema.get("type") == "array" and "items" in field_schema:
+            item_type = type_mapping.get(field_schema["items"].get("type", "string"), str)
+            field_type = ListType[item_type]
+
+        # Make optional if not in required list
+        if field_name not in required:
+            field_type = OptionalType[field_type]
+            field_definitions[field_name] = (field_type, Field(default=None, description=description))
+        else:
+            field_definitions[field_name] = (field_type, Field(..., description=description))
+
+    # Create the model dynamically
+    model_name = f"{skill.name.title().replace('_', '')}Args"
+    return create_model(model_name, **field_definitions)
+
+
 def convert_local_skill_to_tool(skill: LoadedSkill) -> StructuredTool:
     """
     Convert a local Python skill to a LangChain StructuredTool.
@@ -175,11 +223,15 @@ def convert_local_skill_to_tool(skill: LoadedSkill) -> StructuredTool:
             logger.error(f"Error executing skill {skill.name}: {e}")
             return f"Error: {str(e)}"
 
+    # Create args_schema from manifest for proper LangChain integration
+    args_schema = create_args_schema_from_manifest(skill)
+
     return StructuredTool.from_function(
         name=skill.name,
         description=skill.description,
         func=async_wrapper,
-        coroutine=async_wrapper
+        coroutine=async_wrapper,
+        args_schema=args_schema
     )
 
 
