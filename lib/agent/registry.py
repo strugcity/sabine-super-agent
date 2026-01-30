@@ -212,9 +212,14 @@ def convert_local_skill_to_tool(skill: LoadedSkill) -> StructuredTool:
 
             # Convert result to string
             if isinstance(result, dict):
-                # Pretty format dict results
-                if "status" in result and "message" in result:
-                    return f"{result['status'].upper()}: {result['message']}"
+                # For sandbox/code execution results, include the output
+                if "output" in result and result.get("status") == "success":
+                    return f"SUCCESS: {result.get('message', 'Code executed')}\n\nOutput:\n{result['output']}"
+                # For error results, include full details
+                if result.get("status") == "error":
+                    error_msg = result.get("error", result.get("message", "Unknown error"))
+                    return f"ERROR: {error_msg}"
+                # For other results with status/message, show full JSON to preserve data
                 return json.dumps(result, indent=2)
 
             return str(result)
