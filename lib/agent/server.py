@@ -411,6 +411,49 @@ async def mcp_diagnostics():
         }
 
 
+@app.get("/e2b/test")
+async def test_e2b_sandbox():
+    """
+    Diagnostic endpoint to test E2B sandbox directly.
+
+    Returns detailed error information for debugging.
+    """
+    import os
+
+    e2b_key = os.getenv("E2B_API_KEY")
+    if not e2b_key:
+        return {
+            "success": False,
+            "error": "E2B_API_KEY not set",
+            "key_present": False
+        }
+
+    try:
+        from lib.skills.e2b_sandbox.handler import execute
+
+        result = await execute({
+            "code": "print('Hello from E2B!')",
+            "timeout": 30
+        })
+
+        return {
+            "success": result.get("status") == "success",
+            "key_present": True,
+            "key_prefix": e2b_key[:10] + "...",
+            "result": result
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "key_present": True,
+            "key_prefix": e2b_key[:10] + "...",
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "traceback": traceback.format_exc()
+        }
+
+
 @app.get("/roles")
 async def list_roles():
     """
