@@ -21,6 +21,7 @@ from lib.agent.gmail_handler import handle_new_email_notification
 from lib.agent.memory import ingest_user_message
 from lib.agent.retrieval import retrieve_context
 from lib.agent.parsing import parse_file, is_supported_mime_type, SUPPORTED_MIME_TYPES
+from lib.agent.scheduler import get_scheduler, SabineScheduler
 import asyncio
 import hmac
 import logging
@@ -1006,6 +1007,91 @@ async def get_supported_upload_types():
 
 
 # =============================================================================
+# Scheduler Endpoints (Phase 7 - Proactive Agent)
+# =============================================================================
+
+class TriggerBriefingRequest(BaseModel):
+    """Request body for manual briefing trigger."""
+    user_name: str = Field(default="Paul", description="Name to use in greeting")
+    phone_number: Optional[str] = Field(
+        default=None, description="Override phone number (uses USER_PHONE env var if not provided)")
+    skip_sms: bool = Field(
+        default=False, description="Skip sending SMS (just generate briefing)")
+
+
+@app.get("/scheduler/status")
+async def scheduler_status():
+    """
+    Get scheduler status and upcoming jobs.
+
+    Returns current scheduler state and next run times for all jobs.
+    """
+    try:
+        scheduler = get_scheduler()
+        return {
+            "success": True,
+            "running": scheduler.is_running(),
+            "jobs": scheduler.get_jobs()
+        }
+    except Exception as e:
+        logger.error(f"Failed to get scheduler status: {e}")
+        return {
+            "success": False,
+            "running": False,
+            "error": str(e)
+        }
+
+
+@app.post("/scheduler/trigger-briefing")
+async def trigger_briefing(
+    request: TriggerBriefingRequest = TriggerBriefingRequest(),
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Manually trigger the morning briefing (for testing).
+
+    This endpoint allows immediate execution of the morning briefing job
+    outside of its scheduled time. Useful for testing and debugging.
+
+    Args:
+        request: Optional configuration for the briefing
+
+    Returns:
+        {
+            "success": bool,
+            "status": "success" | "failed",
+            "briefing": str (the generated briefing text),
+            "sms_sent": bool,
+            "context_summary": dict (counts of items found)
+        }
+    """
+    logger.info("Manual briefing trigger received")
+
+    try:
+        scheduler = get_scheduler()
+
+        # If skip_sms is True, pass None for phone to prevent sending
+        phone = None if request.skip_sms else request.phone_number
+
+        result = await scheduler.trigger_briefing_now(
+            user_name=request.user_name,
+            phone_number=phone
+        )
+
+        return {
+            "success": result["status"] == "success",
+            **result
+        }
+
+    except Exception as e:
+        logger.error(f"Manual briefing trigger failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Briefing trigger failed: {str(e)}"
+        )
+
+
+# =============================================================================
 # Startup/Shutdown Events
 # =============================================================================
 
@@ -1042,6 +1128,16 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to load tools: {e}")
 
+    # Start the proactive scheduler
+    try:
+        scheduler = get_scheduler()
+        await scheduler.start()
+        logger.info("✓ Proactive scheduler started")
+        for job in scheduler.get_jobs():
+            logger.info(f"  - {job['name']}: next run at {job['next_run']}")
+    except Exception as e:
+        logger.error(f"Failed to start scheduler: {e}")
+
     # Get the port for logging
     api_port = os.getenv("PORT") or os.getenv("API_PORT", "8001")
     logger.info("=" * 60)
@@ -1054,6 +1150,15 @@ async def startup_event():
 async def shutdown_event():
     """Run on application shutdown."""
     logger.info("Personal Super Agent API shutting down...")
+
+    # Gracefully shutdown the scheduler
+    try:
+        scheduler = get_scheduler()
+        if scheduler.is_running():
+            await scheduler.shutdown()
+            logger.info("✓ Scheduler stopped gracefully")
+    except Exception as e:
+        logger.error(f"Error stopping scheduler: {e}")
 
 
 # =============================================================================

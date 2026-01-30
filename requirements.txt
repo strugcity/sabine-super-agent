@@ -44,3 +44,6 @@ google-api-python-client>=2.188.0
 # Date/Time
 python-dateutil>=2.9.0
 pytz>=2024.2
+
+# Background Scheduling (Proactive Agent)
+APScheduler>=3.10.0
