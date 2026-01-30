@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server';
 import { EntityCard } from '@/components/EntityCard';
 import { MemoryStream } from '@/components/MemoryStream';
 import { DashboardHeader } from '@/components/DashboardHeader';
+import { FileUploader } from '@/components/FileUploader';
 import { Entity, Memory, DomainEnum, EntitiesByDomain } from '@/lib/types/database';
 
 async function getEntities(): Promise<EntitiesByDomain> {
@@ -77,6 +78,17 @@ export default async function MemoryDashboard() {
       />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Knowledge Upload Section */}
+        <section className="mb-8">
+          <h2 className="text-2xl font-bold text-gray-900 mb-4">
+            Upload Knowledge
+          </h2>
+          <p className="text-sm text-gray-600 mb-4">
+            Upload files to extract and ingest knowledge into the Context Engine.
+          </p>
+          <FileUploader />
+        </section>
+
         {/* Entities Section */}
         <section className="mb-12">
           <h2 className="text-2xl font-bold text-gray-900 mb-6">
