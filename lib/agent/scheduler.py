@@ -27,7 +27,7 @@ Owner: @backend-architect-sabine
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -100,8 +100,8 @@ async def get_briefing_context(user_id: UUID) -> Dict[str, Any]:
     try:
         supabase = get_supabase_client()
 
-        # Calculate time boundaries
-        now = datetime.utcnow()
+        # Calculate time boundaries (timezone-aware UTC)
+        now = datetime.now(timezone.utc)
         yesterday = now - timedelta(days=1)
         next_week = now + timedelta(days=7)
 
@@ -154,24 +154,24 @@ async def get_briefing_context(user_id: UUID) -> Dict[str, Any]:
         except Exception as e:
             logger.debug(f"Tasks table query failed (may not exist): {e}")
 
-        # Query 3: High importance memories
+        # Query 3: High importance memories (importance_score column)
         try:
             important_response = supabase.table("memories").select("*").gte(
-                "importance", 0.8
+                "importance_score", 0.8
             ).order("created_at", desc=True).limit(5).execute()
 
             if important_response.data:
                 context["high_importance"] = [
                     {
                         "content": m.get("content", "")[:300],
-                        "importance": m.get("importance", 0.8),
+                        "importance": m.get("importance_score", 0.8),
                         "created_at": m.get("created_at")
                     }
                     for m in important_response.data
                 ]
                 logger.info(f"Found {len(context['high_importance'])} high-importance items")
         except Exception as e:
-            logger.warning(f"Failed to fetch high-importance memories: {e}")
+            logger.debug(f"High-importance memories query failed: {e}")
 
         # Query 4: Active entities (for context)
         try:
@@ -388,7 +388,7 @@ async def run_morning_briefing(
     result = {
         "status": "pending",
         "user_id": str(user_id),
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "briefing": None,
         "sms_sent": False,
         "error": None
