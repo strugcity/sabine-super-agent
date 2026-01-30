@@ -52,6 +52,7 @@ RUN npm install -g @presto-ai/google-workspace-mcp && \
 # Copy application code
 COPY lib/ ./lib/
 COPY scripts/ ./scripts/
+COPY run_server.py ./run_server.py
 
 # Create directories for runtime files
 RUN mkdir -p /app/logs /app/data
