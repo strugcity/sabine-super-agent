@@ -81,17 +81,11 @@ export function FileUploader({ userId = '00000000-0000-0000-0000-000000000001' }
       formData.append('user_id', userId)
       formData.append('source', 'dashboard_upload')
 
-      // Get API key from environment or use a proxy endpoint
-      const apiUrl = process.env.NEXT_PUBLIC_AGENT_API_URL || 'http://localhost:8001'
-      const apiKey = process.env.NEXT_PUBLIC_AGENT_API_KEY || ''
-
       setUploadProgress('Parsing file content...')
 
-      const response = await fetch(`${apiUrl}/memory/upload`, {
+      // Use Next.js API proxy to keep API key secure on server side
+      const response = await fetch('/api/memory/upload', {
         method: 'POST',
-        headers: {
-          'X-API-Key': apiKey,
-        },
         body: formData,
       })
 
