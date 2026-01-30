@@ -57,13 +57,15 @@ async def execute(params: Dict[str, Any]) -> Dict[str, Any]:
             "message": "The 'code' parameter is required"
         }
 
-    # Validate and cap timeout
-    timeout = params.get("timeout", DEFAULT_TIMEOUT)
+    # Validate and cap timeout - handle None or missing values
+    timeout = params.get("timeout")
+    if timeout is None:
+        timeout = DEFAULT_TIMEOUT
     if timeout > MAX_TIMEOUT:
         logger.warning(f"Timeout {timeout}s exceeds max {MAX_TIMEOUT}s, capping")
         timeout = MAX_TIMEOUT
 
-    install_packages = params.get("install_packages", [])
+    install_packages = params.get("install_packages") or []
 
     sandbox = None
     try:
