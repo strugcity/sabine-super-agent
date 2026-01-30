@@ -46,10 +46,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Install MCP servers from npm (Node.js CLI tools)
 # - @presto-ai/google-workspace-mcp: Google Workspace integration (Gmail, Calendar)
-# - @modelcontextprotocol/server-github: GitHub repository operations (issues, PRs)
+# - github-mcp: GitHub repository operations (issues, PRs, file content)
+#   Note: @modelcontextprotocol/server-github is deprecated as of April 2025
 # These are installed globally so npx can find and execute them
 RUN npm install -g @presto-ai/google-workspace-mcp && \
-    npm install -g @modelcontextprotocol/server-github && \
+    npm install -g github-mcp && \
     npm cache clean --force
 
 # Copy application code
