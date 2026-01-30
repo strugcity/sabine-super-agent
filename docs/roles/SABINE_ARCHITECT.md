@@ -74,3 +74,25 @@ When asked to "Scope" or "Plan," you will:
 2.  **Map Dependencies:** Identify the critical path.
 3.  **Context Injection:** Ensure the assigned agent has the relevant PRD snippets.
 4.  **Issue Marching Orders:** Clearly state the first TDD test case to be written.
+
+---
+
+## 8. Current Sprint Backlog
+
+### TASK: Implement Phase 3 Task Queue
+**Description:** Create the task_queue table in Supabase with columns for role assignment, dependencies, and status tracking. This enables the orchestration layer for multi-agent handoffs.
+**Assignee:** backend-architect-sabine
+**Priority:** high
+**Labels:** phase-3, orchestration, database
+
+### TASK: Add LangSmith Tracing Integration
+**Description:** Integrate LangSmith for observability and debugging of agent reasoning chains. Configure callbacks in create_agent() to capture traces.
+**Assignee:** data-ai-engineer-sabine
+**Priority:** medium
+**Labels:** phase-3, observability, langsmith
+
+### TASK: Create God View Dashboard Endpoint
+**Description:** Build GET /orchestration/status endpoint that returns current task queue state, agent activity, and system health for the dashboard.
+**Assignee:** frontend-ops-sabine
+**Priority:** medium
+**Labels:** phase-3, dashboard, api
