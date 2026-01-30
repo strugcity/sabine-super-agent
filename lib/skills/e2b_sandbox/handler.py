@@ -77,15 +77,8 @@ async def execute(params: Dict[str, Any]) -> Dict[str, Any]:
             "errors": []
         }
 
-        # Create sandbox - SDK reads E2B_API_KEY from environment automatically
-        # No constructor args in latest SDK - use set_timeout after creation
-        sandbox = Sandbox()
-
-        try:
-            # Set timeout after creation if method exists
-            if hasattr(sandbox, 'set_timeout'):
-                sandbox.set_timeout(timeout)
-
+        # Use context manager pattern which handles creation properly
+        with Sandbox() as sandbox:
             # Install packages if requested
             if install_packages:
                 logger.info(f"Installing packages: {install_packages}")
@@ -163,13 +156,6 @@ async def execute(params: Dict[str, Any]) -> Dict[str, Any]:
                 "output": output_summary,
                 **results
             }
-
-        finally:
-            # Clean up sandbox
-            try:
-                sandbox.kill()
-            except Exception as cleanup_error:
-                logger.warning(f"Error cleaning up sandbox: {cleanup_error}")
 
     except ImportError as e:
         logger.error(f"e2b-code-interpreter package import error: {e}")
