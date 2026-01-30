@@ -8,7 +8,7 @@ using E2B's Code Interpreter. It's useful for:
 - Data analysis and visualization
 - Executing user-provided code safely
 
-Requires: E2B_API_KEY environment variable
+Requires: E2B_API_KEY environment variable (automatically used by SDK)
 """
 
 import logging
@@ -40,7 +40,7 @@ async def execute(params: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Dict with status, stdout, stderr, results, and execution metadata
     """
-    # Check for API key
+    # Check for API key (SDK reads from E2B_API_KEY env var automatically)
     api_key = get_e2b_api_key()
     if not api_key:
         return {
@@ -77,8 +77,9 @@ async def execute(params: Dict[str, Any]) -> Dict[str, Any]:
             "errors": []
         }
 
-        # Create sandbox - use async context manager
-        sandbox = Sandbox(api_key=api_key, timeout=timeout)
+        # Create sandbox - SDK reads E2B_API_KEY from environment automatically
+        # timeout is in seconds for the sandbox lifetime
+        sandbox = Sandbox(timeout=timeout)
 
         try:
             # Install packages if requested
