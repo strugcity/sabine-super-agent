@@ -1,0 +1,8 @@
+{
+  "message": {
+    "data": "eyJlbWFpbEFkZHJlc3MiOiJzYWJpbmVAc3RydWdjaXR5LmNvbSIsImhpc3RvcnlJZCI6IjI0ODgifQ==",
+    "messageId": "test-message-123",
+    "publishTime": "2026-01-24T11:45:00Z"
+  },
+  "subscription": "projects/super-agent-485222/subscriptions/gmail-notifications-push"
+}
