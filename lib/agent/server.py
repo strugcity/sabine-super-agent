@@ -753,7 +753,10 @@ async def _run_task_agent(task: Task):
     Run the agent for a task.
 
     Extracts the message from payload and runs the appropriate agent.
+    Sends real-time updates to Slack (threaded by task).
     """
+    from lib.agent.slack_manager import send_task_update, log_agent_event
+
     service = get_task_queue_service()
 
     try:
@@ -766,6 +769,15 @@ async def _run_task_agent(task: Task):
 
         logger.info(f"Running agent for task {task.id} (role: {task.role})")
 
+        # Send task_started event to Slack
+        await send_task_update(
+            task_id=task.id,
+            role=task.role,
+            event_type="task_started",
+            message=f"Starting task execution",
+            details=message[:200] if len(message) > 200 else message
+        )
+
         # Run the agent with the task's role
         result = await run_agent(
             user_id=user_id,
@@ -775,6 +787,16 @@ async def _run_task_agent(task: Task):
         )
 
         if result.get("success"):
+            # Send completion update to Slack
+            response_preview = result.get("response", "")[:300]
+            await send_task_update(
+                task_id=task.id,
+                role=task.role,
+                event_type="task_completed",
+                message="Task completed successfully",
+                details=response_preview
+            )
+
             await service.complete_task(
                 task.id,
                 result={"response": result.get("response")},
@@ -782,14 +804,36 @@ async def _run_task_agent(task: Task):
             )
             logger.info(f"Task {task.id} completed successfully")
         else:
+            error_msg = result.get("error", "Agent execution failed")
+
+            # Send failure update to Slack
+            await send_task_update(
+                task_id=task.id,
+                role=task.role,
+                event_type="task_failed",
+                message=f"Task failed: {error_msg}"
+            )
+
             await service.fail_task(
                 task.id,
-                error=result.get("error", "Agent execution failed")
+                error=error_msg
             )
-            logger.error(f"Task {task.id} failed: {result.get('error')}")
+            logger.error(f"Task {task.id} failed: {error_msg}")
 
     except Exception as e:
         logger.error(f"Error running agent for task {task.id}: {e}")
+
+        # Send error update to Slack
+        try:
+            await send_task_update(
+                task_id=task.id,
+                role=task.role,
+                event_type="error",
+                message=f"Exception during task execution: {str(e)}"
+            )
+        except:
+            pass  # Don't fail if Slack update fails
+
         await service.fail_task(task.id, error=str(e))
 
 
@@ -1685,6 +1729,24 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to start scheduler: {e}")
 
+    # Start Slack Socket Mode (The Gantry)
+    try:
+        from lib.agent.slack_manager import start_socket_mode
+
+        slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
+        slack_app_token = os.getenv("SLACK_APP_TOKEN")
+
+        if slack_bot_token and slack_app_token:
+            success = await start_socket_mode()
+            if success:
+                logger.info("✓ The Gantry (Slack Socket Mode) connected")
+            else:
+                logger.warning("Failed to start Slack Socket Mode")
+        else:
+            logger.info("Slack tokens not configured - Gantry disabled")
+    except Exception as e:
+        logger.error(f"Failed to start Slack Socket Mode: {e}")
+
     # Get the port for logging
     api_port = os.getenv("PORT") or os.getenv("API_PORT", "8001")
     logger.info("=" * 60)
@@ -1697,6 +1759,14 @@ async def startup_event():
 async def shutdown_event():
     """Run on application shutdown."""
     logger.info("Personal Super Agent API shutting down...")
+
+    # Stop Slack Socket Mode
+    try:
+        from lib.agent.slack_manager import stop_socket_mode
+        await stop_socket_mode()
+        logger.info("✓ Slack Socket Mode stopped")
+    except Exception as e:
+        logger.error(f"Error stopping Slack Socket Mode: {e}")
 
     # Gracefully shutdown the scheduler
     try:

@@ -50,3 +50,7 @@ APScheduler>=3.10.0
 
 # E2B Sandbox (Secure Code Execution)
 e2b-code-interpreter>=1.0.0
+
+# Slack Integration (The Gantry)
+slack-bolt>=1.18.0
+aiohttp>=3.9.0

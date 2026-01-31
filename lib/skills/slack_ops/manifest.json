@@ -1,0 +1,29 @@
+{
+  "name": "send_team_update",
+  "description": "Send updates to the #dream-team-ops Slack channel. Use this to communicate task progress, agent thoughts, or important notifications to the engineering team. Messages for the same task_id will be automatically threaded together.",
+  "version": "1.0.0",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "message": {
+        "type": "string",
+        "description": "The main message content to send to Slack"
+      },
+      "event_type": {
+        "type": "string",
+        "enum": ["task_started", "task_completed", "task_failed", "agent_thought", "tool_call", "tool_result", "handshake", "error", "info"],
+        "description": "Type of update - determines emoji and formatting. Default: 'info'",
+        "default": "info"
+      },
+      "task_id": {
+        "type": "string",
+        "description": "Optional task UUID - if provided, updates will be threaded under the original task message"
+      },
+      "details": {
+        "type": "string",
+        "description": "Optional additional details to include in a code block (will be truncated if too long)"
+      }
+    },
+    "required": ["message"]
+  }
+}
