@@ -23,6 +23,7 @@ from lib.agent.retrieval import retrieve_context
 from lib.agent.parsing import parse_file, is_supported_mime_type, SUPPORTED_MIME_TYPES
 from lib.agent.scheduler import get_scheduler, SabineScheduler
 from app.services.wal import WALService
+from app.services.task_queue import TaskQueueService, Task, TaskStatus, get_task_queue_service
 import asyncio
 import hmac
 import logging
@@ -492,6 +493,308 @@ async def list_roles():
         logger.error(f"Error listing roles: {e}")
         raise HTTPException(
             status_code=500, detail=f"Failed to list roles: {str(e)}")
+
+
+# =============================================================================
+# Task Queue / Orchestration Endpoints (Phase 3: The Pulse)
+# =============================================================================
+
+class CreateTaskRequest(BaseModel):
+    """Request to create a new task."""
+    role: str = Field(..., description="Agent role to handle this task (e.g., 'backend-architect-sabine')")
+    payload: Dict = Field(default_factory=dict, description="Instructions/context for the agent")
+    depends_on: List[str] = Field(default_factory=list, description="List of task IDs that must complete first")
+    priority: int = Field(default=0, description="Task priority (higher = more important)")
+
+
+class TaskResponse(BaseModel):
+    """Response containing task information."""
+    id: str
+    role: str
+    status: str
+    priority: int
+    payload: Dict
+    depends_on: List[str]
+    result: Optional[Dict] = None
+    error: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+@app.post("/tasks")
+async def create_task(request: CreateTaskRequest, _: bool = Depends(verify_api_key)):
+    """
+    Create a new task in the orchestration queue.
+
+    Tasks can depend on other tasks - they will stay 'queued' until
+    all dependencies are 'completed'.
+    """
+    try:
+        from uuid import UUID
+
+        service = get_task_queue_service()
+
+        # Convert string UUIDs to UUID objects
+        depends_on = [UUID(dep) for dep in request.depends_on] if request.depends_on else []
+
+        task_id = await service.create_task(
+            role=request.role,
+            payload=request.payload,
+            depends_on=depends_on,
+            priority=request.priority
+        )
+
+        return {
+            "success": True,
+            "task_id": str(task_id),
+            "role": request.role,
+            "status": "queued",
+            "message": f"Task created and queued for role '{request.role}'"
+        }
+
+    except Exception as e:
+        logger.error(f"Error creating task: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create task: {str(e)}")
+
+
+@app.get("/tasks/{task_id}")
+async def get_task(task_id: str, _: bool = Depends(verify_api_key)):
+    """Get details of a specific task."""
+    try:
+        from uuid import UUID
+
+        service = get_task_queue_service()
+        task = await service.get_task(UUID(task_id))
+
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+        return {
+            "success": True,
+            "task": {
+                "id": str(task.id),
+                "role": task.role,
+                "status": task.status,
+                "priority": task.priority,
+                "payload": task.payload,
+                "depends_on": [str(d) for d in task.depends_on],
+                "result": task.result,
+                "error": task.error,
+                "created_at": task.created_at.isoformat() if task.created_at else None,
+                "updated_at": task.updated_at.isoformat() if task.updated_at else None
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting task {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get task: {str(e)}")
+
+
+@app.post("/tasks/{task_id}/complete")
+async def complete_task(
+    task_id: str,
+    result: Optional[Dict] = None,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Mark a task as completed.
+
+    This will trigger auto-dispatch of any dependent tasks.
+    """
+    try:
+        from uuid import UUID
+
+        service = get_task_queue_service()
+
+        # Set up dispatch callback if not already set
+        if not service._dispatch_callback:
+            service.set_dispatch_callback(_dispatch_task)
+
+        success = await service.complete_task(UUID(task_id), result=result)
+
+        if not success:
+            raise HTTPException(status_code=400, detail=f"Could not complete task {task_id}")
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "status": "completed",
+            "message": "Task completed. Checking for dependent tasks to dispatch..."
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error completing task {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to complete task: {str(e)}")
+
+
+@app.post("/tasks/{task_id}/fail")
+async def fail_task(
+    task_id: str,
+    error: str = "Unknown error",
+    _: bool = Depends(verify_api_key)
+):
+    """Mark a task as failed."""
+    try:
+        from uuid import UUID
+
+        service = get_task_queue_service()
+        success = await service.fail_task(UUID(task_id), error=error)
+
+        if not success:
+            raise HTTPException(status_code=400, detail=f"Could not fail task {task_id}")
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "status": "failed",
+            "error": error
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error failing task {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fail task: {str(e)}")
+
+
+@app.post("/tasks/dispatch")
+async def dispatch_tasks(
+    background_tasks: BackgroundTasks,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Manually trigger dispatch of all unblocked tasks.
+
+    Finds all queued tasks with dependencies met and dispatches
+    them to their assigned agent roles.
+    """
+    try:
+        service = get_task_queue_service()
+        unblocked = await service.get_unblocked_tasks()
+
+        if not unblocked:
+            return {
+                "success": True,
+                "dispatched": 0,
+                "message": "No unblocked tasks to dispatch"
+            }
+
+        dispatched = []
+        for task in unblocked:
+            # Claim the task first
+            claimed = await service.claim_task(task.id)
+            if claimed:
+                logger.info(f"Handshake: Dispatching Task {task.id} to {task.role}")
+                # Run in background to not block the response
+                background_tasks.add_task(_run_task_agent, task)
+                dispatched.append({
+                    "task_id": str(task.id),
+                    "role": task.role
+                })
+
+        return {
+            "success": True,
+            "dispatched": len(dispatched),
+            "tasks": dispatched,
+            "message": f"Dispatched {len(dispatched)} tasks"
+        }
+
+    except Exception as e:
+        logger.error(f"Error dispatching tasks: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to dispatch tasks: {str(e)}")
+
+
+@app.get("/orchestration/status")
+async def get_orchestration_status():
+    """
+    Get orchestration status - count of tasks by status.
+
+    Returns a summary of the task queue state.
+    """
+    try:
+        service = get_task_queue_service()
+        counts = await service.get_status_counts()
+        unblocked = await service.get_unblocked_tasks()
+
+        return {
+            "success": True,
+            "task_counts": counts,
+            "unblocked_count": len(unblocked),
+            "total_tasks": sum(counts.values()),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting orchestration status: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get status: {str(e)}")
+
+
+async def _dispatch_task(task: Task):
+    """
+    Dispatch callback for auto-dispatch after task completion.
+
+    Called by TaskQueueService when a task completes.
+    """
+    service = get_task_queue_service()
+
+    # Claim the task
+    claimed = await service.claim_task(task.id)
+    if claimed:
+        logger.info(f"Handshake: Auto-dispatching Task {task.id} to {task.role}")
+        await _run_task_agent(task)
+
+
+async def _run_task_agent(task: Task):
+    """
+    Run the agent for a task.
+
+    Extracts the message from payload and runs the appropriate agent.
+    """
+    service = get_task_queue_service()
+
+    try:
+        # Extract message from payload
+        message = task.payload.get("message", task.payload.get("instructions", ""))
+        if not message:
+            message = f"Execute task: {task.payload}"
+
+        user_id = task.payload.get("user_id", "00000000-0000-0000-0000-000000000001")
+
+        logger.info(f"Running agent for task {task.id} (role: {task.role})")
+
+        # Run the agent with the task's role
+        result = await run_agent(
+            user_id=user_id,
+            session_id=f"task-{task.id}",
+            user_message=message,
+            role=task.role
+        )
+
+        if result.get("success"):
+            await service.complete_task(
+                task.id,
+                result={"response": result.get("response")},
+                auto_dispatch=True  # Trigger next tasks in chain
+            )
+            logger.info(f"Task {task.id} completed successfully")
+        else:
+            await service.fail_task(
+                task.id,
+                error=result.get("error", "Agent execution failed")
+            )
+            logger.error(f"Task {task.id} failed: {result.get('error')}")
+
+    except Exception as e:
+        logger.error(f"Error running agent for task {task.id}: {e}")
+        await service.fail_task(task.id, error=str(e))
+
+
+# Import for timestamp
+from datetime import datetime, timezone
 
 
 @app.post("/invoke", response_model=InvokeResponse)
