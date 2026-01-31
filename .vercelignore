@@ -1,0 +1,2 @@
+# Ignore the Next.js dashboard - it has its own Vercel project
+/dashboard
