@@ -53,7 +53,7 @@ RUN npm install -g @presto-ai/google-workspace-mcp && \
 
 # Copy application code
 COPY lib/ ./lib/
-COPY app/ ./app/
+COPY backend/ ./backend/
 COPY scripts/ ./scripts/
 COPY docs/roles/ ./docs/roles/
 COPY run_server.py ./run_server.py

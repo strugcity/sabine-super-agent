@@ -22,8 +22,8 @@ from lib.agent.memory import ingest_user_message
 from lib.agent.retrieval import retrieve_context
 from lib.agent.parsing import parse_file, is_supported_mime_type, SUPPORTED_MIME_TYPES
 from lib.agent.scheduler import get_scheduler, SabineScheduler
-from app.services.wal import WALService
-from app.services.task_queue import TaskQueueService, Task, TaskStatus, get_task_queue_service
+from backend.services.wal import WALService
+from backend.services.task_queue import TaskQueueService, Task, TaskStatus, get_task_queue_service
 import asyncio
 import hmac
 import logging

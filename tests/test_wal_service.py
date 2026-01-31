@@ -143,7 +143,7 @@ class TestWALEntryCreation:
         - Entry status is 'pending' by default
         """
         # Import the service (will fail until implemented)
-        from app.services.wal import WALService, WALEntry
+        from backend.services.wal import WALService, WALEntry
 
         # Arrange
         payload = create_test_payload()
@@ -178,7 +178,7 @@ class TestWALEntryCreation:
         - The complete payload is stored in raw_payload column
         - Payload can be retrieved without data loss
         """
-        from app.services.wal import WALService, WALEntry
+        from backend.services.wal import WALService, WALEntry
 
         # Arrange
         payload = create_test_payload()
@@ -211,7 +211,7 @@ class TestWALEntryCreation:
         - New entries have status = 'pending'
         - retry_count = 0
         """
-        from app.services.wal import WALService
+        from backend.services.wal import WALService
 
         # Arrange
         payload = create_test_payload()
@@ -243,7 +243,7 @@ class TestWALEntryCreation:
         - created_at is populated with current timestamp
         - Timestamp is in UTC
         """
-        from app.services.wal import WALService
+        from backend.services.wal import WALService
 
         # Arrange
         payload = create_test_payload()
@@ -281,7 +281,7 @@ class TestWALEntryCreation:
         Integration tests should verify actual database performance.
         """
         import time
-        from app.services.wal import WALService
+        from backend.services.wal import WALService
 
         # Arrange
         payload = create_test_payload()
@@ -327,7 +327,7 @@ class TestWALEntryRetrievalByStatus:
         - get_pending_entries() returns List[WALEntry]
         - Entries are sorted by created_at ASC (oldest first)
         """
-        from app.services.wal import WALService, WALEntry
+        from backend.services.wal import WALService, WALEntry
 
         # Arrange
         service = WALService(client=mock_supabase_client)
@@ -368,7 +368,7 @@ class TestWALEntryRetrievalByStatus:
         - If limit=5, returns at most 5 entries
         - Default limit is 100 (configurable)
         """
-        from app.services.wal import WALService
+        from backend.services.wal import WALService
 
         # Arrange
         service = WALService(client=mock_supabase_client)
@@ -404,7 +404,7 @@ class TestWALEntryRetrievalByStatus:
         - Entries sorted by created_at ASC
         - Oldest entries processed first
         """
-        from app.services.wal import WALService
+        from backend.services.wal import WALService
 
         # Arrange
         service = WALService(client=mock_supabase_client)
@@ -443,7 +443,7 @@ class TestWALEntryRetrievalByStatus:
         - Only entries with status='pending' returned
         - completed, failed, processing entries excluded
         """
-        from app.services.wal import WALService
+        from backend.services.wal import WALService
 
         # Arrange
         service = WALService(client=mock_supabase_client)
@@ -475,7 +475,7 @@ class TestWALEntryRetrievalByStatus:
         - Returns empty list, not None
         - No exceptions raised
         """
-        from app.services.wal import WALService
+        from backend.services.wal import WALService
 
         # Arrange
         service = WALService(client=mock_supabase_client)
@@ -514,7 +514,7 @@ class TestWALEntryIdempotency:
         - create_entry() generates idempotency_key from payload
         - Key is stored with the entry
         """
-        from app.services.wal import WALService
+        from backend.services.wal import WALService
 
         # Arrange
         payload = create_test_payload(timestamp=sample_timestamp)
@@ -552,7 +552,7 @@ class TestWALEntryIdempotency:
         - No new entry created
         - No exception raised (graceful handling)
         """
-        from app.services.wal import WALService
+        from backend.services.wal import WALService
 
         # Arrange
         payload = create_test_payload(timestamp=sample_timestamp)
@@ -603,7 +603,7 @@ class TestWALEntryIdempotency:
         - Same inputs produce same key
         - Different inputs produce different keys
         """
-        from app.services.wal import WALService
+        from backend.services.wal import WALService
 
         # Arrange
         payload = create_test_payload(timestamp=sample_timestamp)
@@ -631,7 +631,7 @@ class TestWALEntryIdempotency:
         - "Hello" at T1 != "World" at T1
         - Keys are unique per message content
         """
-        from app.services.wal import WALService
+        from backend.services.wal import WALService
 
         # Arrange
         service = WALService(client=mock_supabase_client)
@@ -656,7 +656,7 @@ class TestWALEntryIdempotency:
         - Same message at T1 != Same message at T2
         - Timestamp precision is to the second
         """
-        from app.services.wal import WALService
+        from backend.services.wal import WALService
 
         # Arrange
         service = WALService(client=mock_supabase_client)
@@ -683,7 +683,7 @@ class TestWALEntryIdempotency:
         - 12:00:00.100 == 12:00:00.999 for idempotency purposes
         - This handles Twilio retries that happen within 1 second
         """
-        from app.services.wal import WALService
+        from backend.services.wal import WALService
 
         # Arrange
         service = WALService(client=mock_supabase_client)
@@ -723,7 +723,7 @@ class TestWALEntryStatusUpdates:
         - Status changes from 'pending' to 'processing'
         - worker_id is recorded
         """
-        from app.services.wal import WALService
+        from backend.services.wal import WALService
 
         # Arrange
         entry_id = uuid4()
@@ -752,7 +752,7 @@ class TestWALEntryStatusUpdates:
         - Status changes from 'processing' to 'completed'
         - processed_at timestamp is set
         """
-        from app.services.wal import WALService
+        from backend.services.wal import WALService
 
         # Arrange
         entry_id = uuid4()
@@ -781,7 +781,7 @@ class TestWALEntryStatusUpdates:
         - last_error recorded
         - If retry_count < max, status returns to 'pending'
         """
-        from app.services.wal import WALService
+        from backend.services.wal import WALService
 
         # Arrange
         entry_id = uuid4()

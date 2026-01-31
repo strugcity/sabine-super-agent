@@ -96,7 +96,7 @@ def live_wal_service():
     if not supabase_url or not supabase_key:
         pytest.skip("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY required for benchmarks")
 
-    from app.services.wal import WALService
+    from backend.services.wal import WALService
     return WALService()  # Uses singleton client
 
 

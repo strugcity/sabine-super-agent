@@ -28,36 +28,36 @@ class TestInfrastructureBoot:
 
     def test_app_package_importable(self):
         """
-        Test that the 'app' package is importable.
+        Test that the 'backend' package is importable.
 
-        This is the root cause of the Railway outage - the 'app' package
+        This is the root cause of the Railway outage - the 'backend' package
         must be discoverable via PYTHONPATH.
         """
         try:
-            import app
+            import backend
             assert hasattr(app, '__file__'), "app package should have __file__ attribute"
         except ModuleNotFoundError as e:
-            pytest.fail(f"Cannot import 'app' package: {e}. Check PYTHONPATH configuration.")
+            pytest.fail(f"Cannot import 'backend' package: {e}. Check PYTHONPATH configuration.")
 
     def test_app_services_importable(self):
         """
         Test that app.services subpackage is importable.
         """
         try:
-            import app.services
+            import backend.services
             assert hasattr(app.services, '__file__'), "app.services should have __file__"
         except ModuleNotFoundError as e:
             pytest.fail(f"Cannot import 'app.services': {e}. Check PYTHONPATH configuration.")
 
     def test_wal_service_importable(self):
         """
-        Test that WALService can be imported from app.services.wal.
+        Test that WALService can be imported from backend.services.wal.
 
         This is the specific import that caused the Railway outage:
-        `from app.services.wal import WALService`
+        `from backend.services.wal import WALService`
         """
         try:
-            from app.services.wal import WALService
+            from backend.services.wal import WALService
             assert WALService is not None, "WALService should be a class"
             assert callable(WALService), "WALService should be callable (a class)"
         except ModuleNotFoundError as e:
@@ -68,7 +68,7 @@ class TestInfrastructureBoot:
         Test that WALEntry model can be imported.
         """
         try:
-            from app.services.wal import WALEntry
+            from backend.services.wal import WALEntry
             assert WALEntry is not None, "WALEntry should be a class"
         except ModuleNotFoundError as e:
             pytest.fail(f"Cannot import WALEntry: {e}")
@@ -80,7 +80,7 @@ class TestInfrastructureBoot:
         This is the main FastAPI application module.
         """
         try:
-            from lib.agent.server import app
+            from lib.agent.server import backend
             assert app is not None, "FastAPI app should be importable"
         except ModuleNotFoundError as e:
             pytest.fail(f"Cannot import lib.agent.server: {e}")
@@ -90,7 +90,7 @@ class TestInfrastructureBoot:
         Test that the server module's import of WALService works.
 
         The server.py file contains:
-        `from app.services.wal import WALService`
+        `from backend.services.wal import WALService`
 
         This test verifies the import chain works end-to-end.
         """
