@@ -36,10 +36,14 @@ class MCPClient:
             content = await client.call_tool("gmail.get", {"messageId": "123"})
     """
 
+    # Default timeout for MCP server connections (seconds)
+    DEFAULT_TIMEOUT = 30
+
     def __init__(
         self,
         command: str = "/app/deploy/start-mcp-server.sh",
-        args: List[str] = None
+        args: List[str] = None,
+        timeout: float = None
     ):
         """
         Initialize MCP client configuration.
@@ -47,42 +51,92 @@ class MCPClient:
         Args:
             command: The MCP server command (e.g., "/app/deploy/start-mcp-server.sh" or "npx")
             args: Arguments for the command (default: ["--transport", "stdio"])
+            timeout: Connection timeout in seconds (default: 30). Prevents hanging if MCP server fails to start.
         """
         self.command = command
         self.args = args or ["--transport", "stdio"]
+        self.timeout = timeout if timeout is not None else self.DEFAULT_TIMEOUT
         self._session: Optional[ClientSession] = None
         self._transport_cm = None
         self._session_cm = None
         self._tools: Dict[str, Any] = {}
 
     async def __aenter__(self) -> "MCPClient":
-        """Enter the async context and establish MCP connection."""
-        logger.info(f"Connecting to MCP server: {self.command} {' '.join(self.args)}")
+        """Enter the async context and establish MCP connection with timeout protection."""
+        logger.info(f"Connecting to MCP server: {self.command} {' '.join(self.args)} (timeout: {self.timeout}s)")
 
         stdio_params = StdioServerParameters(
             command=self.command,
             args=self.args
         )
 
-        # Enter the transport context
-        self._transport_cm = stdio_client(stdio_params)
-        read_stream, write_stream = await self._transport_cm.__aenter__()
+        try:
+            # Enter the transport context with timeout
+            # This prevents hanging if the MCP server fails to start or respond
+            self._transport_cm = stdio_client(stdio_params)
+            read_stream, write_stream = await asyncio.wait_for(
+                self._transport_cm.__aenter__(),
+                timeout=self.timeout
+            )
 
-        # Enter the session context
-        self._session_cm = ClientSession(read_stream, write_stream)
-        self._session = await self._session_cm.__aenter__()
+            # Enter the session context with timeout
+            self._session_cm = ClientSession(read_stream, write_stream)
+            self._session = await asyncio.wait_for(
+                self._session_cm.__aenter__(),
+                timeout=self.timeout
+            )
 
-        # Initialize the session
-        await self._session.initialize()
-        logger.debug("MCP session initialized")
+            # Initialize the session with timeout
+            await asyncio.wait_for(
+                self._session.initialize(),
+                timeout=self.timeout
+            )
+            logger.debug("MCP session initialized")
 
-        # Cache available tools
-        tools_response = await self._session.list_tools()
-        for tool in tools_response.tools:
-            self._tools[tool.name] = tool
-        logger.info(f"✓ Connected to MCP server with {len(self._tools)} tools available")
+            # Cache available tools with timeout
+            tools_response = await asyncio.wait_for(
+                self._session.list_tools(),
+                timeout=self.timeout
+            )
+            for tool in tools_response.tools:
+                self._tools[tool.name] = tool
+            logger.info(f"✓ Connected to MCP server with {len(self._tools)} tools available")
 
-        return self
+            return self
+
+        except asyncio.TimeoutError:
+            # Clean up any partially opened resources
+            await self._cleanup_on_error()
+            error_msg = f"MCP server connection timed out after {self.timeout}s: {self.command}"
+            logger.error(error_msg)
+            raise asyncio.TimeoutError(error_msg)
+        except FileNotFoundError as e:
+            # Clean up and provide helpful error message
+            await self._cleanup_on_error()
+            error_msg = f"MCP server command not found: {self.command}"
+            logger.error(error_msg)
+            raise FileNotFoundError(error_msg) from e
+        except Exception as e:
+            # Clean up on any other error
+            await self._cleanup_on_error()
+            raise
+
+    async def _cleanup_on_error(self):
+        """Clean up resources when connection fails."""
+        if self._session_cm:
+            try:
+                await self._session_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
+        if self._transport_cm:
+            try:
+                await self._transport_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
+        self._session = None
+        self._session_cm = None
+        self._transport_cm = None
+        self._tools = {}
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Exit the async context and close the MCP connection."""
@@ -176,10 +230,13 @@ async def test_mcp_connection(
         True if the server is reachable, False otherwise
     """
     try:
-        async with MCPClient(command=command, args=args) as client:
+        async with MCPClient(command=command, args=args, timeout=timeout) as client:
             tools = client.list_tools()
             logger.info(f"✓ MCP server {command} is reachable with {len(tools)} tools")
             return True
+    except asyncio.TimeoutError:
+        logger.warning(f"MCP server {command} connection timed out after {timeout}s")
+        return False
     except Exception as e:
         logger.warning(f"MCP server {command} connection test failed: {e}")
         return False
@@ -201,7 +258,7 @@ async def get_mcp_tools(
     Args:
         command: The MCP server command
         args: Arguments for the MCP server
-        timeout: Timeout in seconds
+        timeout: Timeout in seconds for connection (prevents hanging on failed MCP servers)
         max_retries: Number of retry attempts
         retry_delay: Delay between retries
 
@@ -213,22 +270,27 @@ async def get_mcp_tools(
     tools = []
 
     try:
-        async with MCPClient(command=command, args=args) as client:
+        # Use timeout to prevent hanging if MCP server fails to start
+        async with MCPClient(command=command, args=args, timeout=timeout) as client:
             for tool_name in client.list_tools():
                 tool_info = client.get_tool_info(tool_name)
                 if tool_info:
-                    # Create a tool that opens its own session
-                    def make_tool_func(name: str, cmd: str, tool_args: List[str]):
+                    # Create a tool that opens its own session with timeout
+                    def make_tool_func(name: str, cmd: str, tool_args: List[str], tool_timeout: int):
                         async def tool_func(**kwargs) -> str:
                             try:
-                                async with MCPClient(command=cmd, args=tool_args) as c:
+                                async with MCPClient(command=cmd, args=tool_args, timeout=tool_timeout) as c:
                                     return await c.call_tool(name, kwargs)
+                            except asyncio.TimeoutError:
+                                error_msg = f"MCP tool {name} timed out after {tool_timeout}s"
+                                logger.error(error_msg)
+                                return f"Error: {error_msg}"
                             except Exception as e:
                                 logger.error(f"Error executing MCP tool {name}: {e}")
                                 return f"Error: {str(e)}"
                         return tool_func
 
-                    func = make_tool_func(tool_name, command, args or ["--transport", "stdio"])
+                    func = make_tool_func(tool_name, command, args or ["--transport", "stdio"], timeout)
 
                     tool = StructuredTool.from_function(
                         name=tool_name,
@@ -240,6 +302,10 @@ async def get_mcp_tools(
 
             logger.info(f"✓ Created {len(tools)} LangChain tools from {command}")
 
+    except asyncio.TimeoutError:
+        logger.error(f"MCP server {command} timed out after {timeout}s - skipping tools from this server")
+    except FileNotFoundError:
+        logger.error(f"MCP server command not found: {command} - skipping tools from this server")
     except Exception as e:
         logger.error(f"Failed to get MCP tools from {command}: {e}")
 
