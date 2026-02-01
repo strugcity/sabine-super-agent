@@ -759,6 +759,10 @@ async def _run_task_agent(task: Task):
 
     service = get_task_queue_service()
 
+    # Ensure dispatch callback is set for auto-dispatch chain
+    if not service._dispatch_callback:
+        service.set_dispatch_callback(_dispatch_task)
+
     try:
         # Extract message from payload
         message = task.payload.get("message", task.payload.get("instructions", ""))
