@@ -764,10 +764,18 @@ async def _run_task_agent(task: Task):
         service.set_dispatch_callback(_dispatch_task)
 
     try:
-        # Extract message from payload
-        message = task.payload.get("message", task.payload.get("instructions", ""))
+        # Extract message from payload - check multiple fields for flexibility
+        # Priority: message > objective > instructions > fallback to full payload
+        message = (
+            task.payload.get("message") or
+            task.payload.get("objective") or
+            task.payload.get("instructions") or
+            ""
+        )
         if not message:
             message = f"Execute task: {task.payload}"
+
+        logger.info(f"Task message extracted ({len(message)} chars): {message[:200]}...")
 
         user_id = task.payload.get("user_id", "00000000-0000-0000-0000-000000000001")
 
