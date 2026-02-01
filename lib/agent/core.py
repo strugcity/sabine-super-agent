@@ -897,6 +897,9 @@ async def create_agent(
     # Load all tools
     tools = await get_all_tools()
     logger.info(f"Loaded {len(tools)} tools for agent")
+    # Log tool names for debugging
+    tool_names = [t.name for t in tools]
+    logger.info(f"Tool names: {tool_names}")
 
     # Load deep context
     deep_context = await load_deep_context(user_id)
@@ -1165,8 +1168,32 @@ async def run_agent(
 
         duration_ms = (time.time() - start_time) * 1000
 
-        # Extract response
+        # Diagnostic: Log all messages returned by agent
         agent_messages = result.get("messages", [])
+        logger.info(f"Agent returned {len(agent_messages)} messages")
+        tool_calls_detected = 0
+        for i, msg in enumerate(agent_messages):
+            msg_type = type(msg).__name__
+            content_preview = ""
+            if hasattr(msg, 'content'):
+                if isinstance(msg.content, str):
+                    content_preview = msg.content[:100]
+                elif isinstance(msg.content, list):
+                    # Check for tool_use blocks
+                    for block in msg.content:
+                        if isinstance(block, dict) and block.get('type') == 'tool_use':
+                            tool_calls_detected += 1
+                            content_preview = f"[TOOL_USE: {block.get('name')}]"
+                            break
+                    if not content_preview:
+                        content_preview = f"[list with {len(msg.content)} items]"
+                else:
+                    content_preview = str(msg.content)[:100]
+            logger.info(f"  Message {i}: [{msg_type}] {content_preview}")
+
+        logger.info(f"Tool calls detected in messages: {tool_calls_detected}")
+
+        # Extract response
         if agent_messages:
             last_message = agent_messages[-1]
             response_text = last_message.content if hasattr(last_message, "content") else str(last_message)
