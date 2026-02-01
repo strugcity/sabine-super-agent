@@ -848,6 +848,126 @@ async def get_orchestration_status():
         raise HTTPException(status_code=500, detail=f"Failed to get status: {str(e)}")
 
 
+@app.get("/audit/tools")
+async def get_tool_audit_logs(
+    task_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Get tool execution audit logs.
+
+    Query persistent audit trail of all tool executions by Dream Team agents.
+    Useful for debugging, compliance, and security monitoring.
+
+    Args:
+        task_id: Filter by specific task ID
+        status: Filter by status ('success', 'error', 'blocked')
+        limit: Maximum number of results (default 100)
+    """
+    try:
+        from backend.services.audit_logging import (
+            get_task_audit_logs,
+            get_recent_failures,
+            get_blocked_access_attempts,
+            get_supabase_client
+        )
+
+        # If task_id provided, get logs for that task
+        if task_id:
+            from uuid import UUID
+            logs = await get_task_audit_logs(UUID(task_id))
+            return {
+                "success": True,
+                "task_id": task_id,
+                "count": len(logs),
+                "logs": logs
+            }
+
+        # If status filter, use appropriate query
+        if status == "error":
+            logs = await get_recent_failures(limit=limit)
+            return {
+                "success": True,
+                "filter": "recent_failures",
+                "count": len(logs),
+                "logs": logs
+            }
+
+        if status == "blocked":
+            logs = await get_blocked_access_attempts(limit=limit)
+            return {
+                "success": True,
+                "filter": "blocked_access",
+                "count": len(logs),
+                "logs": logs
+            }
+
+        # Default: get recent logs
+        client = get_supabase_client()
+        if not client:
+            return {
+                "success": False,
+                "error": "Audit logging not configured (Supabase client unavailable)"
+            }
+
+        result = client.table("tool_audit_log")\
+            .select("*")\
+            .order("created_at", desc=True)\
+            .limit(limit)\
+            .execute()
+
+        return {
+            "success": True,
+            "count": len(result.data) if result.data else 0,
+            "logs": result.data or []
+        }
+
+    except ImportError:
+        return {
+            "success": False,
+            "error": "Audit logging service not available"
+        }
+    except Exception as e:
+        logger.error(f"Error fetching audit logs: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch audit logs: {str(e)}")
+
+
+@app.get("/audit/stats")
+async def get_tool_audit_stats(
+    hours: int = 24,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Get tool execution statistics for monitoring.
+
+    Returns aggregated stats on tool usage, success rates, and performance.
+    """
+    try:
+        from backend.services.audit_logging import get_supabase_client
+
+        client = get_supabase_client()
+        if not client:
+            return {
+                "success": False,
+                "error": "Audit logging not configured"
+            }
+
+        # Use the database function for stats
+        result = client.rpc("get_tool_execution_stats", {"p_hours": hours}).execute()
+
+        return {
+            "success": True,
+            "period_hours": hours,
+            "stats": result.data or []
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching audit stats: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch stats: {str(e)}")
+
+
 def _task_requires_tool_execution(payload: dict) -> bool:
     """
     Determine if a task payload indicates that tool execution is required.
@@ -1135,6 +1255,24 @@ DO NOT use any other repository. This is enforced by the orchestration system.
                     "verification_warnings": verification_warnings
                 }
             }
+
+            # === PERSISTENT AUDIT LOGGING WITH TASK CONTEXT ===
+            # Log tool executions to database with task_id for traceability
+            if executions:
+                try:
+                    from backend.services.audit_logging import log_tool_executions_batch
+                    user_id = task.payload.get("user_id", "00000000-0000-0000-0000-000000000001")
+                    logged_count = await log_tool_executions_batch(
+                        executions=executions,
+                        task_id=task.id,
+                        user_id=user_id,
+                        agent_role=task.role,
+                    )
+                    logger.info(f"Task {task.id}: {logged_count} tool executions logged to audit trail")
+                except ImportError:
+                    logger.debug("Audit logging service not available")
+                except Exception as e:
+                    logger.warning(f"Task {task.id} audit logging failed (non-fatal): {e}")
 
             await service.complete_task(
                 task.id,

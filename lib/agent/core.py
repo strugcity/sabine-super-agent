@@ -1297,6 +1297,23 @@ async def run_agent(
         if failed_tools:
             logger.warning(f"Failed tool calls: {[(t['tool_name'], t.get('error')) for t in failed_tools]}")
 
+        # === PERSISTENT AUDIT LOGGING ===
+        # Log all tool executions to database for debugging and compliance
+        if tool_executions:
+            try:
+                from backend.services.audit_logging import log_tool_executions_batch
+                logged_count = await log_tool_executions_batch(
+                    executions=tool_executions,
+                    user_id=user_id,
+                    agent_role=role,
+                )
+                logger.info(f"Audit logging: {logged_count} tool executions logged to database")
+            except ImportError:
+                logger.debug("Audit logging service not available - skipping persistent logging")
+            except Exception as e:
+                # Don't let audit logging failures break the main flow
+                logger.warning(f"Audit logging failed (non-fatal): {e}")
+
         # Extract response
         if agent_messages:
             last_message = agent_messages[-1]
