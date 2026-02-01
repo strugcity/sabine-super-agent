@@ -754,6 +754,9 @@ async def _run_task_agent(task: Task):
 
     Extracts the message from payload and runs the appropriate agent.
     Sends real-time updates to Slack (threaded by task).
+
+    Context Propagation: If this task depends on other tasks, their results
+    are fetched and included as context for this agent.
     """
     from lib.agent.slack_manager import send_task_update, log_agent_event
 
@@ -775,7 +778,43 @@ async def _run_task_agent(task: Task):
         if not message:
             message = f"Execute task: {task.payload}"
 
-        logger.info(f"Task message extracted ({len(message)} chars): {message[:200]}...")
+        # === CONTEXT PROPAGATION ===
+        # Fetch results from parent tasks (dependencies) and include as context
+        parent_context = ""
+        if task.depends_on and len(task.depends_on) > 0:
+            logger.info(f"Task {task.id} has {len(task.depends_on)} parent dependencies - fetching context")
+            parent_results = []
+
+            for parent_id in task.depends_on:
+                parent_task = await service.get_task(parent_id)
+                if parent_task and parent_task.result:
+                    parent_response = parent_task.result.get("response", "")
+                    if parent_response:
+                        parent_results.append({
+                            "task_id": str(parent_id),
+                            "role": parent_task.role,
+                            "task_name": parent_task.payload.get("name", "Unknown Task"),
+                            "output": parent_response
+                        })
+                        logger.info(f"  - Got context from parent task {parent_id} ({parent_task.role}): {len(parent_response)} chars")
+
+            if parent_results:
+                parent_context = "\n\n=== CONTEXT FROM PREVIOUS TASKS ===\n"
+                parent_context += "The following tasks have been completed before yours. Use their outputs as context:\n\n"
+
+                for i, result in enumerate(parent_results, 1):
+                    parent_context += f"--- Task {i}: {result['task_name']} (by {result['role']}) ---\n"
+                    parent_context += f"{result['output']}\n\n"
+
+                parent_context += "=== END OF PREVIOUS TASK CONTEXT ===\n\n"
+                parent_context += "Now, here is YOUR task:\n\n"
+
+                logger.info(f"Built parent context ({len(parent_context)} chars) from {len(parent_results)} tasks")
+
+        # Combine parent context with task message
+        full_message = parent_context + message
+
+        logger.info(f"Task message extracted ({len(full_message)} chars, {len(parent_context)} from parents): {message[:200]}...")
 
         user_id = task.payload.get("user_id", "00000000-0000-0000-0000-000000000001")
 
@@ -790,11 +829,11 @@ async def _run_task_agent(task: Task):
             details=message[:200] if len(message) > 200 else message
         )
 
-        # Run the agent with the task's role
+        # Run the agent with the task's role (using full_message which includes parent context)
         result = await run_agent(
             user_id=user_id,
             session_id=f"task-{task.id}",
-            user_message=message,
+            user_message=full_message,
             role=task.role
         )
 
