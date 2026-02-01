@@ -1,14 +1,14 @@
 {
   "name": "github_issues",
-  "description": "Manage GitHub issues - list, create, update, and comment on issues in a repository. Requires GITHUB_TOKEN environment variable.",
-  "version": "1.0.0",
+  "description": "Manage GitHub issues and files - list/create/update issues, create/update/delete files in a repository. Use create_file to write reports or documentation. Requires GITHUB_TOKEN environment variable.",
+  "version": "1.1.0",
   "parameters": {
     "type": "object",
     "properties": {
       "action": {
         "type": "string",
-        "enum": ["list", "create", "get", "update", "comment"],
-        "description": "The action to perform: list (list issues), create (new issue), get (single issue), update (modify issue), comment (add comment)"
+        "enum": ["list", "create", "get", "update", "comment", "get_file", "create_file", "update_file", "delete_file"],
+        "description": "The action to perform: list (list issues), create (new issue), get (single issue), update (modify issue), comment (add comment), get_file (read file), create_file (create new file), update_file (update existing file), delete_file (delete file)"
       },
       "owner": {
         "type": "string",
@@ -39,6 +39,26 @@
         "type": "array",
         "items": {"type": "string"},
         "description": "Labels to apply to the issue"
+      },
+      "path": {
+        "type": "string",
+        "description": "File path in the repository (e.g., 'docs/architecture/PROJECT_ATLAS.md'). Required for file actions."
+      },
+      "content": {
+        "type": "string",
+        "description": "File content to write (required for create_file and update_file actions)"
+      },
+      "message": {
+        "type": "string",
+        "description": "Commit message for file operations. Default: 'Create/Update/Delete {path}'"
+      },
+      "branch": {
+        "type": "string",
+        "description": "Branch name for file operations. Default: repository's default branch"
+      },
+      "sha": {
+        "type": "string",
+        "description": "File SHA (auto-fetched if not provided for update_file and delete_file)"
       }
     },
     "required": ["action"]

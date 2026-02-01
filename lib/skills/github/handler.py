@@ -238,9 +238,171 @@ async def add_comment(
             }
 
 
+async def get_file(
+    owner: str, repo: str, path: str, branch: Optional[str] = None
+) -> Dict[str, Any]:
+    """Get a file's content and SHA from a repository."""
+    import base64
+
+    url = f"{GITHUB_API}/repos/{owner}/{repo}/contents/{path}"
+    params = {}
+    if branch:
+        params["ref"] = branch
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=get_headers(), params=params)
+
+        if response.status_code == 200:
+            data = response.json()
+            content = ""
+            if data.get("content"):
+                content = base64.b64decode(data["content"]).decode("utf-8")
+            return {
+                "status": "success",
+                "file": {
+                    "path": data["path"],
+                    "sha": data["sha"],
+                    "size": data["size"],
+                    "content": content,
+                    "url": data["html_url"],
+                },
+            }
+        elif response.status_code == 404:
+            return {"status": "not_found", "error": f"File not found: {path}"}
+        else:
+            return {
+                "status": "error",
+                "error": f"GitHub API error: {response.status_code}",
+                "detail": response.text,
+            }
+
+
+async def create_or_update_file(
+    owner: str,
+    repo: str,
+    path: str,
+    content: str,
+    message: str,
+    branch: Optional[str] = None,
+    sha: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Create or update a file in a repository.
+
+    If the file exists, sha must be provided (get it via get_file first).
+    If creating a new file, sha should be None.
+    """
+    import base64
+
+    url = f"{GITHUB_API}/repos/{owner}/{repo}/contents/{path}"
+
+    # Base64 encode the content
+    content_b64 = base64.b64encode(content.encode("utf-8")).decode("utf-8")
+
+    data = {
+        "message": message,
+        "content": content_b64,
+    }
+    if branch:
+        data["branch"] = branch
+    if sha:
+        data["sha"] = sha  # Required for updates
+
+    async with httpx.AsyncClient() as client:
+        response = await client.put(url, headers=get_headers(), json=data)
+
+        if response.status_code in [200, 201]:
+            result = response.json()
+            action = "updated" if sha else "created"
+            return {
+                "status": "success",
+                "message": f"File {action}: {path}",
+                "file": {
+                    "path": result["content"]["path"],
+                    "sha": result["content"]["sha"],
+                    "url": result["content"]["html_url"],
+                },
+                "commit": {
+                    "sha": result["commit"]["sha"],
+                    "message": result["commit"]["message"],
+                    "url": result["commit"]["html_url"],
+                },
+            }
+        elif response.status_code == 409:
+            return {
+                "status": "error",
+                "error": "Conflict - file may have been modified. Get latest SHA and retry.",
+                "detail": response.text,
+            }
+        elif response.status_code == 422:
+            return {
+                "status": "error",
+                "error": "Invalid request - check path and content",
+                "detail": response.text,
+            }
+        elif response.status_code == 401:
+            return {
+                "status": "error",
+                "error": "Authentication failed. Check GITHUB_TOKEN.",
+            }
+        elif response.status_code == 403:
+            return {
+                "status": "error",
+                "error": "Permission denied. Token may lack 'repo' scope.",
+            }
+        else:
+            return {
+                "status": "error",
+                "error": f"GitHub API error: {response.status_code}",
+                "detail": response.text,
+            }
+
+
+async def delete_file(
+    owner: str,
+    repo: str,
+    path: str,
+    message: str,
+    sha: str,
+    branch: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Delete a file from a repository. Requires the file's current SHA."""
+    url = f"{GITHUB_API}/repos/{owner}/{repo}/contents/{path}"
+
+    data = {
+        "message": message,
+        "sha": sha,
+    }
+    if branch:
+        data["branch"] = branch
+
+    async with httpx.AsyncClient() as client:
+        response = await client.request("DELETE", url, headers=get_headers(), json=data)
+
+        if response.status_code == 200:
+            result = response.json()
+            return {
+                "status": "success",
+                "message": f"File deleted: {path}",
+                "commit": {
+                    "sha": result["commit"]["sha"],
+                    "message": result["commit"]["message"],
+                    "url": result["commit"]["html_url"],
+                },
+            }
+        elif response.status_code == 404:
+            return {"status": "error", "error": f"File not found: {path}"}
+        else:
+            return {
+                "status": "error",
+                "error": f"GitHub API error: {response.status_code}",
+                "detail": response.text,
+            }
+
+
 async def execute(params: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Execute the GitHub issues skill.
+    Execute the GitHub skill.
 
     Args:
         params: Dict with action and action-specific parameters
@@ -304,11 +466,65 @@ async def execute(params: Dict[str, Any]) -> Dict[str, Any]:
                 return {"status": "error", "error": "body is required for 'comment' action"}
             return await add_comment(owner, repo, issue_number, body)
 
+        # File operations
+        elif action == "get_file":
+            path = params.get("path")
+            if not path:
+                return {"status": "error", "error": "path is required for 'get_file' action"}
+            return await get_file(owner, repo, path, params.get("branch"))
+
+        elif action == "create_file":
+            path = params.get("path")
+            content = params.get("content")
+            message = params.get("message", f"Create {path}")
+            if not path:
+                return {"status": "error", "error": "path is required for 'create_file' action"}
+            if content is None:
+                return {"status": "error", "error": "content is required for 'create_file' action"}
+            return await create_or_update_file(
+                owner, repo, path, content, message, params.get("branch"), sha=None
+            )
+
+        elif action == "update_file":
+            path = params.get("path")
+            content = params.get("content")
+            message = params.get("message", f"Update {path}")
+            sha = params.get("sha")
+            if not path:
+                return {"status": "error", "error": "path is required for 'update_file' action"}
+            if content is None:
+                return {"status": "error", "error": "content is required for 'update_file' action"}
+            if not sha:
+                # Try to get current SHA automatically
+                existing = await get_file(owner, repo, path, params.get("branch"))
+                if existing["status"] == "success":
+                    sha = existing["file"]["sha"]
+                else:
+                    return {"status": "error", "error": "sha is required for 'update_file' action (file not found for auto-fetch)"}
+            return await create_or_update_file(
+                owner, repo, path, content, message, params.get("branch"), sha=sha
+            )
+
+        elif action == "delete_file":
+            path = params.get("path")
+            message = params.get("message", f"Delete {path}")
+            sha = params.get("sha")
+            if not path:
+                return {"status": "error", "error": "path is required for 'delete_file' action"}
+            if not sha:
+                # Try to get current SHA automatically
+                existing = await get_file(owner, repo, path, params.get("branch"))
+                if existing["status"] == "success":
+                    sha = existing["file"]["sha"]
+                else:
+                    return {"status": "error", "error": "sha is required for 'delete_file' action (file not found for auto-fetch)"}
+            return await delete_file(owner, repo, path, message, sha, params.get("branch"))
+
         else:
             return {
                 "status": "error",
                 "error": f"Unknown action: {action}",
-                "valid_actions": ["list", "create", "get", "update", "comment"],
+                "valid_actions": ["list", "create", "get", "update", "comment", "get_file", "create_file", "update_file", "delete_file"],
             }
 
     except httpx.RequestError as e:
