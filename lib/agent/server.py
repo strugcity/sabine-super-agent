@@ -24,6 +24,28 @@ from lib.agent.parsing import parse_file, is_supported_mime_type, SUPPORTED_MIME
 from lib.agent.scheduler import get_scheduler, SabineScheduler
 from backend.services.wal import WALService
 from backend.services.task_queue import TaskQueueService, Task, TaskStatus, get_task_queue_service
+from backend.services.exceptions import (
+    SABINEError,
+    AuthorizationError,
+    RepoAccessDeniedError,
+    ValidationError,
+    InvalidRoleError,
+    DatabaseError,
+    TaskNotFoundError,
+    DependencyNotFoundError,
+    CircularDependencyError,
+    FailedDependencyError,
+    AgentError,
+    AgentNoToolsError,
+    AgentToolFailuresError,
+    OperationResult,
+)
+from backend.services.output_sanitization import (
+    sanitize_api_response,
+    sanitize_agent_output,
+    sanitize_error_message,
+    sanitize_for_logging,
+)
 import asyncio
 import hmac
 import logging
@@ -647,13 +669,52 @@ async def create_task(request: CreateTaskRequest, _: bool = Depends(verify_api_k
             }
         }
 
-        task_id = await service.create_task(
+        # Use create_task_with_validation to check dependencies
+        result = await service.create_task_with_validation(
             role=request.role,
             payload=enriched_payload,
             depends_on=depends_on,
             priority=request.priority
         )
 
+        if not result.success:
+            # Handle specific dependency errors with appropriate status codes
+            error = result.error
+            if isinstance(error, DependencyNotFoundError):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": error.message,
+                        "missing_dependency": error.context.get("missing_dependency_id"),
+                        "category": "dependency_validation"
+                    }
+                )
+            elif isinstance(error, CircularDependencyError):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": error.message,
+                        "dependency_chain": error.context.get("dependency_chain"),
+                        "category": "circular_dependency"
+                    }
+                )
+            elif isinstance(error, FailedDependencyError):
+                raise HTTPException(
+                    status_code=424,  # Failed Dependency
+                    detail={
+                        "error": error.message,
+                        "failed_dependency": error.context.get("failed_dependency_id"),
+                        "failure_reason": error.context.get("failure_reason"),
+                        "category": "failed_dependency"
+                    }
+                )
+            else:
+                raise HTTPException(
+                    status_code=error.status_code if error else 500,
+                    detail=error.message if error else "Unknown error creating task"
+                )
+
+        task_id = result.data["task_id"]
         logger.info(f"Task {task_id} created for role '{request.role}' targeting repo '{request.target_repo}'")
 
         return {
@@ -705,6 +766,41 @@ async def get_task(task_id: str, _: bool = Depends(verify_api_key)):
     except Exception as e:
         logger.error(f"Error getting task {task_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get task: {str(e)}")
+
+
+@app.get("/tasks/{task_id}/dependencies")
+async def get_task_dependencies(task_id: str, _: bool = Depends(verify_api_key)):
+    """
+    Get detailed dependency status for a task.
+
+    Returns information about each dependency including:
+    - Status (queued, in_progress, completed, failed)
+    - Whether it's blocking this task
+    - Error message if failed
+    """
+    try:
+        from uuid import UUID
+
+        service = get_task_queue_service()
+        result = await service.get_dependency_status(UUID(task_id))
+
+        if not result.success:
+            error = result.error
+            raise HTTPException(
+                status_code=error.status_code if error else 500,
+                detail=error.message if error else "Failed to get dependency status"
+            )
+
+        return {
+            "success": True,
+            **result.data
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting dependencies for task {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get task dependencies: {str(e)}")
 
 
 @app.post("/tasks/{task_id}/complete")
@@ -1286,23 +1382,27 @@ DO NOT use any other repository. This is enforced by the orchestration system.
                 logger.warning(f"Task {task.id} completed with VERIFICATION WARNINGS: {verification_warnings}")
         else:
             error_msg = result.get("error", "Agent execution failed")
+            # Sanitize error message before storing/sending
+            sanitized_error_msg = sanitize_error_message(error_msg)
 
             # Send failure update to Slack
             await send_task_update(
                 task_id=task.id,
                 role=task.role,
                 event_type="task_failed",
-                message=f"Task failed: {error_msg}"
+                message=f"Task failed: {sanitized_error_msg}"
             )
 
             await service.fail_task(
                 task.id,
-                error=error_msg
+                error=sanitized_error_msg
             )
-            logger.error(f"Task {task.id} failed: {error_msg}")
+            logger.error(f"Task {task.id} failed: {sanitize_for_logging(error_msg)}")
 
     except Exception as e:
-        logger.error(f"Error running agent for task {task.id}: {e}")
+        # Sanitize exception before logging and storing
+        sanitized_exc = sanitize_error_message(e)
+        logger.error(f"Error running agent for task {task.id}: {sanitize_for_logging(str(e))}")
 
         # Send error update to Slack
         try:
@@ -1310,12 +1410,13 @@ DO NOT use any other repository. This is enforced by the orchestration system.
                 task_id=task.id,
                 role=task.role,
                 event_type="error",
-                message=f"Exception during task execution: {str(e)}"
+                message=f"Exception during task execution: {sanitized_exc}"
             )
-        except:
-            pass  # Don't fail if Slack update fails
+        except Exception as slack_error:
+            # Don't fail the main operation if Slack update fails
+            logger.warning(f"Slack notification failed for task {task.id}: {slack_error}")
 
-        await service.fail_task(task.id, error=str(e))
+        await service.fail_task(task.id, error=sanitized_exc)
 
 
 # Import for timestamp
@@ -1427,10 +1528,17 @@ async def invoke_agent(
                 logger.info(f"Cache: {cache_info.get('status')} | "
                             f"Read: {cache_info.get('cache_read_tokens', 0)} tokens")
 
-            logger.info(f"Agent response: {result['response'][:100]}...")
+            # Sanitize the agent output before returning
+            sanitized_response = sanitize_agent_output(
+                result["response"],
+                redact_credentials=True,
+                redact_pii=False  # Don't redact PII in agent responses by default
+            )
+
+            logger.info(f"Agent response: {sanitize_for_logging(result['response'][:100])}...")
             return InvokeResponse(
                 success=True,
-                response=result["response"],
+                response=sanitized_response,
                 user_id=request.user_id,
                 session_id=session_id,
                 timestamp=result["timestamp"],
@@ -1438,22 +1546,44 @@ async def invoke_agent(
                 role_title=result.get("role_title")
             )
         else:
-            logger.error(f"Agent failed: {result.get('error')}")
-            return InvokeResponse(
-                success=False,
-                response="I apologize, but I encountered an error processing your request.",
-                user_id=request.user_id,
-                session_id=session_id,
-                timestamp=result["timestamp"],
-                error=result.get("error"),
-                role=result.get("role")
+            # Log detailed error information
+            error_type = result.get("error_type", "unknown")
+            error_category = result.get("error_category", "internal")
+            http_status = result.get("http_status", 500)
+
+            logger.error(
+                f"Agent failed: {sanitize_for_logging(result.get('error'))} "
+                f"[type={error_type}, category={error_category}, status={http_status}]"
             )
 
+            # Sanitize error message before returning
+            sanitized_error = sanitize_error_message(result.get("error"))
+
+            # Return appropriate HTTP status code based on error classification
+            raise HTTPException(
+                status_code=http_status,
+                detail={
+                    "success": False,
+                    "error": sanitized_error,
+                    "error_type": error_type,
+                    "error_category": error_category,
+                    "user_id": request.user_id,
+                    "session_id": session_id,
+                    "timestamp": result.get("timestamp"),
+                    "role": result.get("role")
+                }
+            )
+
+    except HTTPException:
+        # Re-raise HTTPExceptions without wrapping
+        raise
     except Exception as e:
-        logger.error(f"Exception in invoke endpoint: {e}", exc_info=True)
+        # Sanitize exception message before logging and returning
+        sanitized_error = sanitize_error_message(e)
+        logger.error(f"Exception in invoke endpoint: {sanitize_for_logging(str(e))}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to invoke agent: {str(e)}"
+            detail=f"Failed to invoke agent: {sanitized_error}"
         )
 
 
@@ -1493,9 +1623,15 @@ async def invoke_agent_cached(request: InvokeRequest, _: bool = Depends(verify_a
                 f"Read: {cache_metrics.get('cache_read_tokens', 0)} tokens"
             )
 
+            # Sanitize the agent output before returning
+            sanitized_response = sanitize_agent_output(
+                result["response"],
+                redact_credentials=True
+            )
+
             return {
                 "success": True,
-                "response": result["response"],
+                "response": sanitized_response,
                 "user_id": request.user_id,
                 "session_id": session_id,
                 "timestamp": result["timestamp"],
@@ -1503,21 +1639,39 @@ async def invoke_agent_cached(request: InvokeRequest, _: bool = Depends(verify_a
                 "latency_ms": result.get("latency_ms", 0)
             }
         else:
-            return {
+            # Use HTTP status from error classification if available
+            http_status = result.get("http_status", 500)
+
+            # Sanitize error message
+            sanitized_error = sanitize_error_message(result.get("error"))
+
+            error_detail = {
                 "success": False,
                 "response": "Error processing request",
-                "error": result.get("error"),
+                "error": sanitized_error,
+                "error_type": result.get("error_type"),
+                "error_category": result.get("error_category"),
                 "user_id": request.user_id,
                 "session_id": session_id,
-                "timestamp": result["timestamp"]
+                "timestamp": result.get("timestamp")
             }
 
+            # Raise HTTPException with proper status code
+            raise HTTPException(
+                status_code=http_status,
+                detail=error_detail
+            )
+
+    except HTTPException:
+        # Re-raise HTTPExceptions without wrapping
+        raise
     except Exception as e:
+        sanitized_error = sanitize_error_message(e)
         logger.error(
-            f"Exception in cached invoke endpoint: {e}", exc_info=True)
+            f"Exception in cached invoke endpoint: {sanitize_for_logging(str(e))}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to invoke cached agent: {str(e)}"
+            detail=f"Failed to invoke cached agent: {sanitized_error}"
         )
 
 

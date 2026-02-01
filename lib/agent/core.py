@@ -1095,10 +1095,53 @@ async def run_agent_with_caching(
         }
 
     except Exception as e:
-        logger.error(f"Error in run_agent_with_caching: {e}")
+        logger.error(f"Error in run_agent_with_caching: {e}", exc_info=True)
+
+        # Classify the error for better handling
+        error_type = "unknown"
+        error_category = "internal"
+        http_status = None
+
+        error_str = str(e).lower()
+        error_class = type(e).__name__
+
+        # Check for API-related errors (LLM, external services)
+        if "rate" in error_str and "limit" in error_str:
+            error_type = "rate_limited"
+            error_category = "external_service"
+            http_status = 429
+        elif "401" in error_str or "unauthorized" in error_str or "authentication" in error_str:
+            error_type = "auth_failed"
+            error_category = "authentication"
+            http_status = 401
+        elif "403" in error_str or "forbidden" in error_str or "permission" in error_str:
+            error_type = "permission_denied"
+            error_category = "authorization"
+            http_status = 403
+        elif "404" in error_str or "not found" in error_str:
+            error_type = "not_found"
+            error_category = "validation"
+            http_status = 404
+        elif "timeout" in error_str or "timed out" in error_str:
+            error_type = "timeout"
+            error_category = "external_service"
+            http_status = 504
+        elif "connection" in error_str or "network" in error_str:
+            error_type = "network_error"
+            error_category = "external_service"
+            http_status = 502
+        elif "validation" in error_str or "invalid" in error_str:
+            error_type = "validation_error"
+            error_category = "validation"
+            http_status = 400
+
         return {
             "success": False,
             "error": str(e),
+            "error_type": error_type,
+            "error_category": error_category,
+            "error_class": error_class,
+            "http_status": http_status,
             "user_id": user_id,
             "session_id": session_id,
             "timestamp": datetime.now().isoformat()
@@ -1351,10 +1394,53 @@ async def run_agent(
         return response_data
 
     except Exception as e:
-        logger.error(f"Error running agent: {e}")
+        logger.error(f"Error running agent: {e}", exc_info=True)
+
+        # Classify the error for better handling
+        error_type = "unknown"
+        error_category = "internal"
+        http_status = None
+
+        error_str = str(e).lower()
+        error_class = type(e).__name__
+
+        # Check for API-related errors (LLM, external services)
+        if "rate" in error_str and "limit" in error_str:
+            error_type = "rate_limited"
+            error_category = "external_service"
+            http_status = 429
+        elif "401" in error_str or "unauthorized" in error_str or "authentication" in error_str:
+            error_type = "auth_failed"
+            error_category = "authentication"
+            http_status = 401
+        elif "403" in error_str or "forbidden" in error_str or "permission" in error_str:
+            error_type = "permission_denied"
+            error_category = "authorization"
+            http_status = 403
+        elif "404" in error_str or "not found" in error_str:
+            error_type = "not_found"
+            error_category = "validation"
+            http_status = 404
+        elif "timeout" in error_str or "timed out" in error_str:
+            error_type = "timeout"
+            error_category = "external_service"
+            http_status = 504
+        elif "connection" in error_str or "network" in error_str:
+            error_type = "network_error"
+            error_category = "external_service"
+            http_status = 502
+        elif "validation" in error_str or "invalid" in error_str:
+            error_type = "validation_error"
+            error_category = "validation"
+            http_status = 400
+
         return {
             "success": False,
             "error": str(e),
+            "error_type": error_type,
+            "error_category": error_category,
+            "error_class": error_class,
+            "http_status": http_status,
             "user_id": user_id,
             "session_id": session_id,
             "role": role,
