@@ -867,7 +867,7 @@ def get_context_hash(deep_context: Dict[str, Any]) -> str:
 async def create_agent(
     user_id: str,
     session_id: str,
-    model_name: str = "claude-3-haiku-20240307",
+    model_name: str = "claude-sonnet-4-20250514",
     enable_caching: bool = True,
     role: Optional[str] = None
 ) -> tuple[Any, Dict[str, Any]]:
@@ -884,7 +884,7 @@ async def create_agent(
     Args:
         user_id: The user's UUID
         session_id: The conversation session ID
-        model_name: The Anthropic model to use (default: Claude 3 Haiku)
+        model_name: The Anthropic model to use (default: Claude Sonnet for reliable tool use)
         enable_caching: Whether to enable prompt caching (default: True)
         role: Optional role ID for specialized persona (e.g., "backend-architect-sabine")
 
@@ -954,7 +954,7 @@ async def run_agent_with_caching(
     session_id: str,
     user_message: str,
     conversation_history: Optional[List[Dict[str, str]]] = None,
-    model_name: str = "claude-3-haiku-20240307"
+    model_name: str = "claude-sonnet-4-20250514"
 ) -> Dict[str, Any]:
     """
     Run the agent using direct Anthropic API with prompt caching.
