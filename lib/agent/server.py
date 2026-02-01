@@ -733,6 +733,69 @@ async def get_orchestration_status():
         raise HTTPException(status_code=500, detail=f"Failed to get status: {str(e)}")
 
 
+def _task_requires_tool_execution(payload: dict) -> bool:
+    """
+    Determine if a task payload indicates that tool execution is required.
+
+    This heuristic checks for keywords that suggest the task needs to produce
+    actual artifacts (files, issues, code execution) rather than just analysis.
+
+    Args:
+        payload: The task payload dictionary
+
+    Returns:
+        True if the task likely requires tool execution, False otherwise
+    """
+    # Keywords that suggest tool execution is needed
+    action_keywords = [
+        # File/code creation keywords
+        "implement", "create", "write", "build", "add", "generate",
+        "deploy", "install", "configure", "setup", "update", "modify",
+        # GitHub-specific
+        "commit", "push", "pull request", "pr", "issue", "file",
+        # Execution keywords
+        "run", "execute", "test", "compile",
+        # Specific tool hints
+        "github_issues", "create_file", "update_file", "run_python",
+    ]
+
+    # Keywords that suggest analysis-only (no tools needed)
+    analysis_keywords = [
+        "analyze", "review", "assess", "evaluate", "describe",
+        "explain", "summarize", "list", "identify", "recommend",
+        "plan", "design", "spec", "specification", "requirements",
+    ]
+
+    # Convert payload to searchable string
+    payload_text = str(payload).lower()
+
+    # Check for action keywords
+    has_action_keywords = any(kw in payload_text for kw in action_keywords)
+
+    # Check for analysis keywords (these might not need tools)
+    has_analysis_keywords = any(kw in payload_text for kw in analysis_keywords)
+
+    # Check for explicit tool requirements in payload
+    explicit_tool_requirement = (
+        payload.get("requires_tools", False) or
+        payload.get("deliverables") is not None or
+        payload.get("target_files") is not None or
+        "MUST use" in str(payload) or
+        "use github_issues" in payload_text or
+        "use the tool" in payload_text
+    )
+
+    # If explicit requirement, always require tools
+    if explicit_tool_requirement:
+        return True
+
+    # If has action keywords but not purely analysis, likely needs tools
+    if has_action_keywords and not (has_analysis_keywords and not has_action_keywords):
+        return True
+
+    return False
+
+
 async def _dispatch_task(task: Task):
     """
     Dispatch callback for auto-dispatch after task completion.
@@ -838,22 +901,71 @@ async def _run_task_agent(task: Task):
         )
 
         if result.get("success"):
-            # Send completion update to Slack
+            # === TOOL EXECUTION VERIFICATION ===
+            # Check if the agent actually used tools (especially for code/file tasks)
+            tool_execution = result.get("tool_execution", {})
+            tools_called = tool_execution.get("tools_called", [])
+            call_count = tool_execution.get("call_count", 0)
+            executions = tool_execution.get("executions", [])
+
+            # Determine if this task requires tool execution
+            # Tasks with these keywords in payload likely need actual tool usage
+            task_requires_tools = _task_requires_tool_execution(task.payload)
+
+            # Log tool execution details
+            logger.info(f"Task {task.id} tool execution summary:")
+            logger.info(f"  - Tools called: {tools_called}")
+            logger.info(f"  - Call count: {call_count}")
+            logger.info(f"  - Task requires tools: {task_requires_tools}")
+
+            # Build verification result
+            verification_passed = True
+            verification_warning = None
+
+            if task_requires_tools and call_count == 0:
+                verification_passed = False
+                verification_warning = (
+                    f"VERIFICATION FAILED: Task appears to require tool execution "
+                    f"(e.g., github_issues, run_python_sandbox) but no tools were called. "
+                    f"Agent may have only planned/described work without executing it."
+                )
+                logger.warning(f"Task {task.id}: {verification_warning}")
+
+            # Send completion update to Slack (with verification status)
             response_preview = result.get("response", "")[:300]
+            completion_message = "Task completed successfully"
+            if not verification_passed:
+                completion_message = f"⚠️ Task completed BUT verification failed: No tools executed"
+
             await send_task_update(
                 task_id=task.id,
                 role=task.role,
-                event_type="task_completed",
-                message="Task completed successfully",
-                details=response_preview
+                event_type="task_completed" if verification_passed else "task_completed_unverified",
+                message=completion_message,
+                details=f"Tools used: {tools_called or 'None'}\n\n{response_preview}"
             )
+
+            # Store result with tool execution metadata
+            task_result = {
+                "response": result.get("response"),
+                "tool_execution": {
+                    "tools_called": tools_called,
+                    "call_count": call_count,
+                    "verification_passed": verification_passed,
+                    "verification_warning": verification_warning
+                }
+            }
 
             await service.complete_task(
                 task.id,
-                result={"response": result.get("response")},
+                result=task_result,
                 auto_dispatch=True  # Trigger next tasks in chain
             )
-            logger.info(f"Task {task.id} completed successfully")
+
+            if verification_passed:
+                logger.info(f"Task {task.id} completed successfully (verified: {call_count} tool calls)")
+            else:
+                logger.warning(f"Task {task.id} completed with VERIFICATION WARNING: {verification_warning}")
         else:
             error_msg = result.get("error", "Agent execution failed")
 

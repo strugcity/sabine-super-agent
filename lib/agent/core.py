@@ -1168,30 +1168,54 @@ async def run_agent(
 
         duration_ms = (time.time() - start_time) * 1000
 
-        # Diagnostic: Log all messages returned by agent
+        # Extract tool execution details from agent messages
         agent_messages = result.get("messages", [])
         logger.info(f"Agent returned {len(agent_messages)} messages")
+
+        # Track all tool calls and their results
+        tool_executions = []
         tool_calls_detected = 0
+
         for i, msg in enumerate(agent_messages):
             msg_type = type(msg).__name__
             content_preview = ""
-            if hasattr(msg, 'content'):
+
+            # Check for ToolMessage (tool results)
+            if msg_type == "ToolMessage":
+                tool_executions.append({
+                    "type": "tool_result",
+                    "tool_name": getattr(msg, 'name', 'unknown'),
+                    "tool_call_id": getattr(msg, 'tool_call_id', None),
+                    "content_preview": str(msg.content)[:500] if hasattr(msg, 'content') else None
+                })
+                content_preview = f"[TOOL_RESULT: {getattr(msg, 'name', 'unknown')}]"
+
+            elif hasattr(msg, 'content'):
                 if isinstance(msg.content, str):
                     content_preview = msg.content[:100]
                 elif isinstance(msg.content, list):
-                    # Check for tool_use blocks
+                    # Check for tool_use blocks in AIMessage
                     for block in msg.content:
                         if isinstance(block, dict) and block.get('type') == 'tool_use':
                             tool_calls_detected += 1
-                            content_preview = f"[TOOL_USE: {block.get('name')}]"
-                            break
+                            tool_name = block.get('name', 'unknown')
+                            tool_executions.append({
+                                "type": "tool_call",
+                                "tool_name": tool_name,
+                                "tool_call_id": block.get('id'),
+                                "input_preview": str(block.get('input', {}))[:200]
+                            })
+                            content_preview = f"[TOOL_USE: {tool_name}]"
                     if not content_preview:
                         content_preview = f"[list with {len(msg.content)} items]"
                 else:
                     content_preview = str(msg.content)[:100]
+
             logger.info(f"  Message {i}: [{msg_type}] {content_preview}")
 
-        logger.info(f"Tool calls detected in messages: {tool_calls_detected}")
+        # Summarize tool executions
+        tool_names_used = list(set(t['tool_name'] for t in tool_executions if t['type'] == 'tool_call'))
+        logger.info(f"Tool calls detected: {tool_calls_detected}, Tools used: {tool_names_used}")
 
         # Extract response
         if agent_messages:
@@ -1209,7 +1233,13 @@ async def run_agent(
             "tools_available": len(await get_all_tools()),
             "timestamp": datetime.now().isoformat(),
             "latency_ms": duration_ms,
-            "cache_metrics": deep_context.get("_cache_info", {})
+            "cache_metrics": deep_context.get("_cache_info", {}),
+            # Tool execution tracking for verification
+            "tool_execution": {
+                "tools_called": tool_names_used,
+                "call_count": tool_calls_detected,
+                "executions": tool_executions
+            }
         }
 
         # Include role info in response if a role was used
