@@ -495,13 +495,91 @@ async def list_roles():
             status_code=500, detail=f"Failed to list roles: {str(e)}")
 
 
+@app.get("/repos")
+async def list_repos():
+    """
+    List valid repositories and role-repository authorization mapping.
+
+    This helps orchestrators understand which roles can target which repositories.
+    """
+    # Import after route setup to avoid circular imports
+    from lib.agent.server import ROLE_REPO_AUTHORIZATION, VALID_REPOS
+
+    return {
+        "success": True,
+        "valid_repos": VALID_REPOS,
+        "role_authorization": ROLE_REPO_AUTHORIZATION,
+        "usage": "When creating tasks via POST /tasks, include 'target_repo' matching the role's authorization"
+    }
+
+
 # =============================================================================
 # Task Queue / Orchestration Endpoints (Phase 3: The Pulse)
 # =============================================================================
 
+# =============================================================================
+# Role-Repository Authorization Mapping
+# =============================================================================
+# Each role is authorized to work in specific repositories.
+# This prevents agents from accidentally (or maliciously) targeting wrong repos.
+
+ROLE_REPO_AUTHORIZATION = {
+    # Backend roles -> sabine-super-agent (Python backend, agent logic)
+    "backend-architect-sabine": ["sabine-super-agent"],
+    "data-ai-engineer-sabine": ["sabine-super-agent"],
+    "SABINE_ARCHITECT": ["sabine-super-agent"],
+
+    # Frontend roles -> dream-team-strug (Next.js dashboard)
+    "frontend-ops-sabine": ["dream-team-strug"],
+
+    # Cross-functional roles can access multiple repos
+    "product-manager-sabine": ["sabine-super-agent", "dream-team-strug"],
+    "qa-security-sabine": ["sabine-super-agent", "dream-team-strug"],
+}
+
+# Valid repository identifiers (owner/repo format)
+VALID_REPOS = {
+    "sabine-super-agent": {"owner": "strugcity", "repo": "sabine-super-agent"},
+    "dream-team-strug": {"owner": "strugcity", "repo": "dream-team-strug"},
+}
+
+
+def validate_role_repo_authorization(role: str, target_repo: str) -> tuple[bool, str]:
+    """
+    Validate that a role is authorized to work in the target repository.
+
+    Args:
+        role: The agent role (e.g., 'backend-architect-sabine')
+        target_repo: The target repository identifier (e.g., 'sabine-super-agent')
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    # Check if repo is valid
+    if target_repo not in VALID_REPOS:
+        valid_repos = list(VALID_REPOS.keys())
+        return False, f"Invalid target_repo '{target_repo}'. Valid options: {valid_repos}"
+
+    # Check if role exists in authorization mapping
+    if role not in ROLE_REPO_AUTHORIZATION:
+        # Unknown roles default to requiring explicit authorization
+        return False, f"Role '{role}' not found in authorization mapping. Add it to ROLE_REPO_AUTHORIZATION."
+
+    # Check if role is authorized for this repo
+    authorized_repos = ROLE_REPO_AUTHORIZATION[role]
+    if target_repo not in authorized_repos:
+        return False, (
+            f"Role '{role}' is not authorized for repo '{target_repo}'. "
+            f"Authorized repos for this role: {authorized_repos}"
+        )
+
+    return True, ""
+
+
 class CreateTaskRequest(BaseModel):
     """Request to create a new task."""
     role: str = Field(..., description="Agent role to handle this task (e.g., 'backend-architect-sabine')")
+    target_repo: str = Field(..., description="Target repository for this task (e.g., 'sabine-super-agent' or 'dream-team-strug')")
     payload: Dict = Field(default_factory=dict, description="Instructions/context for the agent")
     depends_on: List[str] = Field(default_factory=list, description="List of task IDs that must complete first")
     priority: int = Field(default=0, description="Task priority (higher = more important)")
@@ -511,6 +589,7 @@ class TaskResponse(BaseModel):
     """Response containing task information."""
     id: str
     role: str
+    target_repo: Optional[str] = None
     status: str
     priority: int
     payload: Dict
@@ -528,30 +607,66 @@ async def create_task(request: CreateTaskRequest, _: bool = Depends(verify_api_k
 
     Tasks can depend on other tasks - they will stay 'queued' until
     all dependencies are 'completed'.
+
+    IMPORTANT: The `target_repo` field is REQUIRED and must match the role's authorization.
+    - Backend roles (backend-architect-sabine, data-ai-engineer-sabine) -> sabine-super-agent
+    - Frontend roles (frontend-ops-sabine) -> dream-team-strug
+    - Cross-functional roles (product-manager-sabine, qa-security-sabine) -> either repo
     """
     try:
         from uuid import UUID
+
+        # === REPO AUTHORIZATION CHECK ===
+        is_authorized, error_msg = validate_role_repo_authorization(
+            request.role,
+            request.target_repo
+        )
+        if not is_authorized:
+            logger.warning(f"Repo authorization failed: {error_msg}")
+            raise HTTPException(
+                status_code=403,
+                detail=f"Repository authorization failed: {error_msg}"
+            )
+
+        # Get repo details for injection into payload
+        repo_info = VALID_REPOS[request.target_repo]
 
         service = get_task_queue_service()
 
         # Convert string UUIDs to UUID objects
         depends_on = [UUID(dep) for dep in request.depends_on] if request.depends_on else []
 
+        # Inject repo targeting into payload (so agent knows which repo to use)
+        enriched_payload = {
+            **request.payload,
+            "_repo_context": {
+                "target_repo": request.target_repo,
+                "owner": repo_info["owner"],
+                "repo": repo_info["repo"],
+                "instruction": f"IMPORTANT: All file operations for this task MUST target repo '{repo_info['owner']}/{repo_info['repo']}'"
+            }
+        }
+
         task_id = await service.create_task(
             role=request.role,
-            payload=request.payload,
+            payload=enriched_payload,
             depends_on=depends_on,
             priority=request.priority
         )
+
+        logger.info(f"Task {task_id} created for role '{request.role}' targeting repo '{request.target_repo}'")
 
         return {
             "success": True,
             "task_id": str(task_id),
             "role": request.role,
+            "target_repo": request.target_repo,
             "status": "queued",
-            "message": f"Task created and queued for role '{request.role}'"
+            "message": f"Task created and queued for role '{request.role}' targeting '{request.target_repo}'"
         }
 
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions as-is
     except Exception as e:
         logger.error(f"Error creating task: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create task: {str(e)}")
@@ -874,10 +989,30 @@ async def _run_task_agent(task: Task):
 
                 logger.info(f"Built parent context ({len(parent_context)} chars) from {len(parent_results)} tasks")
 
-        # Combine parent context with task message
-        full_message = parent_context + message
+        # === REPO CONTEXT INJECTION ===
+        # Extract repo targeting from payload (injected by create_task)
+        repo_context = ""
+        if "_repo_context" in task.payload:
+            rc = task.payload["_repo_context"]
+            repo_context = f"""
+=== REPOSITORY TARGETING (MANDATORY) ===
+Target Repository: {rc.get('owner')}/{rc.get('repo')}
+{rc.get('instruction', '')}
 
-        logger.info(f"Task message extracted ({len(full_message)} chars, {len(parent_context)} from parents): {message[:200]}...")
+When using github_issues tool, you MUST use:
+- owner: "{rc.get('owner')}"
+- repo: "{rc.get('repo')}"
+
+DO NOT use any other repository. This is enforced by the orchestration system.
+=== END REPOSITORY TARGETING ===
+
+"""
+            logger.info(f"Injected repo context: {rc.get('owner')}/{rc.get('repo')}")
+
+        # Combine repo context, parent context, and task message
+        full_message = repo_context + parent_context + message
+
+        logger.info(f"Task message extracted ({len(full_message)} chars, {len(parent_context)} from parents, {len(repo_context)} repo context): {message[:200]}...")
 
         user_id = task.payload.get("user_id", "00000000-0000-0000-0000-000000000001")
 
