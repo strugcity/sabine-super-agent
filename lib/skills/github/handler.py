@@ -20,6 +20,47 @@ logger = logging.getLogger(__name__)
 DEFAULT_OWNER = "strugcity"
 DEFAULT_REPO = "sabine-super-agent"
 
+# =============================================================================
+# Repository Authorization Enforcement
+# =============================================================================
+# Valid repositories that can be accessed through this skill.
+# This provides a secondary layer of protection beyond the orchestrator-level
+# authorization (see server.py ROLE_REPO_AUTHORIZATION).
+
+ALLOWED_REPOS = {
+    ("strugcity", "sabine-super-agent"),
+    ("strugcity", "dream-team-strug"),
+}
+
+
+def validate_repo_access(owner: str, repo: str) -> tuple[bool, str]:
+    """
+    Validate that the requested repository is in the allowed list.
+
+    This is a SECONDARY layer of protection. The primary layer is at the
+    orchestrator level (server.py validate_role_repo_authorization).
+
+    This layer ensures that even if the orchestrator check is bypassed
+    (e.g., direct API call, agent prompt injection), the skill itself
+    will refuse to access unauthorized repositories.
+
+    Args:
+        owner: Repository owner (e.g., "strugcity")
+        repo: Repository name (e.g., "sabine-super-agent")
+
+    Returns:
+        Tuple of (is_allowed, error_message)
+    """
+    if (owner, repo) in ALLOWED_REPOS:
+        return True, ""
+
+    allowed_list = [f"{o}/{r}" for o, r in ALLOWED_REPOS]
+    return False, (
+        f"Repository '{owner}/{repo}' is not in the allowed list. "
+        f"Allowed repositories: {allowed_list}. "
+        f"This may indicate an agent misconfiguration or prompt injection attempt."
+    )
+
 # GitHub API base URL
 GITHUB_API = "https://api.github.com"
 
@@ -421,6 +462,18 @@ async def execute(params: Dict[str, Any]) -> Dict[str, Any]:
     action = params.get("action")
     owner = params.get("owner", DEFAULT_OWNER)
     repo = params.get("repo", DEFAULT_REPO)
+
+    # === REPOSITORY ACCESS VALIDATION ===
+    # Secondary layer of protection - validate repo is in allowed list
+    is_allowed, error_msg = validate_repo_access(owner, repo)
+    if not is_allowed:
+        logger.warning(f"BLOCKED: GitHub skill access to {owner}/{repo} - {error_msg}")
+        return {
+            "status": "error",
+            "error": f"Repository access denied: {error_msg}",
+            "blocked_repo": f"{owner}/{repo}",
+            "allowed_repos": [f"{o}/{r}" for o, r in ALLOWED_REPOS],
+        }
 
     logger.info(f"GitHub skill: {action} on {owner}/{repo}")
 
