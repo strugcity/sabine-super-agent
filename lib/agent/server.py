@@ -1047,30 +1047,71 @@ DO NOT use any other repository. This is enforced by the orchestration system.
             # Tasks with these keywords in payload likely need actual tool usage
             task_requires_tools = _task_requires_tool_execution(task.payload)
 
+            # Extract enhanced tool execution metrics
+            success_count = tool_execution.get("success_count", 0)
+            failure_count = tool_execution.get("failure_count", 0)
+            artifacts_created = tool_execution.get("artifacts_created", [])
+            all_succeeded = tool_execution.get("all_succeeded", False)
+
             # Log tool execution details
             logger.info(f"Task {task.id} tool execution summary:")
             logger.info(f"  - Tools called: {tools_called}")
             logger.info(f"  - Call count: {call_count}")
+            logger.info(f"  - Success/Failure: {success_count}/{failure_count}")
+            logger.info(f"  - Artifacts created: {artifacts_created}")
             logger.info(f"  - Task requires tools: {task_requires_tools}")
 
-            # Build verification result
+            # Build verification result with enhanced checks
             verification_passed = True
-            verification_warning = None
+            verification_warnings = []
 
+            # Check 1: Tools were called if required
             if task_requires_tools and call_count == 0:
                 verification_passed = False
-                verification_warning = (
-                    f"VERIFICATION FAILED: Task appears to require tool execution "
-                    f"(e.g., github_issues, run_python_sandbox) but no tools were called. "
-                    f"Agent may have only planned/described work without executing it."
+                verification_warnings.append(
+                    "NO_TOOLS_CALLED: Task requires tool execution but no tools were called. "
+                    "Agent may have only planned/described work without executing it."
                 )
-                logger.warning(f"Task {task.id}: {verification_warning}")
+
+            # Check 2: All tool calls succeeded (no failures)
+            if failure_count > 0:
+                verification_passed = False
+                # Get failure details
+                failed_tools = [
+                    e for e in executions
+                    if e.get("type") == "tool_result" and e.get("status") == "error"
+                ]
+                failure_details = "; ".join([
+                    f"{t['tool_name']}: {t.get('error', 'unknown error')}"
+                    for t in failed_tools[:3]  # Limit to first 3
+                ])
+                verification_warnings.append(
+                    f"TOOL_FAILURES: {failure_count} tool call(s) failed. Details: {failure_details}"
+                )
+
+            # Check 3: For implementation tasks, verify artifacts were created
+            if task_requires_tools and call_count > 0 and success_count > 0:
+                # If we expected file operations but got no artifacts, warn
+                payload_text = str(task.payload).lower()
+                expects_files = any(kw in payload_text for kw in [
+                    "create_file", "update_file", "write file", "create issue"
+                ])
+                if expects_files and not artifacts_created:
+                    verification_warnings.append(
+                        "NO_ARTIFACTS: Task expected file/issue creation but no artifacts were confirmed. "
+                        "The operation may have failed silently."
+                    )
+
+            verification_warning = " | ".join(verification_warnings) if verification_warnings else None
 
             # Send completion update to Slack (with verification status)
             response_preview = result.get("response", "")[:300]
-            completion_message = "Task completed successfully"
-            if not verification_passed:
-                completion_message = f"⚠️ Task completed BUT verification failed: No tools executed"
+            if verification_passed:
+                completion_message = f"Task completed successfully ({success_count} tool calls succeeded)"
+                if artifacts_created:
+                    completion_message += f"\nArtifacts: {', '.join(artifacts_created[:3])}"
+            else:
+                completion_message = f"⚠️ Task completed with issues: {verification_warning}"
 
             await send_task_update(
                 task_id=task.id,
@@ -1080,14 +1121,18 @@ DO NOT use any other repository. This is enforced by the orchestration system.
                 details=f"Tools used: {tools_called or 'None'}\n\n{response_preview}"
             )
 
-            # Store result with tool execution metadata
+            # Store result with enhanced tool execution metadata
             task_result = {
                 "response": result.get("response"),
                 "tool_execution": {
                     "tools_called": tools_called,
                     "call_count": call_count,
+                    "success_count": success_count,
+                    "failure_count": failure_count,
+                    "artifacts_created": artifacts_created,
+                    "all_succeeded": all_succeeded,
                     "verification_passed": verification_passed,
-                    "verification_warning": verification_warning
+                    "verification_warnings": verification_warnings
                 }
             }
 
@@ -1098,9 +1143,9 @@ DO NOT use any other repository. This is enforced by the orchestration system.
             )
 
             if verification_passed:
-                logger.info(f"Task {task.id} completed successfully (verified: {call_count} tool calls)")
+                logger.info(f"Task {task.id} completed successfully (verified: {success_count}/{call_count} tool calls succeeded)")
             else:
-                logger.warning(f"Task {task.id} completed with VERIFICATION WARNING: {verification_warning}")
+                logger.warning(f"Task {task.id} completed with VERIFICATION WARNINGS: {verification_warnings}")
         else:
             error_msg = result.get("error", "Agent execution failed")
 

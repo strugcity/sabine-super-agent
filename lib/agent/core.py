@@ -1175,6 +1175,8 @@ async def run_agent(
         # Track all tool calls and their results
         tool_executions = []
         tool_calls_detected = 0
+        tool_successes = 0
+        tool_failures = 0
 
         for i, msg in enumerate(agent_messages):
             msg_type = type(msg).__name__
@@ -1182,13 +1184,83 @@ async def run_agent(
 
             # Check for ToolMessage (tool results)
             if msg_type == "ToolMessage":
+                tool_name = getattr(msg, 'name', 'unknown')
+                tool_content = msg.content if hasattr(msg, 'content') else None
+
+                # Parse tool result to determine success/failure
+                tool_status = "unknown"
+                tool_error = None
+                artifact_created = None
+
+                if tool_content:
+                    # Try to parse as JSON to extract status
+                    try:
+                        import json
+                        if isinstance(tool_content, str):
+                            result_data = json.loads(tool_content)
+                        elif isinstance(tool_content, dict):
+                            result_data = tool_content
+                        else:
+                            result_data = {}
+
+                        # Check for status field (github_issues, run_python_sandbox, etc.)
+                        if "status" in result_data:
+                            tool_status = result_data["status"]
+                            if tool_status == "success":
+                                tool_successes += 1
+                                # Extract artifact info if available
+                                if "file" in result_data:
+                                    artifact_created = result_data["file"].get("path") or result_data["file"].get("url")
+                                elif "issue" in result_data:
+                                    artifact_created = f"Issue #{result_data['issue'].get('number')}"
+                                elif "commit" in result_data:
+                                    artifact_created = f"Commit {result_data['commit'].get('sha', '')[:7]}"
+                            elif tool_status == "error":
+                                tool_failures += 1
+                                tool_error = result_data.get("error", "Unknown error")
+
+                        # Check for error field without status (some tools)
+                        elif "error" in result_data:
+                            tool_status = "error"
+                            tool_failures += 1
+                            tool_error = result_data["error"]
+
+                        # Check for success indicators
+                        elif "success" in result_data:
+                            tool_status = "success" if result_data["success"] else "error"
+                            if tool_status == "success":
+                                tool_successes += 1
+                            else:
+                                tool_failures += 1
+                                tool_error = result_data.get("error", "Operation failed")
+
+                        else:
+                            # Assume success if no error indicators
+                            tool_status = "success"
+                            tool_successes += 1
+
+                    except (json.JSONDecodeError, TypeError):
+                        # If not JSON, check for error patterns in string
+                        content_str = str(tool_content).lower()
+                        if "error" in content_str or "failed" in content_str or "exception" in content_str:
+                            tool_status = "error"
+                            tool_failures += 1
+                            tool_error = str(tool_content)[:200]
+                        else:
+                            tool_status = "success"
+                            tool_successes += 1
+
                 tool_executions.append({
                     "type": "tool_result",
-                    "tool_name": getattr(msg, 'name', 'unknown'),
+                    "tool_name": tool_name,
                     "tool_call_id": getattr(msg, 'tool_call_id', None),
-                    "content_preview": str(msg.content)[:500] if hasattr(msg, 'content') else None
+                    "status": tool_status,
+                    "error": tool_error,
+                    "artifact_created": artifact_created,
+                    "content_preview": str(tool_content)[:500] if tool_content else None
                 })
-                content_preview = f"[TOOL_RESULT: {getattr(msg, 'name', 'unknown')}]"
+                status_indicator = "OK" if tool_status == "success" else "FAIL"
+                content_preview = f"[TOOL_RESULT: {tool_name} - {status_indicator}]"
 
             elif hasattr(msg, 'content'):
                 if isinstance(msg.content, str):
@@ -1215,7 +1287,15 @@ async def run_agent(
 
         # Summarize tool executions
         tool_names_used = list(set(t['tool_name'] for t in tool_executions if t['type'] == 'tool_call'))
+        artifacts_created = [t['artifact_created'] for t in tool_executions if t.get('artifact_created')]
+        failed_tools = [t for t in tool_executions if t.get('status') == 'error']
+
         logger.info(f"Tool calls detected: {tool_calls_detected}, Tools used: {tool_names_used}")
+        logger.info(f"Tool results: {tool_successes} succeeded, {tool_failures} failed")
+        if artifacts_created:
+            logger.info(f"Artifacts created: {artifacts_created}")
+        if failed_tools:
+            logger.warning(f"Failed tool calls: {[(t['tool_name'], t.get('error')) for t in failed_tools]}")
 
         # Extract response
         if agent_messages:
@@ -1238,6 +1318,10 @@ async def run_agent(
             "tool_execution": {
                 "tools_called": tool_names_used,
                 "call_count": tool_calls_detected,
+                "success_count": tool_successes,
+                "failure_count": tool_failures,
+                "artifacts_created": artifacts_created,
+                "all_succeeded": tool_failures == 0 and tool_successes > 0,
                 "executions": tool_executions
             }
         }
