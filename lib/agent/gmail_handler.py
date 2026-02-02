@@ -637,6 +637,45 @@ async def get_message_headers(
         return {"message_id_header": None, "references": None}
 
 
+async def mark_as_read(access_token: str, message_id: str) -> bool:
+    """
+    Mark an email as read in Gmail by removing the UNREAD label.
+
+    Args:
+        access_token: Gmail access token
+        message_id: Gmail message ID to mark as read
+
+    Returns:
+        True if successful, False otherwise
+    """
+    import httpx
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/modify",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "removeLabelIds": ["UNREAD"]
+                },
+                timeout=10.0
+            )
+
+            if response.status_code == 200:
+                logger.info(f"Marked message {message_id} as read")
+                return True
+            else:
+                logger.warning(f"Failed to mark message {message_id} as read: {response.status_code}")
+                return False
+
+    except Exception as e:
+        logger.warning(f"Error marking message as read: {e}")
+        return False
+
+
 async def send_threaded_reply(
     access_token: str,
     config: Dict[str, Any],
@@ -1117,6 +1156,10 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
 
                 if send_result.get("success"):
                     logger.info(f"Threaded AI response sent to {sender} in thread {thread_id}")
+
+                    # Mark the original email as read (like a real email client)
+                    await mark_as_read(agent_access_token, message_id)
+
                     # Mark thread as replied to prevent double-replies
                     if thread_id:
                         save_replied_thread(thread_id)
