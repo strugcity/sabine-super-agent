@@ -2364,6 +2364,17 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to start scheduler: {e}")
 
+    # Start the reminder scheduler (for scheduled SMS/email reminders)
+    try:
+        from lib.agent.reminder_scheduler import initialize_reminder_scheduler
+        reminder_scheduler = await initialize_reminder_scheduler()
+        logger.info("✓ Reminder scheduler started")
+        reminder_jobs = reminder_scheduler.get_reminder_jobs()
+        if reminder_jobs:
+            logger.info(f"  - Restored {len(reminder_jobs)} reminder jobs from database")
+    except Exception as e:
+        logger.error(f"Failed to start reminder scheduler: {e}")
+
     # Start Slack Socket Mode (The Gantry)
     try:
         from lib.agent.slack_manager import start_socket_mode
@@ -2411,6 +2422,16 @@ async def shutdown_event():
             logger.info("✓ Scheduler stopped gracefully")
     except Exception as e:
         logger.error(f"Error stopping scheduler: {e}")
+
+    # Shutdown reminder scheduler
+    try:
+        from lib.agent.reminder_scheduler import get_reminder_scheduler
+        reminder_scheduler = get_reminder_scheduler()
+        if reminder_scheduler.is_running():
+            await reminder_scheduler.shutdown()
+            logger.info("✓ Reminder scheduler stopped gracefully")
+    except Exception as e:
+        logger.error(f"Error stopping reminder scheduler: {e}")
 
 
 # =============================================================================
