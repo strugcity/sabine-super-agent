@@ -69,6 +69,71 @@ AUTO_REPLY_INDICATORS = [
     "no-reply",
 ]
 
+# Sender patterns to ignore (automated systems, notifications, etc.)
+BLOCKED_SENDER_PATTERNS = [
+    "noreply",
+    "no-reply",
+    "donotreply",
+    "mailer-daemon",
+    "postmaster",
+    "notifications",
+    "notification",
+    "alert",
+    "alerts",
+    "system",
+    "admin",
+    "support",
+    "help",
+    "info@",
+    "news@",
+    "newsletter",
+    "marketing",
+    "promo",
+    # Educational platforms
+    "schoology",
+    "canvas",
+    "blackboard",
+    "powerschool",
+    "infinite campus",
+    "skyward",
+    "schoolmessenger",
+    "parentvue",
+    "studentvue",
+    "remind",
+    "classdojo",
+    "seesaw",
+    "google classroom",
+    "assignment",
+    "graded",
+]
+
+# Subject patterns to ignore (notifications, automated messages)
+BLOCKED_SUBJECT_PATTERNS = [
+    "assignment graded",
+    "grade posted",
+    "grades are available",
+    "new grade",
+    "quiz grade",
+    "test grade",
+    "assignment due",
+    "reminder:",
+    "notification:",
+    "alert:",
+    "password reset",
+    "verify your email",
+    "confirm your",
+    "welcome to",
+    "your order",
+    "order confirmation",
+    "shipping confirmation",
+    "delivery notification",
+    "payment received",
+    "invoice",
+    "receipt",
+    "subscription",
+    "unsubscribe",
+]
+
 # =============================================================================
 # In-memory caches for fast duplicate detection (prevents race conditions)
 # These supplement the Supabase/file-based tracking
@@ -765,6 +830,24 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                 # Skip subjects with auto-reply indicators BEFORE processing
                 if any(indicator in candidate_subject for indicator in AUTO_REPLY_INDICATORS):
                     logger.info(f"  -> Subject contains auto-reply indicator, skipping")
+                    save_processed_id(candidate_id)
+                    continue
+
+                # Skip blocked sender patterns (notifications, automated systems, school platforms)
+                if any(pattern in candidate_sender_email for pattern in BLOCKED_SENDER_PATTERNS):
+                    logger.info(f"  -> Blocked sender pattern detected, skipping")
+                    save_processed_id(candidate_id)
+                    continue
+
+                # Also check the full sender field (includes name)
+                if any(pattern in candidate_sender for pattern in BLOCKED_SENDER_PATTERNS):
+                    logger.info(f"  -> Blocked sender name pattern detected, skipping")
+                    save_processed_id(candidate_id)
+                    continue
+
+                # Skip blocked subject patterns (grade notifications, automated messages)
+                if any(pattern in candidate_subject for pattern in BLOCKED_SUBJECT_PATTERNS):
+                    logger.info(f"  -> Blocked subject pattern detected: {candidate_subject[:50]}, skipping")
                     save_processed_id(candidate_id)
                     continue
 
