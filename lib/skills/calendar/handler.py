@@ -195,16 +195,20 @@ async def get_events(
     """
     try:
         async with httpx.AsyncClient() as client:
+            params = {
+                "timeMin": time_min,
+                "timeMax": time_max,
+                "singleEvents": "true",
+                "orderBy": "startTime"
+            }
+            # Only add maxResults if it has a value
+            if max_results:
+                params["maxResults"] = max_results
+
             response = await client.get(
                 f"{CALENDAR_API_BASE}/calendars/{calendar_id}/events",
                 headers={"Authorization": f"Bearer {access_token}"},
-                params={
-                    "timeMin": time_min,
-                    "timeMax": time_max,
-                    "maxResults": max_results,
-                    "singleEvents": "true",
-                    "orderBy": "startTime"
-                }
+                params=params
             )
 
             if response.status_code == 200:
