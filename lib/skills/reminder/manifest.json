@@ -1,0 +1,37 @@
+{
+  "name": "create_reminder",
+  "description": "Creates scheduled reminders that notify via SMS, email, Slack, or calendar events. Supports one-time and recurring reminders with flexible scheduling.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "The title/subject of the reminder",
+        "minLength": 1,
+        "maxLength": 255
+      },
+      "scheduled_time": {
+        "type": "string",
+        "format": "date-time",
+        "description": "When to trigger the reminder (ISO 8601 datetime format, e.g., '2026-02-03T08:00:00Z')"
+      },
+      "description": {
+        "type": "string",
+        "description": "Optional detailed description of the reminder",
+        "maxLength": 1000
+      },
+      "reminder_type": {
+        "type": "string",
+        "enum": ["sms", "email", "slack", "calendar_event"],
+        "default": "sms",
+        "description": "The primary notification channel for the reminder"
+      },
+      "repeat_pattern": {
+        "type": "string",
+        "enum": ["daily", "weekly", "monthly", "yearly"],
+        "description": "Optional recurrence pattern. If not provided, creates a one-time reminder"
+      }
+    },
+    "required": ["title", "scheduled_time"]
+  }
+}
