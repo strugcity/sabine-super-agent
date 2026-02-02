@@ -1,0 +1,55 @@
+{
+  "name": "create_calendar_event",
+  "description": "Creates a new event in Google Calendar with optional reminders. Use this when the user wants to add an appointment, meeting, or event to their calendar. Supports custom reminder times (e.g., '15 minutes before', '1 hour before') and can optionally also schedule an SMS reminder for important events. For quick personal reminders without calendar events, use create_reminder instead.",
+  "version": "1.0.0",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "The event title/summary (e.g., 'Dentist Appointment', 'Team Meeting')"
+      },
+      "start_time": {
+        "type": "string",
+        "description": "Start date/time in ISO format (YYYY-MM-DDTHH:MM:SS) or natural language that will be parsed (e.g., 'tomorrow at 2pm', '2026-02-03T14:00:00')"
+      },
+      "end_time": {
+        "type": "string",
+        "description": "End date/time in ISO format. If not provided, defaults to 1 hour after start_time."
+      },
+      "description": {
+        "type": "string",
+        "description": "Optional event description/notes"
+      },
+      "location": {
+        "type": "string",
+        "description": "Optional event location"
+      },
+      "reminder_minutes": {
+        "type": "integer",
+        "description": "Minutes before the event to send a popup/notification reminder. Default: 15. Use 0 for no reminder.",
+        "default": 15
+      },
+      "all_day": {
+        "type": "boolean",
+        "description": "If true, creates an all-day event instead of timed event. Default: false",
+        "default": false
+      },
+      "calendar_id": {
+        "type": "string",
+        "description": "Specific calendar ID to add the event to. If not provided, uses the primary calendar."
+      },
+      "also_sms_reminder": {
+        "type": "boolean",
+        "description": "If true, also creates a separate SMS reminder in addition to the calendar event. Useful for critical appointments. Default: false",
+        "default": false
+      },
+      "sms_reminder_minutes": {
+        "type": "integer",
+        "description": "If also_sms_reminder is true, how many minutes before the event to send SMS. Default: 60 (1 hour before)",
+        "default": 60
+      }
+    },
+    "required": ["title", "start_time"]
+  }
+}
