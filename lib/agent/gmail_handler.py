@@ -70,6 +70,51 @@ AUTO_REPLY_INDICATORS = [
 ]
 
 # =============================================================================
+# In-memory caches for fast duplicate detection (prevents race conditions)
+# These supplement the Supabase/file-based tracking
+# =============================================================================
+
+# In-memory cache of message IDs currently being processed (prevents race conditions)
+_processing_messages: Set[str] = set()
+_processing_lock = asyncio.Lock() if 'asyncio' in dir() else None
+
+# In-memory cache for quick duplicate checks (populated on first load)
+_cached_processed_ids: Optional[Set[str]] = None
+_cached_replied_threads: Optional[Set[str]] = None
+_cache_loaded_at: Optional[datetime] = None
+_CACHE_TTL_SECONDS = 60  # Refresh cache every 60 seconds
+
+def _get_cached_processed_ids() -> Set[str]:
+    """Get cached processed IDs, refreshing if stale."""
+    global _cached_processed_ids, _cache_loaded_at
+    now = datetime.now()
+    if _cached_processed_ids is None or _cache_loaded_at is None or \
+       (now - _cache_loaded_at).total_seconds() > _CACHE_TTL_SECONDS:
+        _cached_processed_ids = load_processed_ids()
+        _cache_loaded_at = now
+        logger.debug(f"Refreshed processed IDs cache: {len(_cached_processed_ids)} entries")
+    return _cached_processed_ids
+
+def _get_cached_replied_threads() -> Set[str]:
+    """Get cached replied threads, refreshing if stale."""
+    global _cached_replied_threads, _cache_loaded_at
+    now = datetime.now()
+    if _cached_replied_threads is None or _cache_loaded_at is None or \
+       (now - _cache_loaded_at).total_seconds() > _CACHE_TTL_SECONDS:
+        _cached_replied_threads = load_replied_threads()
+        _cache_loaded_at = now
+        logger.debug(f"Refreshed replied threads cache: {len(_cached_replied_threads)} entries")
+    return _cached_replied_threads
+
+def _add_to_cache(message_id: Optional[str] = None, thread_id: Optional[str] = None):
+    """Add ID to in-memory cache immediately (before DB write completes)."""
+    global _cached_processed_ids, _cached_replied_threads
+    if message_id and _cached_processed_ids is not None:
+        _cached_processed_ids.add(message_id)
+    if thread_id and _cached_replied_threads is not None:
+        _cached_replied_threads.add(thread_id)
+
+# =============================================================================
 # Supabase-backed tracking (persists across Railway deploys)
 # =============================================================================
 
@@ -92,16 +137,17 @@ def load_replied_threads() -> Set[str]:
             if response.data:
                 threads = set(row["thread_id"] for row in response.data if row.get("thread_id"))
                 logger.info(f"Loaded {len(threads)} replied threads from Supabase")
-                return threads
         except Exception as e:
             logger.warning(f"Could not load threads from Supabase: {e}")
 
-    # Fallback to local file
+    # Also load from local file and merge (belt and suspenders)
     try:
         local_file = Path(__file__).parent / ".replied_threads.json"
         if local_file.exists():
             data = json.loads(local_file.read_text())
-            threads = set(data.get("threads", [])[-500:])
+            local_threads = set(data.get("threads", [])[-500:])
+            threads = threads.union(local_threads)
+            logger.debug(f"Merged {len(local_threads)} local threads, total: {len(threads)}")
     except Exception as e:
         logger.warning(f"Could not load local replied threads: {e}")
 
@@ -110,20 +156,40 @@ def load_replied_threads() -> Set[str]:
 
 def save_replied_thread(thread_id: str):
     """Save a thread ID to Supabase (and local file as backup)."""
-    # Save to Supabase
+    if not thread_id:
+        logger.warning("Attempted to save empty thread_id, skipping")
+        return
+
+    # IMMEDIATELY add to in-memory cache to prevent race conditions
+    _add_to_cache(thread_id=thread_id)
+    logger.debug(f"Added thread {thread_id} to in-memory cache")
+
+    # Save to Supabase - use INSERT with conflict handling instead of upsert
     supabase = get_supabase()
     if supabase:
         try:
-            supabase.table("email_tracking").upsert({
-                "thread_id": thread_id,
-                "tracking_type": "replied_thread",
-                "created_at": datetime.now().isoformat()
-            }, on_conflict="thread_id").execute()
-            logger.info(f"Saved thread {thread_id} to Supabase")
+            # First check if it already exists
+            existing = supabase.table("email_tracking") \
+                .select("id") \
+                .eq("thread_id", thread_id) \
+                .eq("tracking_type", "replied_thread") \
+                .execute()
+
+            if not existing.data:
+                # Insert new record
+                supabase.table("email_tracking").insert({
+                    "thread_id": thread_id,
+                    "tracking_type": "replied_thread",
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+                logger.info(f"Saved thread {thread_id} to Supabase")
+            else:
+                logger.debug(f"Thread {thread_id} already exists in Supabase")
         except Exception as e:
+            # Log but don't fail - local file is backup
             logger.warning(f"Could not save thread to Supabase: {e}")
 
-    # Also save to local file as backup
+    # Also save to local file as backup (always, even if Supabase succeeds)
     try:
         local_file = Path(__file__).parent / ".replied_threads.json"
         threads = set()
@@ -133,6 +199,7 @@ def save_replied_thread(thread_id: str):
         threads.add(thread_id)
         thread_list = list(threads)[-500:]
         local_file.write_text(json.dumps({"threads": thread_list}))
+        logger.debug(f"Saved thread {thread_id} to local file")
     except Exception as e:
         logger.warning(f"Could not save local replied thread: {e}")
 
@@ -156,16 +223,17 @@ def load_processed_ids() -> Set[str]:
             if response.data:
                 ids = set(row["message_id"] for row in response.data if row.get("message_id"))
                 logger.info(f"Loaded {len(ids)} processed IDs from Supabase")
-                return ids
         except Exception as e:
             logger.warning(f"Could not load IDs from Supabase: {e}")
 
-    # Fallback to local file
+    # Also load from local file and merge (belt and suspenders)
     try:
         local_file = Path(__file__).parent / ".processed_emails.json"
         if local_file.exists():
             data = json.loads(local_file.read_text())
-            ids = set(data.get("ids", [])[-1000:])
+            local_ids = set(data.get("ids", [])[-1000:])
+            ids = ids.union(local_ids)
+            logger.debug(f"Merged {len(local_ids)} local IDs, total: {len(ids)}")
     except Exception as e:
         logger.warning(f"Could not load local processed IDs: {e}")
 
@@ -174,20 +242,40 @@ def load_processed_ids() -> Set[str]:
 
 def save_processed_id(message_id: str):
     """Save a processed message ID to Supabase (and local file as backup)."""
-    # Save to Supabase
+    if not message_id:
+        logger.warning("Attempted to save empty message_id, skipping")
+        return
+
+    # IMMEDIATELY add to in-memory cache to prevent race conditions
+    _add_to_cache(message_id=message_id)
+    logger.debug(f"Added message {message_id} to in-memory cache")
+
+    # Save to Supabase - use INSERT with conflict handling
     supabase = get_supabase()
     if supabase:
         try:
-            supabase.table("email_tracking").upsert({
-                "message_id": message_id,
-                "tracking_type": "processed_message",
-                "created_at": datetime.now().isoformat()
-            }, on_conflict="message_id").execute()
-            logger.debug(f"Saved message {message_id} to Supabase")
+            # First check if it already exists
+            existing = supabase.table("email_tracking") \
+                .select("id") \
+                .eq("message_id", message_id) \
+                .eq("tracking_type", "processed_message") \
+                .execute()
+
+            if not existing.data:
+                # Insert new record
+                supabase.table("email_tracking").insert({
+                    "message_id": message_id,
+                    "tracking_type": "processed_message",
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+                logger.debug(f"Saved message {message_id} to Supabase")
+            else:
+                logger.debug(f"Message {message_id} already exists in Supabase")
         except Exception as e:
+            # Log but don't fail - local file is backup
             logger.warning(f"Could not save message to Supabase: {e}")
 
-    # Also save to local file as backup
+    # Also save to local file as backup (always, even if Supabase succeeds)
     try:
         local_file = Path(__file__).parent / ".processed_emails.json"
         ids = set()
@@ -555,7 +643,11 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
             logger.error("Missing AGENT_REFRESH_TOKEN")
             return {"success": False, "error": "Missing agent refresh token"}
 
-        processed_ids = load_processed_ids()
+        # Use cached IDs for fast duplicate detection (includes both DB and local file)
+        processed_ids = _get_cached_processed_ids()
+        replied_threads = _get_cached_replied_threads()
+
+        logger.info(f"Loaded {len(processed_ids)} processed IDs and {len(replied_threads)} replied threads")
 
         # Use MCPClient context manager to keep session open for all tool calls
         async with MCPClient(
@@ -608,9 +700,6 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                     return {"success": True, "action": "no_emails"}
                 emails = []
 
-            # Load thread tracking to prevent double-replies
-            replied_threads = load_replied_threads()
-
             # Find first email from an authorized sender that we haven't replied to
             email_data = None
             message_id = None
@@ -638,7 +727,12 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
 
                 logger.info(f"Checking email {candidate_id} (thread: {candidate_thread_id}) from {candidate_sender_email}")
 
-                # Skip already processed message
+                # Skip if currently being processed by another concurrent request
+                if candidate_id in _processing_messages:
+                    logger.info(f"  -> Currently being processed by another request, skipping")
+                    continue
+
+                # Skip already processed message (check in-memory cache first, then DB/file)
                 if candidate_id in processed_ids:
                     logger.info(f"  -> Already processed (message ID), skipping")
                     continue
@@ -695,100 +789,111 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                 logger.info("No unread emails from authorized senders found")
                 return {"success": True, "action": "no_authorized_emails"}
 
-            # Mark as processing
-            save_processed_id(message_id)
-            logger.info(f"Message {message_id} marked as processing")
+            # Add to in-flight processing set to prevent concurrent duplicate handling
+            _processing_messages.add(message_id)
+            logger.info(f"Message {message_id} added to in-flight processing set")
 
-            # Get full message content if needed (from agent's inbox)
-            if not body_preview:
-                logger.info(f"Getting full content for message {message_id}...")
-                message_content = await mcp.call_tool("gmail_get_email_body_chunk", {
-                    "google_access_token": agent_access_token,
-                    "message_id": message_id
-                })
+            try:
+                # Mark as processing in persistent storage
+                save_processed_id(message_id)
+                logger.info(f"Message {message_id} marked as processing")
 
-                if message_content:
-                    try:
-                        content_data = json.loads(message_content)
-                        if not body_preview:
-                            body_preview = content_data.get("body", "")
-                    except json.JSONDecodeError:
-                        body_preview = extract_body(message_content)
+                # Get full message content if needed (from agent's inbox)
+                if not body_preview:
+                    logger.info(f"Getting full content for message {message_id}...")
+                    message_content = await mcp.call_tool("gmail_get_email_body_chunk", {
+                        "google_access_token": agent_access_token,
+                        "message_id": message_id
+                    })
 
-            logger.info(f"Processing email from: {sender_name} <{sender}>")
+                    if message_content:
+                        try:
+                            content_data = json.loads(message_content)
+                            if not body_preview:
+                                body_preview = content_data.get("body", "")
+                        except json.JSONDecodeError:
+                            body_preview = extract_body(message_content)
 
-            original_subject = subject or ""
-            subject_lower = original_subject.lower()
+                logger.info(f"Processing email from: {sender_name} <{sender}>")
 
-            # Loop prevention: skip auto-replies
-            for indicator in AUTO_REPLY_INDICATORS:
-                if indicator in subject_lower:
-                    logger.info(f"Subject contains auto-reply indicator '{indicator}', skipping to prevent loop")
-                    return {"success": True, "action": "auto_reply_skipped", "subject": original_subject}
+                original_subject = subject or ""
+                subject_lower = original_subject.lower()
 
-            # Loop prevention: skip noreply addresses
-            if any(ind in sender for ind in ['noreply', 'no-reply', 'donotreply', 'mailer-daemon']):
-                logger.info(f"Sender {sender} appears to be a no-reply address, skipping")
-                return {"success": True, "action": "noreply_sender_skipped", "sender": sender}
+                # Loop prevention: skip auto-replies
+                for indicator in AUTO_REPLY_INDICATORS:
+                    if indicator in subject_lower:
+                        logger.info(f"Subject contains auto-reply indicator '{indicator}', skipping to prevent loop")
+                        return {"success": True, "action": "auto_reply_skipped", "subject": original_subject}
 
-            email_body = body_preview or ""
-            logger.info(f"Email body ({len(email_body)} chars): {email_body[:200]}...")
+                # Loop prevention: skip noreply addresses
+                if any(ind in sender for ind in ['noreply', 'no-reply', 'donotreply', 'mailer-daemon']):
+                    logger.info(f"Sender {sender} appears to be a no-reply address, skipping")
+                    return {"success": True, "action": "noreply_sender_skipped", "sender": sender}
 
-            if not original_subject:
-                original_subject = "your email"
-            reply_subject = f"Re: {original_subject}" if not original_subject.lower().startswith("re:") else original_subject
+                email_body = body_preview or ""
+                logger.info(f"Email body ({len(email_body)} chars): {email_body[:200]}...")
 
-            # Generate AI response
-            logger.info(f"Generating AI response for email from {sender}...")
-            ai_response = await generate_ai_response(
-                sender_email=sender,
-                sender_name=sender_name,
-                subject=original_subject,
-                body=email_body,
-                user_id=config["user_id"]
-            )
+                if not original_subject:
+                    original_subject = "your email"
+                reply_subject = f"Re: {original_subject}" if not original_subject.lower().startswith("re:") else original_subject
 
-            logger.info(f"AI response: {ai_response[:200]}...")
+                # Generate AI response
+                logger.info(f"Generating AI response for email from {sender}...")
+                ai_response = await generate_ai_response(
+                    sender_email=sender,
+                    sender_name=sender_name,
+                    subject=original_subject,
+                    body=email_body,
+                    user_id=config["user_id"]
+                )
 
-            # Convert plain text to simple HTML for email rendering
-            # The MCP gmail_send_email tool requires html_body to display content
-            html_response = ai_response.replace('\n', '<br>\n')
-            html_body = f"""<html>
+                logger.info(f"AI response: {ai_response[:200]}...")
+
+                # Convert plain text to simple HTML for email rendering
+                # The MCP gmail_send_email tool requires html_body to display content
+                html_response = ai_response.replace('\n', '<br>\n')
+                html_body = f"""<html>
 <body style="font-family: Arial, sans-serif; line-height: 1.6;">
 {html_response}
 </body>
 </html>"""
 
-            # Send reply using AGENT token (sends FROM sabine@strugcity.com)
-            logger.info(f"Sending AI-generated reply to {sender} from agent account...")
-            send_result = await mcp.call_tool("gmail_send_email", {
-                "google_access_token": agent_access_token,
-                "to": sender,
-                "subject": reply_subject,
-                "body": ai_response,
-                "html_body": html_body
-            })
-
-            logger.info(f"Send result: {send_result}")
-
-            if send_result and ("success" in send_result.lower() or "sent" in send_result.lower() or "id" in send_result.lower()):
-                logger.info(f"AI response sent to {sender}")
-                # Mark thread as replied to prevent double-replies
-                if thread_id:
-                    save_replied_thread(thread_id)
-                    logger.info(f"Thread {thread_id} marked as replied")
-                return {
-                    "success": True,
-                    "action": "replied",
-                    "recipient": sender,
-                    "message_id": message_id,
-                    "thread_id": thread_id,
+                # Send reply using AGENT token (sends FROM sabine@strugcity.com)
+                logger.info(f"Sending AI-generated reply to {sender} from agent account...")
+                send_result = await mcp.call_tool("gmail_send_email", {
+                    "google_access_token": agent_access_token,
+                    "to": sender,
                     "subject": reply_subject,
-                    "response_type": "ai_generated"
-                }
-            else:
-                logger.warning(f"Failed to send reply to {sender}: {send_result}")
-                return {"success": False, "error": f"Failed to send reply: {send_result}"}
+                    "body": ai_response,
+                    "html_body": html_body
+                })
+
+                logger.info(f"Send result: {send_result}")
+
+                if send_result and ("success" in send_result.lower() or "sent" in send_result.lower() or "id" in send_result.lower()):
+                    logger.info(f"AI response sent to {sender}")
+                    # Mark thread as replied to prevent double-replies
+                    if thread_id:
+                        save_replied_thread(thread_id)
+                        logger.info(f"Thread {thread_id} marked as replied")
+                    return {
+                        "success": True,
+                        "action": "replied",
+                        "recipient": sender,
+                        "message_id": message_id,
+                        "thread_id": thread_id,
+                        "subject": reply_subject,
+                        "response_type": "ai_generated"
+                    }
+                else:
+                    logger.warning(f"Failed to send reply to {sender}: {send_result}")
+                    return {"success": False, "error": f"Failed to send reply: {send_result}"}
+
+            finally:
+                # Always remove from in-flight processing set when done
+                if message_id and message_id in _processing_messages:
+                    _processing_messages.discard(message_id)
+                    logger.debug(f"Message {message_id} removed from in-flight processing set")
 
     except Exception as e:
         logger.error(f"Error handling email notification: {e}", exc_info=True)
