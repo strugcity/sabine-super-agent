@@ -1,6 +1,7 @@
 {
   "name": "create_reminder",
   "description": "Creates scheduled reminders that notify via SMS, email, Slack, or calendar events. Supports one-time and recurring reminders with flexible scheduling.",
+  "version": "1.0.0",
   "parameters": {
     "type": "object",
     "properties": {
