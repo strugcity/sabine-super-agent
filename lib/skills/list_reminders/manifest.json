@@ -1,0 +1,23 @@
+{
+  "name": "list_reminders",
+  "description": "Lists all active reminders for the user, sorted by scheduled time. Shows reminder title, scheduled time, type (SMS/email/Slack), and recurrence pattern if any. Use this when the user asks 'what reminders do I have?' or wants to see their upcoming reminders.",
+  "version": "1.0.0",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "limit": {
+        "type": "integer",
+        "description": "Maximum number of reminders to return (default: 20)",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 100
+      },
+      "include_completed": {
+        "type": "boolean",
+        "description": "Whether to include completed reminders (default: false)",
+        "default": false
+      }
+    },
+    "required": []
+  }
+}
