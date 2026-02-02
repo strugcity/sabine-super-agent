@@ -435,7 +435,7 @@ async def execute(params: dict) -> dict:
     include_custody = params.get("include_custody", True)
     check_conflicts = params.get("check_conflicts", True)
     group_by = params.get("group_by")
-    family_member_filter = params.get("family_member", "").lower()
+    family_member_filter = (params.get("family_member") or "").lower()
 
     logger.info(f"Getting calendar events for time_range={time_range}")
 
