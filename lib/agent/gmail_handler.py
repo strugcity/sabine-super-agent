@@ -584,6 +584,158 @@ async def get_access_token(mcp, config: Dict[str, Any], token_type: str = "user"
         return None
 
 
+async def get_message_headers(
+    mcp,
+    access_token: str,
+    message_id: str
+) -> Dict[str, str]:
+    """
+    Get the Message-ID and References headers from an email for threading.
+
+    Args:
+        mcp: MCPClient instance
+        access_token: Gmail access token
+        message_id: The Gmail message ID to get headers from
+
+    Returns:
+        Dict with 'message_id_header' and 'references' keys
+    """
+    try:
+        # Use gmail_get_email_body_chunk which returns headers
+        result = await mcp.call_tool("gmail_get_email_body_chunk", {
+            "google_access_token": access_token,
+            "message_id": message_id,
+            "offset": 0
+        })
+
+        headers = {"message_id_header": None, "references": None}
+
+        if result:
+            try:
+                data = json.loads(result)
+                # The MCP tool may return headers in the response
+                if isinstance(data, dict):
+                    # Look for Message-ID in various places
+                    raw_headers = data.get("headers", {})
+                    if isinstance(raw_headers, dict):
+                        headers["message_id_header"] = raw_headers.get("Message-ID") or raw_headers.get("Message-Id")
+                        headers["references"] = raw_headers.get("References")
+                    elif isinstance(raw_headers, list):
+                        for h in raw_headers:
+                            if h.get("name", "").lower() == "message-id":
+                                headers["message_id_header"] = h.get("value")
+                            elif h.get("name", "").lower() == "references":
+                                headers["references"] = h.get("value")
+            except json.JSONDecodeError:
+                pass
+
+        logger.debug(f"Retrieved headers for message {message_id}: {headers}")
+        return headers
+
+    except Exception as e:
+        logger.warning(f"Could not get message headers: {e}")
+        return {"message_id_header": None, "references": None}
+
+
+async def send_threaded_reply(
+    access_token: str,
+    config: Dict[str, Any],
+    to: str,
+    subject: str,
+    body: str,
+    html_body: str,
+    thread_id: str,
+    in_reply_to: Optional[str] = None,
+    references: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Send an email reply that stays in the same thread.
+
+    Uses the Gmail API directly to set threadId, In-Reply-To, and References headers
+    which are required for proper email threading.
+
+    Args:
+        access_token: Gmail access token
+        config: Configuration dict with credentials
+        to: Recipient email
+        subject: Email subject (should be "Re: original subject")
+        body: Plain text body
+        html_body: HTML body
+        thread_id: Gmail thread ID to reply in
+        in_reply_to: Message-ID of the email being replied to
+        references: References header from original email
+
+    Returns:
+        Dict with success status and message details
+    """
+    import base64
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+    import httpx
+
+    try:
+        # Build the email message with proper headers
+        message = MIMEMultipart("alternative")
+        message["To"] = to
+        message["Subject"] = subject
+        message["From"] = config.get("agent_email", "sabine@strugcity.com")
+
+        # Add threading headers - these are CRITICAL for Gmail to thread correctly
+        if in_reply_to:
+            message["In-Reply-To"] = in_reply_to
+            # References should include the In-Reply-To plus any previous references
+            if references:
+                message["References"] = f"{references} {in_reply_to}"
+            else:
+                message["References"] = in_reply_to
+
+        # Add plain text and HTML parts
+        part1 = MIMEText(body, "plain")
+        part2 = MIMEText(html_body, "html")
+        message.attach(part1)
+        message.attach(part2)
+
+        # Encode the message
+        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+
+        # Send via Gmail API with threadId
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "raw": raw_message,
+                    "threadId": thread_id
+                },
+                timeout=30.0
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"Threaded reply sent successfully. Message ID: {result.get('id')}, Thread ID: {result.get('threadId')}")
+                return {
+                    "success": True,
+                    "message_id": result.get("id"),
+                    "thread_id": result.get("threadId"),
+                    "label_ids": result.get("labelIds", [])
+                }
+            else:
+                error_text = response.text
+                logger.error(f"Gmail API error: {response.status_code} - {error_text}")
+                return {
+                    "success": False,
+                    "error": f"Gmail API error: {response.status_code}",
+                    "details": error_text
+                }
+
+    except Exception as e:
+        logger.error(f"Error sending threaded reply: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 async def generate_ai_response(
     sender_email: str,
     sender_name: Optional[str],
@@ -933,7 +1085,6 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                 logger.info(f"AI response: {ai_response[:200]}...")
 
                 # Convert plain text to simple HTML for email rendering
-                # The MCP gmail_send_email tool requires html_body to display content
                 html_response = ai_response.replace('\n', '<br>\n')
                 html_body = f"""<html>
 <body style="font-family: Arial, sans-serif; line-height: 1.6;">
@@ -941,20 +1092,31 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
 </body>
 </html>"""
 
-                # Send reply using AGENT token (sends FROM sabine@strugcity.com)
-                logger.info(f"Sending AI-generated reply to {sender} from agent account...")
-                send_result = await mcp.call_tool("gmail_send_email", {
-                    "google_access_token": agent_access_token,
-                    "to": sender,
-                    "subject": reply_subject,
-                    "body": ai_response,
-                    "html_body": html_body
-                })
+                # Get original email's Message-ID header for threading
+                logger.info(f"Getting original email headers for threading...")
+                original_headers = await get_message_headers(mcp, agent_access_token, message_id)
+                in_reply_to = original_headers.get("message_id_header")
+                references = original_headers.get("references")
+
+                # Send threaded reply using Gmail API directly
+                # This ensures the reply appears in the same email thread
+                logger.info(f"Sending threaded AI-generated reply to {sender} (thread: {thread_id})...")
+                send_result = await send_threaded_reply(
+                    access_token=agent_access_token,
+                    config=config,
+                    to=sender,
+                    subject=reply_subject,
+                    body=ai_response,
+                    html_body=html_body,
+                    thread_id=thread_id,
+                    in_reply_to=in_reply_to,
+                    references=references
+                )
 
                 logger.info(f"Send result: {send_result}")
 
-                if send_result and ("success" in send_result.lower() or "sent" in send_result.lower() or "id" in send_result.lower()):
-                    logger.info(f"AI response sent to {sender}")
+                if send_result.get("success"):
+                    logger.info(f"Threaded AI response sent to {sender} in thread {thread_id}")
                     # Mark thread as replied to prevent double-replies
                     if thread_id:
                         save_replied_thread(thread_id)
@@ -966,11 +1128,13 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                         "message_id": message_id,
                         "thread_id": thread_id,
                         "subject": reply_subject,
-                        "response_type": "ai_generated"
+                        "response_type": "ai_generated",
+                        "threaded": True
                     }
                 else:
-                    logger.warning(f"Failed to send reply to {sender}: {send_result}")
-                    return {"success": False, "error": f"Failed to send reply: {send_result}"}
+                    error_msg = send_result.get("error", "Unknown error")
+                    logger.warning(f"Failed to send threaded reply to {sender}: {error_msg}")
+                    return {"success": False, "error": f"Failed to send threaded reply: {error_msg}"}
 
             finally:
                 # Always remove from in-flight processing set when done
