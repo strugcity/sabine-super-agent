@@ -1,0 +1,24 @@
+{
+  "name": "cancel_reminder",
+  "description": "Cancels an existing reminder by ID or by searching for it by title/description. Use this when the user wants to cancel, delete, or remove a reminder they no longer need. Supports both exact ID lookup and fuzzy title matching.",
+  "version": "1.0.0",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "reminder_id": {
+        "type": "string",
+        "description": "The exact UUID of the reminder to cancel. Use this if you have the ID from list_reminders."
+      },
+      "search_term": {
+        "type": "string",
+        "description": "Search term to find the reminder by title (case-insensitive partial match). Use this when the user refers to a reminder by description like 'cancel my glasses reminder'."
+      },
+      "confirm_multiple": {
+        "type": "boolean",
+        "description": "If true and multiple reminders match, cancel all of them. Default is false (asks for clarification).",
+        "default": false
+      }
+    },
+    "required": []
+  }
+}

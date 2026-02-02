@@ -428,6 +428,79 @@ class ReminderService:
                 )
             )
 
+    async def search_reminders_by_title(
+        self,
+        user_id: UUID,
+        search_term: str,
+        active_only: bool = True,
+        limit: int = 10,
+    ) -> OperationResult:
+        """
+        Search for reminders by title using case-insensitive partial matching.
+
+        Args:
+            user_id: The user's UUID
+            search_term: Search term to match against reminder titles
+            active_only: If True, only search active reminders (default: True)
+            limit: Maximum number of results to return (default: 10)
+
+        Returns:
+            OperationResult with list of matching reminders
+        """
+        if not self.client:
+            return OperationResult.fail(
+                MissingCredentialsError(
+                    service="Supabase",
+                    required_keys=["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]
+                )
+            )
+
+        if not search_term or not search_term.strip():
+            return OperationResult.fail(
+                ReminderValidationError(
+                    message="Search term cannot be empty",
+                    field="search_term"
+                )
+            )
+
+        try:
+            # Build query with case-insensitive ILIKE search
+            query = self.client.table(REMINDERS_TABLE).select("*").eq(
+                "user_id", str(user_id)
+            ).ilike(
+                "title", f"%{search_term.strip()}%"
+            )
+
+            if active_only:
+                query = query.eq("is_active", True)
+
+            response = query.order(
+                "scheduled_time", desc=False
+            ).limit(limit).execute()
+
+            reminders = response.data or []
+            logger.info(
+                f"Found {len(reminders)} reminders matching '{search_term}' for user {user_id}"
+            )
+
+            return OperationResult.ok({
+                "reminders": reminders,
+                "count": len(reminders),
+                "search_term": search_term.strip(),
+            })
+
+        except Exception as e:
+            logger.error(f"Error searching reminders: {e}")
+            return OperationResult.fail(
+                DatabaseError(
+                    message=f"Failed to search reminders: {str(e)}",
+                    operation="select",
+                    table=REMINDERS_TABLE,
+                    context={"user_id": str(user_id), "search_term": search_term},
+                    original_error=e,
+                )
+            )
+
     # =========================================================================
     # Update Operations
     # =========================================================================
