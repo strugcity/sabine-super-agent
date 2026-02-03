@@ -2375,6 +2375,16 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to start reminder scheduler: {e}")
 
+    # Start the email poller (fallback for Gmail push notification delays)
+    try:
+        from lib.agent.email_poller import initialize_email_poller
+        email_poller = await initialize_email_poller()
+        logger.info("✓ Email poller started")
+        status = email_poller.get_status()
+        logger.info(f"  - Polling every {status['interval_minutes']} minutes")
+    except Exception as e:
+        logger.error(f"Failed to start email poller: {e}")
+
     # Start Slack Socket Mode (The Gantry)
     try:
         from lib.agent.slack_manager import start_socket_mode
@@ -2432,6 +2442,16 @@ async def shutdown_event():
             logger.info("✓ Reminder scheduler stopped gracefully")
     except Exception as e:
         logger.error(f"Error stopping reminder scheduler: {e}")
+
+    # Shutdown email poller
+    try:
+        from lib.agent.email_poller import get_email_poller
+        email_poller = get_email_poller()
+        if email_poller.is_running():
+            await email_poller.shutdown()
+            logger.info("✓ Email poller stopped gracefully")
+    except Exception as e:
+        logger.error(f"Error stopping email poller: {e}")
 
 
 # =============================================================================
