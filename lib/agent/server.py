@@ -1463,6 +1463,231 @@ async def auto_fail_blocked_tasks(
         raise HTTPException(status_code=500, detail=f"Failed to auto-fail blocked tasks: {str(e)}")
 
 
+# =============================================================================
+# Metrics Endpoints (P2 - Observability)
+# =============================================================================
+
+@app.post("/metrics/record")
+async def record_metrics(
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Record current metrics snapshot to time-series tables.
+
+    This should be called periodically by a scheduler (e.g., every 5 minutes)
+    to build up historical trend data.
+
+    Records:
+    - Queue depth and health metrics
+    - Role-level performance metrics
+    """
+    try:
+        service = get_task_queue_service()
+
+        # Record task metrics
+        task_metrics_id = await service.record_task_metrics()
+
+        # Record role metrics
+        roles_recorded = await service.record_role_metrics()
+
+        return {
+            "success": True,
+            "task_metrics_id": task_metrics_id,
+            "roles_recorded": roles_recorded
+        }
+
+    except Exception as e:
+        logger.error(f"Error recording metrics: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to record metrics: {str(e)}")
+
+
+@app.get("/metrics/latest")
+async def get_latest_metrics(
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Get the most recent metrics snapshot.
+
+    Returns the latest recorded metrics including queue depth,
+    success rates, and duration statistics.
+    """
+    try:
+        service = get_task_queue_service()
+        metrics = await service.get_latest_metrics()
+
+        if not metrics:
+            return {
+                "success": True,
+                "metrics": None,
+                "message": "No metrics recorded yet. Call POST /metrics/record first."
+            }
+
+        return {
+            "success": True,
+            "metrics": metrics
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting latest metrics: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get metrics: {str(e)}")
+
+
+@app.get("/metrics/trend")
+async def get_metrics_trend(
+    hours: int = 24,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Get metrics trend over the specified time period.
+
+    Args:
+        hours: Number of hours to look back (default: 24)
+
+    Returns time-series data for queue depth, success rates, and health.
+    """
+    try:
+        service = get_task_queue_service()
+        trend = await service.get_metrics_trend(hours=hours)
+
+        return {
+            "success": True,
+            "hours": hours,
+            "data_points": len(trend),
+            "trend": trend
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting metrics trend: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get trend: {str(e)}")
+
+
+@app.get("/metrics/roles")
+async def get_role_performance(
+    hours: int = 24,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Get performance metrics broken down by agent role.
+
+    Args:
+        hours: Time window in hours (default: 24)
+
+    Returns success rates, duration stats, and failure counts per role.
+    """
+    try:
+        service = get_task_queue_service()
+        roles = await service.get_role_performance(hours=hours)
+
+        return {
+            "success": True,
+            "hours": hours,
+            "roles": roles
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting role performance: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get role metrics: {str(e)}")
+
+
+@app.get("/metrics/errors")
+async def get_error_breakdown(
+    hours: int = 24,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Get error breakdown by error type.
+
+    Args:
+        hours: Time window in hours (default: 24)
+
+    Returns error counts and percentages by category.
+    """
+    try:
+        service = get_task_queue_service()
+        errors = await service.get_error_breakdown(hours=hours)
+
+        return {
+            "success": True,
+            "hours": hours,
+            "errors": errors
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting error breakdown: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get error breakdown: {str(e)}")
+
+
+@app.get("/metrics/prometheus")
+async def get_prometheus_metrics():
+    """
+    Get metrics in Prometheus text format.
+
+    This endpoint can be scraped by Prometheus for monitoring.
+    No authentication required for scraping compatibility.
+    """
+    try:
+        service = get_task_queue_service()
+        health = await service.get_task_queue_health()
+        latest = await service.get_latest_metrics()
+
+        # Build Prometheus text format
+        lines = [
+            "# HELP dream_team_queue_depth Number of tasks in queue by status",
+            "# TYPE dream_team_queue_depth gauge",
+            f'dream_team_queue_depth{{status="queued"}} {health.get("total_queued", 0)}',
+            f'dream_team_queue_depth{{status="in_progress"}} {health.get("total_in_progress", 0)}',
+            "",
+            "# HELP dream_team_blocked_tasks Tasks blocked by failed dependencies",
+            "# TYPE dream_team_blocked_tasks gauge",
+            f"dream_team_blocked_tasks {health.get('blocked_by_failed_deps', 0)}",
+            "",
+            "# HELP dream_team_stuck_tasks Tasks stuck past timeout",
+            "# TYPE dream_team_stuck_tasks gauge",
+            f"dream_team_stuck_tasks {health.get('stuck_tasks', 0)}",
+            "",
+            "# HELP dream_team_stale_tasks Tasks queued too long",
+            "# TYPE dream_team_stale_tasks gauge",
+            f'dream_team_stale_tasks{{threshold="1h"}} {health.get("stale_queued_1h", 0)}',
+            f'dream_team_stale_tasks{{threshold="24h"}} {health.get("stale_queued_24h", 0)}',
+            "",
+            "# HELP dream_team_pending_retries Failed tasks pending retry",
+            "# TYPE dream_team_pending_retries gauge",
+            f"dream_team_pending_retries {health.get('pending_retries', 0)}",
+        ]
+
+        # Add metrics from latest snapshot if available
+        if latest:
+            lines.extend([
+                "",
+                "# HELP dream_team_success_rate_1h Task success rate in last hour",
+                "# TYPE dream_team_success_rate_1h gauge",
+                f"dream_team_success_rate_1h {latest.get('success_rate_1h', 0) or 0}",
+                "",
+                "# HELP dream_team_completed_1h Tasks completed in last hour",
+                "# TYPE dream_team_completed_1h counter",
+                f"dream_team_completed_1h {latest.get('total_completed_1h', 0)}",
+                "",
+                "# HELP dream_team_failed_1h Tasks failed in last hour",
+                "# TYPE dream_team_failed_1h counter",
+                f"dream_team_failed_1h {latest.get('total_failed_1h', 0)}",
+                "",
+                "# HELP dream_team_task_duration_ms Task duration in milliseconds",
+                "# TYPE dream_team_task_duration_ms gauge",
+                f'dream_team_task_duration_ms{{quantile="avg"}} {latest.get("avg_duration_ms", 0) or 0}',
+                f'dream_team_task_duration_ms{{quantile="p95"}} {latest.get("p95_duration_ms", 0) or 0}',
+            ])
+
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse(
+            content="\n".join(lines) + "\n",
+            media_type="text/plain; version=0.0.4; charset=utf-8"
+        )
+
+    except Exception as e:
+        logger.error(f"Error generating Prometheus metrics: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate metrics: {str(e)}")
+
+
 @app.post("/tasks/dispatch")
 async def dispatch_tasks(
     background_tasks: BackgroundTasks,

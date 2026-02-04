@@ -581,9 +581,17 @@ class TaskQueueService:
                     )
                 )
 
+            # Calculate duration if started_at is available
+            completed_at = datetime.now(timezone.utc)
+            duration_ms = None
+            if task.started_at:
+                duration_ms = int((completed_at - task.started_at).total_seconds() * 1000)
+
             update_data = {
                 "status": TaskStatus.COMPLETED.value,
-                "result": result or {}
+                "result": result or {},
+                "completed_at": completed_at.isoformat(),
+                "duration_ms": duration_ms
             }
 
             response = self.client.table(TASK_QUEUE_TABLE).update(
@@ -591,7 +599,8 @@ class TaskQueueService:
             ).eq("id", str(task_id)).execute()
 
             if response.data and len(response.data) > 0:
-                logger.info(f"Completed task {task_id}")
+                duration_info = f" (duration: {duration_ms}ms)" if duration_ms else ""
+                logger.info(f"Completed task {task_id}{duration_info}")
 
                 # Trigger auto-dispatch of dependent tasks
                 if auto_dispatch:
@@ -715,9 +724,13 @@ class TaskQueueService:
                     )
                 )
 
+            # Classify the error type for metrics
+            error_type = self.classify_error_type(error)
+
             response = self.client.table(TASK_QUEUE_TABLE).update({
                 "status": TaskStatus.FAILED.value,
-                "error": error
+                "error": error,
+                "error_type": error_type
             }).eq("id", str(task_id)).execute()
 
             if not (response.data and len(response.data) > 0):
@@ -726,7 +739,7 @@ class TaskQueueService:
                     TaskNotFoundError(task_id=str(task_id))
                 )
 
-            logger.info(f"Failed task {task_id}: {error}")
+            logger.info(f"Failed task {task_id} [{error_type}]: {error}")
 
             # Cascade failure to dependent tasks
             cascaded_count = 0
@@ -1540,6 +1553,76 @@ class TaskQueueService:
 
         # Default: assume retryable (be optimistic)
         return True
+
+    @staticmethod
+    def classify_error_type(error: str) -> str:
+        """
+        Classify an error message into a standard error type category.
+
+        Error types:
+        - timeout: Task or operation timed out
+        - dependency_failed: Failed due to dependency failure
+        - agent_error: Agent-level error (no tools called, validation, etc.)
+        - tool_error: Tool execution error
+        - external_service: External API/service failure
+        - validation_error: Input validation or configuration error
+        - cancelled: Task was manually cancelled
+        - unknown: Unclassified error
+
+        Args:
+            error: Error message string
+
+        Returns:
+            Error type category string
+        """
+        error_lower = error.lower()
+
+        # Cancellation
+        if "cancelled" in error_lower or "canceled" in error_lower:
+            return "cancelled"
+
+        # Timeout errors
+        if any(p in error_lower for p in ["timeout", "timed out", "[timeout"]):
+            return "timeout"
+
+        # Dependency failures
+        if any(p in error_lower for p in [
+            "dependency", "blocked by failed", "parent task",
+            "depends_on", "dependency not found"
+        ]):
+            return "dependency_failed"
+
+        # Agent-level errors
+        if any(p in error_lower for p in [
+            "no_tools_called", "no tools called", "agent",
+            "verification failed", "verification_failed",
+            "max iterations", "context limit"
+        ]):
+            return "agent_error"
+
+        # Tool errors
+        if any(p in error_lower for p in [
+            "tool", "execution error", "tool_error",
+            "command failed", "script error"
+        ]):
+            return "tool_error"
+
+        # Validation/configuration errors
+        if any(p in error_lower for p in [
+            "validation", "invalid", "malformed", "config",
+            "missing", "required", "schema", "format"
+        ]):
+            return "validation_error"
+
+        # External service errors
+        if any(p in error_lower for p in [
+            "api", "service", "external", "http", "request failed",
+            "rate limit", "429", "quota", "unauthorized", "403", "401",
+            "500", "502", "503", "504", "connection", "network"
+        ]):
+            return "external_service"
+
+        return "unknown"
 
     async def fail_task_with_retry(
         self,
@@ -2947,6 +3030,160 @@ class TaskQueueService:
                 )
 
         return results
+
+    # =========================================================================
+    # Metrics Collection and Reporting (P2 - Observability)
+    # =========================================================================
+
+    async def record_task_metrics(self) -> Optional[str]:
+        """
+        Record current metrics snapshot to task_metrics table.
+
+        This should be called periodically (e.g., every 5 minutes) to build
+        historical trend data.
+
+        Returns:
+            UUID of the created metrics record, or None on error
+        """
+        if not self.client:
+            logger.warning("Cannot record metrics: no database client")
+            return None
+
+        try:
+            response = self.client.rpc("record_task_metrics").execute()
+
+            if response.data:
+                metrics_id = response.data
+                logger.info(f"Recorded task metrics snapshot: {metrics_id}")
+                return metrics_id
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Error recording task metrics: {e}")
+            return None
+
+    async def record_role_metrics(self) -> int:
+        """
+        Record role-level metrics to role_metrics table.
+
+        Returns:
+            Number of roles recorded
+        """
+        if not self.client:
+            return 0
+
+        try:
+            response = self.client.rpc("record_role_metrics").execute()
+
+            if response.data is not None:
+                roles_recorded = response.data
+                if roles_recorded > 0:
+                    logger.info(f"Recorded metrics for {roles_recorded} roles")
+                return roles_recorded
+
+            return 0
+
+        except Exception as e:
+            logger.error(f"Error recording role metrics: {e}")
+            return 0
+
+    async def get_latest_metrics(self) -> Optional[Dict[str, Any]]:
+        """
+        Get the most recent metrics snapshot.
+
+        Returns:
+            Latest metrics dict or None if no metrics recorded
+        """
+        if not self.client:
+            return None
+
+        try:
+            response = self.client.rpc("get_latest_metrics").execute()
+
+            if response.data and len(response.data) > 0:
+                return response.data[0]
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Error getting latest metrics: {e}")
+            return None
+
+    async def get_metrics_trend(self, hours: int = 24) -> List[Dict[str, Any]]:
+        """
+        Get metrics trend for the specified time period.
+
+        Args:
+            hours: Number of hours to look back
+
+        Returns:
+            List of metrics snapshots ordered by time
+        """
+        if not self.client:
+            return []
+
+        try:
+            response = self.client.rpc(
+                "get_metrics_trend",
+                {"hours": hours}
+            ).execute()
+
+            return response.data if response.data else []
+
+        except Exception as e:
+            logger.error(f"Error getting metrics trend: {e}")
+            return []
+
+    async def get_role_performance(self, hours: int = 24) -> List[Dict[str, Any]]:
+        """
+        Get performance metrics broken down by agent role.
+
+        Args:
+            hours: Time window in hours
+
+        Returns:
+            List of role performance records
+        """
+        if not self.client:
+            return []
+
+        try:
+            response = self.client.rpc(
+                "get_role_performance",
+                {"time_window": f"{hours} hours"}
+            ).execute()
+
+            return response.data if response.data else []
+
+        except Exception as e:
+            logger.error(f"Error getting role performance: {e}")
+            return []
+
+    async def get_error_breakdown(self, hours: int = 24) -> List[Dict[str, Any]]:
+        """
+        Get error breakdown by error type.
+
+        Args:
+            hours: Time window in hours
+
+        Returns:
+            List of error type records with counts and percentages
+        """
+        if not self.client:
+            return []
+
+        try:
+            response = self.client.rpc(
+                "get_error_breakdown",
+                {"time_window": f"{hours} hours"}
+            ).execute()
+
+            return response.data if response.data else []
+
+        except Exception as e:
+            logger.error(f"Error getting error breakdown: {e}")
+            return []
 
 
 # =============================================================================

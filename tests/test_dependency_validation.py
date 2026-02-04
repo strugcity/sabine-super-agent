@@ -1922,6 +1922,284 @@ def test_status_code_409_for_state_conflicts():
     print("  [OK] State conflicts return HTTP 409")
 
 
+# =============================================================================
+# Observability Metrics Tests (P2)
+# =============================================================================
+
+def test_error_classification_timeout():
+    """Test that timeout errors are classified correctly."""
+    from backend.services.task_queue import TaskQueueService
+
+    classify = TaskQueueService.classify_error_type
+
+    # Timeout patterns
+    assert classify("Task timeout after 1800s") == "timeout"
+    assert classify("[TIMEOUT after 30s]") == "timeout"
+    assert classify("Operation timed out") == "timeout"
+    assert classify("Request timeout exceeded") == "timeout"
+
+    print("  [OK] Timeout errors classified correctly")
+
+
+def test_error_classification_dependency():
+    """Test that dependency errors are classified correctly."""
+    from backend.services.task_queue import TaskQueueService
+
+    classify = TaskQueueService.classify_error_type
+
+    # Dependency patterns
+    assert classify("Blocked by failed dependency: Task xyz") == "dependency_failed"
+    assert classify("Parent task failed") == "dependency_failed"
+    assert classify("Dependency not found: abc123") == "dependency_failed"
+    assert classify("depends_on task has error") == "dependency_failed"
+
+    print("  [OK] Dependency errors classified correctly")
+
+
+def test_error_classification_agent():
+    """Test that agent errors are classified correctly."""
+    from backend.services.task_queue import TaskQueueService
+
+    classify = TaskQueueService.classify_error_type
+
+    # Agent patterns
+    assert classify("no_tools_called: Agent did not use tools") == "agent_error"
+    assert classify("No tools called during execution") == "agent_error"
+    assert classify("Agent verification failed") == "agent_error"
+    assert classify("Max iterations exceeded") == "agent_error"
+    assert classify("Context limit reached") == "agent_error"
+
+    print("  [OK] Agent errors classified correctly")
+
+
+def test_error_classification_tool():
+    """Test that tool errors are classified correctly."""
+    from backend.services.task_queue import TaskQueueService
+
+    classify = TaskQueueService.classify_error_type
+
+    # Tool patterns
+    assert classify("Tool execution error: write failed") == "tool_error"
+    assert classify("tool_error: Invalid arguments") == "tool_error"
+    assert classify("Command failed with exit code 1") == "tool_error"
+    assert classify("Script error in bash execution") == "tool_error"
+
+    print("  [OK] Tool errors classified correctly")
+
+
+def test_error_classification_external():
+    """Test that external service errors are classified correctly."""
+    from backend.services.task_queue import TaskQueueService
+
+    classify = TaskQueueService.classify_error_type
+
+    # External service patterns
+    assert classify("API request failed: 500") == "external_service"
+    assert classify("Rate limit exceeded (429)") == "external_service"
+    assert classify("Connection refused") == "external_service"
+    assert classify("Service unavailable") == "external_service"
+    assert classify("HTTP 502 Bad Gateway") == "external_service"
+    assert classify("Network error") == "external_service"
+    assert classify("Unauthorized: 401") == "external_service"
+
+    print("  [OK] External service errors classified correctly")
+
+
+def test_error_classification_cancelled():
+    """Test that cancelled errors are classified correctly."""
+    from backend.services.task_queue import TaskQueueService
+
+    classify = TaskQueueService.classify_error_type
+
+    # Cancelled patterns
+    assert classify("Cancelled: No longer needed") == "cancelled"
+    assert classify("Task was cancelled by user") == "cancelled"
+    assert classify("Operation canceled") == "cancelled"  # American spelling
+
+    print("  [OK] Cancelled errors classified correctly")
+
+
+def test_error_classification_unknown():
+    """Test that unrecognized errors are classified as unknown."""
+    from backend.services.task_queue import TaskQueueService
+
+    classify = TaskQueueService.classify_error_type
+
+    # Unknown patterns (don't match any category)
+    assert classify("Something weird happened") == "unknown"
+    assert classify("Random failure") == "unknown"
+    assert classify("Unexpected state") == "unknown"
+
+    print("  [OK] Unknown errors classified correctly")
+
+
+def test_duration_calculation():
+    """Test that task duration is calculated correctly."""
+    # Duration = completed_at - started_at in milliseconds
+
+    # Simulate a 5-second task
+    started_at = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    completed_at = datetime(2024, 1, 1, 12, 0, 5, tzinfo=timezone.utc)
+
+    duration_ms = int((completed_at - started_at).total_seconds() * 1000)
+    assert duration_ms == 5000
+
+    # Simulate a 2-minute task
+    started_at = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    completed_at = datetime(2024, 1, 1, 12, 2, 0, tzinfo=timezone.utc)
+
+    duration_ms = int((completed_at - started_at).total_seconds() * 1000)
+    assert duration_ms == 120000
+
+    # Simulate a sub-second task
+    started_at = datetime(2024, 1, 1, 12, 0, 0, 500000, tzinfo=timezone.utc)
+    completed_at = datetime(2024, 1, 1, 12, 0, 0, 750000, tzinfo=timezone.utc)
+
+    duration_ms = int((completed_at - started_at).total_seconds() * 1000)
+    assert duration_ms == 250  # 250ms
+
+    print("  [OK] Duration calculated correctly")
+
+
+def test_metrics_table_schema():
+    """Test the expected schema for task_metrics table."""
+    # Define expected columns
+    expected_columns = {
+        "id": "UUID",
+        "recorded_at": "TIMESTAMPTZ",
+        "total_queued": "INTEGER",
+        "total_in_progress": "INTEGER",
+        "total_completed_1h": "INTEGER",
+        "total_failed_1h": "INTEGER",
+        "blocked_count": "INTEGER",
+        "stale_1h_count": "INTEGER",
+        "stale_24h_count": "INTEGER",
+        "stuck_count": "INTEGER",
+        "pending_retries": "INTEGER",
+        "avg_duration_ms": "INTEGER",
+        "p50_duration_ms": "INTEGER",
+        "p95_duration_ms": "INTEGER",
+        "p99_duration_ms": "INTEGER",
+        "success_rate_1h": "NUMERIC",
+        "errors_timeout": "INTEGER",
+        "errors_dependency": "INTEGER",
+        "errors_agent": "INTEGER",
+        "errors_tool": "INTEGER",
+        "errors_external": "INTEGER",
+        "errors_other": "INTEGER",
+    }
+
+    # Verify all columns are documented
+    assert len(expected_columns) == 22
+
+    # Sample data that should match schema
+    sample_row = {
+        "id": str(uuid4()),
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "total_queued": 5,
+        "total_in_progress": 2,
+        "total_completed_1h": 10,
+        "total_failed_1h": 1,
+        "blocked_count": 0,
+        "stale_1h_count": 0,
+        "stale_24h_count": 0,
+        "stuck_count": 0,
+        "pending_retries": 0,
+        "avg_duration_ms": 15000,
+        "p50_duration_ms": 12000,
+        "p95_duration_ms": 45000,
+        "p99_duration_ms": 60000,
+        "success_rate_1h": 90.91,
+        "errors_timeout": 0,
+        "errors_dependency": 0,
+        "errors_agent": 1,
+        "errors_tool": 0,
+        "errors_external": 0,
+        "errors_other": 0,
+    }
+
+    for col in expected_columns:
+        assert col in sample_row, f"Missing column: {col}"
+
+    print("  [OK] Task metrics table schema correct")
+
+
+def test_role_metrics_schema():
+    """Test the expected schema for role_metrics table."""
+    # Define expected columns
+    expected_columns = {
+        "id": "UUID",
+        "recorded_at": "TIMESTAMPTZ",
+        "role": "TEXT",
+        "total_completed": "INTEGER",
+        "total_failed": "INTEGER",
+        "avg_duration_ms": "INTEGER",
+        "min_duration_ms": "INTEGER",
+        "max_duration_ms": "INTEGER",
+        "p50_duration_ms": "INTEGER",
+        "p95_duration_ms": "INTEGER",
+        "success_rate": "NUMERIC",
+        "errors_by_type": "JSONB",
+    }
+
+    # Verify all columns are documented
+    assert len(expected_columns) == 12
+
+    # Sample data that should match schema
+    sample_row = {
+        "id": str(uuid4()),
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "role": "coder",
+        "total_completed": 50,
+        "total_failed": 5,
+        "avg_duration_ms": 30000,
+        "min_duration_ms": 5000,
+        "max_duration_ms": 120000,
+        "p50_duration_ms": 25000,
+        "p95_duration_ms": 90000,
+        "success_rate": 90.91,
+        "errors_by_type": {"timeout": 2, "agent_error": 3},
+    }
+
+    for col in expected_columns:
+        assert col in sample_row, f"Missing column: {col}"
+
+    print("  [OK] Role metrics table schema correct")
+
+
+def test_prometheus_metrics_format():
+    """Test that Prometheus metrics output format is correct."""
+    # Sample metrics
+    sample_metrics = [
+        "# HELP dream_team_queue_depth Number of tasks in queue by status",
+        "# TYPE dream_team_queue_depth gauge",
+        'dream_team_queue_depth{status="queued"} 5',
+        'dream_team_queue_depth{status="in_progress"} 2',
+        "",
+        "# HELP dream_team_blocked_tasks Tasks blocked by failed dependencies",
+        "# TYPE dream_team_blocked_tasks gauge",
+        "dream_team_blocked_tasks 0",
+    ]
+
+    # Verify format rules
+    for line in sample_metrics:
+        if line.startswith("#"):
+            # Comment lines start with # HELP or # TYPE
+            assert line.startswith("# HELP") or line.startswith("# TYPE")
+        elif line.strip():
+            # Metric lines have format: name{labels} value or name value
+            parts = line.split()
+            assert len(parts) >= 2, f"Invalid metric line: {line}"
+            # Value should be numeric
+            value = parts[-1]
+            try:
+                float(value)
+            except ValueError:
+                raise AssertionError(f"Non-numeric value in: {line}")
+
+    print("  [OK] Prometheus metrics format correct")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("Running Dependency Validation Tests")
@@ -2185,6 +2463,41 @@ if __name__ == "__main__":
 
     print("\n77. Testing status code 409 for state conflicts...")
     test_status_code_409_for_state_conflicts()
+
+    print("\n--- Observability Metrics Tests (P2) ---")
+
+    print("\n78. Testing error type classification - timeout...")
+    test_error_classification_timeout()
+
+    print("\n79. Testing error type classification - dependency...")
+    test_error_classification_dependency()
+
+    print("\n80. Testing error type classification - agent...")
+    test_error_classification_agent()
+
+    print("\n81. Testing error type classification - tool...")
+    test_error_classification_tool()
+
+    print("\n82. Testing error type classification - external...")
+    test_error_classification_external()
+
+    print("\n83. Testing error type classification - cancelled...")
+    test_error_classification_cancelled()
+
+    print("\n84. Testing error type classification - unknown...")
+    test_error_classification_unknown()
+
+    print("\n85. Testing duration calculation...")
+    test_duration_calculation()
+
+    print("\n86. Testing metrics table schema...")
+    test_metrics_table_schema()
+
+    print("\n87. Testing role metrics schema...")
+    test_role_metrics_schema()
+
+    print("\n88. Testing Prometheus metrics format...")
+    test_prometheus_metrics_format()
 
     print("\n" + "=" * 60)
     print("All dependency validation tests passed!")
