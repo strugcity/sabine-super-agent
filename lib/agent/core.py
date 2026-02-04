@@ -1021,13 +1021,17 @@ async def create_agent(
     static_prompt = build_static_context(deep_context, role=role)
     dynamic_prompt = build_dynamic_context(deep_context)
 
-    # Create LLM with caching support
-    # Note: We use model_kwargs to pass extra parameters if needed
+    # Create LLM
+    # Engineering roles only produce short tool-call JSON — 2048 output tokens
+    # is generous.  Consumer (Sabine) calls may need longer prose responses so
+    # they keep the full 4096 budget.  Output tokens are 5x the price of input,
+    # so this is the single most impactful per-call cost lever.
+    max_tokens = 2048 if (role and role in ENGINEERING_ROLES) else 4096
     llm = ChatAnthropic(
         model=model_name,
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
         temperature=0.7,
-        max_tokens=4096
+        max_tokens=max_tokens
     )
 
     # Create ReAct agent with system prompt
@@ -1039,6 +1043,13 @@ async def create_agent(
         tools,
         prompt=SystemMessage(content=full_system_prompt)
     )
+
+    # Cap the tool-use loop for engineering roles.  A typical file task needs
+    # 3-5 turns (read → write → verify).  LangGraph's default recursion_limit
+    # is 25; an uncapped agent looping on a confusing objective can burn
+    # 150k+ input tokens in a single task.  Store the limit in deep_context
+    # so run_agent can pass it through to ainvoke without a signature change.
+    deep_context["_recursion_limit"] = 8 if (role and role in ENGINEERING_ROLES) else 25
 
     # Store caching info in deep_context for tracking
     deep_context["_cache_info"] = {
@@ -1309,9 +1320,13 @@ async def run_agent(
         # Add current user message
         messages.append(HumanMessage(content=user_message))
 
-        # Run agent
-        logger.info(f"Running agent for user {user_id}")
-        result = await agent.ainvoke({"messages": messages})
+        # Run agent with the recursion limit set by create_agent
+        recursion_limit = deep_context.get("_recursion_limit", 25)
+        logger.info(f"Running agent for user {user_id} (recursion_limit={recursion_limit})")
+        result = await agent.ainvoke(
+            {"messages": messages},
+            config={"recursion_limit": recursion_limit}
+        )
 
         duration_ms = (time.time() - start_time) * 1000
 
