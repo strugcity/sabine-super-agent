@@ -129,10 +129,19 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Add CORS middleware (for development)
+# Add CORS middleware
+# Note: FastAPI CORSMiddleware doesn't support wildcard subdomains, so we list explicit origins
+# For production, you can also use allow_origin_regex for pattern matching
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://*.vercel.app"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "https://dream-team-strug.vercel.app",
+        "https://dream-team-strug-git-main-strugcity.vercel.app",
+        "https://dream-team-strug-strugcity.vercel.app",
+    ],
+    allow_origin_regex=r"https://dream-team-strug.*\.vercel\.app",  # Catch preview deployments
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
