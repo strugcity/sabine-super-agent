@@ -33,6 +33,27 @@ ALLOWED_REPOS = {
 }
 
 
+def normalise_file_content(content: str) -> str:
+    """
+    Normalise over-escaped content from LLM tool calls.
+
+    LLMs occasionally double-escape special characters when generating
+    tool-call payloads.  The JSON value ``"line1\\nline2"`` deserialises to
+    the Python string ``"line1\\nline2"`` (literal backslash + n) instead of
+    ``"line1\\nline2"`` (actual newline).  The symptom is the entire file
+    landing on a single line in the repo.
+
+    Detection heuristic: literal ``\\n`` is present AND there are zero real
+    newline characters anywhere in the string.  Both conditions must be true —
+    if the string already contains real newlines the ``\\n`` sequences are
+    probably intentional (e.g. a JSON fixture).
+    """
+    if "\\n" in content and "\n" not in content:
+        logger.info("normalise_file_content: detected over-escaped content, normalising \\n and \\t")
+        content = content.replace("\\n", "\n").replace("\\t", "\t")
+    return content
+
+
 def validate_repo_access(owner: str, repo: str) -> tuple[bool, str]:
     """
     Validate that the requested repository is in the allowed list.
@@ -335,7 +356,7 @@ async def create_or_update_file(
     """
     import base64
 
-    url = f"{GITHUB_API}/repos/{owner}/{repo}/contents/{path}"
+    content = normalise_file_content(content)
 
     # Base64 encode the content
     content_b64 = base64.b64encode(content.encode("utf-8")).decode("utf-8")
