@@ -1531,6 +1531,8 @@ class TaskQueueService:
             "circular dependency", "dependency not found",
             "no_tools_called",  # Agent didn't use tools when required
             "no tools called",  # Alternative format
+            "insufficient credits", "out of credits",  # Billing exhaustion — won't resolve on its own
+            "credits exhausted", "no credits",
         ]
 
         for pattern in non_retryable_patterns:

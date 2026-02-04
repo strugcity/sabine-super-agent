@@ -504,6 +504,88 @@ def test_raise_from_pattern():
         print("  [OK] 'raise from' pattern works correctly")
 
 
+# =============================================================================
+# TaskQueueService.is_retryable_error Classification Tests
+# =============================================================================
+
+# task_queue.py imports supabase at module level, but is_retryable_error is a
+# pure static method (string ops only).  Mock the heavy deps so the module
+# loads without a real DB connection.
+import unittest.mock as _mock
+sys.modules.setdefault("supabase", _mock.MagicMock())
+
+from backend.services.task_queue import TaskQueueService
+
+
+def test_is_retryable_rate_limit():
+    """Rate-limit errors are transient and should be retried."""
+    assert TaskQueueService.is_retryable_error(
+        "Error code: 429 - rate_limit_error: You exceeded your rate limit"
+    ) is True
+    assert TaskQueueService.is_retryable_error(
+        "Rate limit exceeded for model claude-sonnet-4"
+    ) is True
+    assert TaskQueueService.is_retryable_error(
+        "quota exceeded, please try again later"
+    ) is True
+    print("  [OK] Rate-limit errors classified as retryable")
+
+
+def test_is_retryable_credits_exhausted():
+    """Billing / credits errors are permanent until operator action — not retried."""
+    assert TaskQueueService.is_retryable_error(
+        "Insufficient credits: your balance is 0.00"
+    ) is False
+    assert TaskQueueService.is_retryable_error(
+        "Out of credits — please reload your account"
+    ) is False
+    assert TaskQueueService.is_retryable_error(
+        "Credits exhausted for organization abc-123"
+    ) is False
+    assert TaskQueueService.is_retryable_error(
+        "No credits remaining on this API key"
+    ) is False
+    # Mixed-case should still match (normalised to lower)
+    assert TaskQueueService.is_retryable_error(
+        "INSUFFICIENT CREDITS: balance depleted"
+    ) is False
+    print("  [OK] Credits-exhaustion errors classified as non-retryable")
+
+
+def test_is_retryable_transient_server_errors():
+    """5xx server errors are transient and should be retried."""
+    assert TaskQueueService.is_retryable_error("500 Internal Server Error") is True
+    assert TaskQueueService.is_retryable_error("502 Bad Gateway") is True
+    assert TaskQueueService.is_retryable_error("503 Service Unavailable") is True
+    assert TaskQueueService.is_retryable_error("504 Gateway Timeout") is True
+    assert TaskQueueService.is_retryable_error("Connection reset by peer") is True
+    assert TaskQueueService.is_retryable_error("Socket timeout after 30s") is True
+    print("  [OK] Transient server errors classified as retryable")
+
+
+def test_is_retryable_permanent_auth_errors():
+    """Auth and permission errors are permanent and should not be retried."""
+    assert TaskQueueService.is_retryable_error("401 Unauthorized") is False
+    assert TaskQueueService.is_retryable_error("403 Forbidden: no access") is False
+    assert TaskQueueService.is_retryable_error("Unauthorized: invalid API key") is False
+    print("  [OK] Auth/permission errors classified as non-retryable")
+
+
+def test_is_retryable_permanent_validation_errors():
+    """Validation / not-found errors are permanent and should not be retried."""
+    assert TaskQueueService.is_retryable_error("Validation failed: field 'role' required") is False
+    assert TaskQueueService.is_retryable_error("404 Not Found: task does not exist") is False
+    assert TaskQueueService.is_retryable_error("Invalid role: unknown-agent") is False
+    print("  [OK] Validation/not-found errors classified as non-retryable")
+
+
+def test_is_retryable_unknown_defaults_to_true():
+    """Unrecognised errors default to retryable (optimistic)."""
+    assert TaskQueueService.is_retryable_error("Something unexpected happened") is True
+    assert TaskQueueService.is_retryable_error("") is True
+    print("  [OK] Unknown errors default to retryable")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("Running Error Handling Tests")
@@ -601,6 +683,24 @@ if __name__ == "__main__":
 
     print("\n31. Testing 'raise from' pattern...")
     test_raise_from_pattern()
+
+    print("\n32. Testing is_retryable_error: rate-limit errors...")
+    test_is_retryable_rate_limit()
+
+    print("\n33. Testing is_retryable_error: credits-exhaustion errors...")
+    test_is_retryable_credits_exhausted()
+
+    print("\n34. Testing is_retryable_error: transient server errors...")
+    test_is_retryable_transient_server_errors()
+
+    print("\n35. Testing is_retryable_error: permanent auth errors...")
+    test_is_retryable_permanent_auth_errors()
+
+    print("\n36. Testing is_retryable_error: permanent validation errors...")
+    test_is_retryable_permanent_validation_errors()
+
+    print("\n37. Testing is_retryable_error: unknown errors default retryable...")
+    test_is_retryable_unknown_defaults_to_true()
 
     print("\n" + "=" * 60)
     print("All error handling tests passed!")
