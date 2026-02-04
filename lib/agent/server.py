@@ -872,22 +872,483 @@ async def fail_task(
         raise HTTPException(status_code=500, detail=f"Failed to fail task: {str(e)}")
 
 
+@app.post("/tasks/{task_id}/retry")
+async def retry_task(
+    task_id: str,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Retry a failed task.
+
+    Resets the task status to 'queued' so it can be dispatched again.
+    Only works for tasks that are:
+    - Currently in 'failed' status
+    - Marked as retryable (is_retryable=True)
+    - Have not exceeded max_retries
+    """
+    try:
+        from uuid import UUID
+
+        service = get_task_queue_service()
+        result = await service.retry_task(UUID(task_id))
+
+        if not result.success:
+            error_msg = result.error.message if result.error else "Unknown error"
+            status_code = result.error.status_code if result.error else 400
+            raise HTTPException(status_code=status_code, detail=error_msg)
+
+        return {
+            "success": True,
+            **result.data
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrying task {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retry task: {str(e)}")
+
+
+@app.get("/tasks/retryable")
+async def get_retryable_tasks(
+    limit: int = 10,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Get tasks that are eligible for retry.
+
+    Returns failed tasks where:
+    - is_retryable = True
+    - retry_count < max_retries
+    - next_retry_at <= now (backoff period has elapsed)
+    """
+    try:
+        service = get_task_queue_service()
+        tasks = await service.get_retryable_tasks(limit=limit)
+
+        return {
+            "success": True,
+            "count": len(tasks),
+            "tasks": [
+                {
+                    "id": str(task.id),
+                    "role": task.role,
+                    "retry_count": task.retry_count,
+                    "max_retries": task.max_retries,
+                    "next_retry_at": task.next_retry_at.isoformat() if task.next_retry_at else None,
+                    "error": task.error,
+                    "created_at": task.created_at.isoformat() if task.created_at else None
+                }
+                for task in tasks
+            ]
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting retryable tasks: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get retryable tasks: {str(e)}")
+
+
+@app.post("/tasks/retry-all")
+async def retry_all_eligible_tasks(
+    background_tasks: BackgroundTasks,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Process all tasks that are ready for retry.
+
+    This triggers retry for all eligible tasks in the background.
+    """
+    try:
+        service = get_task_queue_service()
+        result = await service.process_retryable_tasks()
+
+        return {
+            "success": True,
+            **result
+        }
+
+    except Exception as e:
+        logger.error(f"Error processing retryable tasks: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to process retryable tasks: {str(e)}")
+
+
+@app.get("/tasks/stuck")
+async def get_stuck_tasks(
+    limit: int = 10,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Get tasks that appear to be stuck (IN_PROGRESS longer than timeout).
+
+    Returns tasks where:
+    - status = 'in_progress'
+    - started_at + timeout_seconds < now
+    """
+    try:
+        service = get_task_queue_service()
+        tasks = await service.get_stuck_tasks(limit=limit)
+
+        return {
+            "success": True,
+            "count": len(tasks),
+            "tasks": [
+                {
+                    "id": str(task.id),
+                    "role": task.role,
+                    "started_at": task.started_at.isoformat() if task.started_at else None,
+                    "timeout_seconds": task.timeout_seconds,
+                    "last_heartbeat_at": task.last_heartbeat_at.isoformat() if task.last_heartbeat_at else None,
+                    "retry_count": task.retry_count,
+                    "max_retries": task.max_retries,
+                    "error": task.error
+                }
+                for task in tasks
+            ]
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting stuck tasks: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get stuck tasks: {str(e)}")
+
+
+@app.post("/tasks/{task_id}/heartbeat")
+async def update_task_heartbeat(
+    task_id: str,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Update the heartbeat timestamp for a running task.
+
+    Long-running tasks should call this periodically to prevent
+    being detected as stuck by the watchdog.
+    """
+    try:
+        from uuid import UUID
+
+        service = get_task_queue_service()
+        success = await service.update_heartbeat(UUID(task_id))
+
+        if not success:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not update heartbeat for task {task_id}"
+            )
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "heartbeat_at": datetime.now(timezone.utc).isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating heartbeat for task {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update heartbeat: {str(e)}")
+
+
+@app.post("/tasks/{task_id}/requeue")
+async def requeue_stuck_task(
+    task_id: str,
+    error: str = "Manually requeued",
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Requeue a stuck task (reset to queued status).
+
+    Only works for tasks currently in 'in_progress' status.
+    """
+    try:
+        from uuid import UUID
+
+        service = get_task_queue_service()
+        result = await service.requeue_stuck_task(UUID(task_id), error=error)
+
+        if not result.success:
+            error_msg = result.error.message if result.error else "Unknown error"
+            status_code = result.error.status_code if result.error else 400
+            raise HTTPException(status_code=status_code, detail=error_msg)
+
+        return {
+            "success": True,
+            **result.data
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error requeuing task {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to requeue task: {str(e)}")
+
+
+@app.post("/tasks/watchdog")
+async def run_watchdog(
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Run the stuck task watchdog.
+
+    Finds all stuck tasks (IN_PROGRESS longer than timeout) and either:
+    - Requeues them for retry (if retry_count < max_retries)
+    - Marks as permanently failed (if max retries exceeded)
+
+    Also sends a Slack alert if any stuck tasks are found.
+    """
+    try:
+        from lib.agent.slack_manager import send_stuck_task_alert
+
+        service = get_task_queue_service()
+        result = await service.process_stuck_tasks()
+
+        # Send Slack alert if any stuck tasks were processed
+        if result["processed"] > 0:
+            all_stuck = result["requeued"] + result["failed"]
+            await send_stuck_task_alert(
+                stuck_tasks=all_stuck,
+                requeued_count=len(result["requeued"]),
+                failed_count=len(result["failed"])
+            )
+
+        return {
+            "success": True,
+            **result
+        }
+
+    except Exception as e:
+        logger.error(f"Error running watchdog: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to run watchdog: {str(e)}")
+
+
+# =============================================================================
+# Health Check & Monitoring Endpoints (P1 #5)
+# =============================================================================
+
+@app.get("/tasks/health")
+async def get_task_queue_health(
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Get task queue health metrics.
+
+    Returns overall health status including:
+    - total_queued: Tasks waiting to run
+    - total_in_progress: Tasks currently running
+    - blocked_by_failed_deps: Tasks blocked by failed dependencies
+    - stale_queued_1h: Tasks queued over 1 hour
+    - stale_queued_24h: Tasks queued over 24 hours
+    - stuck_tasks: In-progress tasks past their timeout
+    - pending_retries: Failed tasks eligible for retry
+    """
+    try:
+        service = get_task_queue_service()
+        health = await service.get_task_queue_health()
+
+        # Determine if there are any issues
+        issues = (
+            health.get("blocked_by_failed_deps", 0) > 0 or
+            health.get("stale_queued_24h", 0) > 0 or
+            health.get("stuck_tasks", 0) > 0
+        )
+
+        return {
+            "success": True,
+            "healthy": not issues,
+            "metrics": health
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting task queue health: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get health: {str(e)}")
+
+
+@app.get("/tasks/blocked")
+async def get_blocked_tasks(
+    limit: int = 50,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Get tasks blocked by failed dependencies.
+
+    These tasks will never run without manual intervention because
+    at least one of their dependencies has failed.
+    """
+    try:
+        service = get_task_queue_service()
+        blocked = await service.get_blocked_tasks(limit=limit)
+
+        return {
+            "success": True,
+            "count": len(blocked),
+            "tasks": blocked
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting blocked tasks: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get blocked tasks: {str(e)}")
+
+
+@app.get("/tasks/stale")
+async def get_stale_tasks(
+    threshold_minutes: int = 60,
+    limit: int = 50,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Get tasks that have been queued for too long.
+
+    Args:
+        threshold_minutes: How long is considered "too long" (default: 60)
+        limit: Maximum results to return
+    """
+    try:
+        service = get_task_queue_service()
+        stale = await service.get_stale_queued_tasks(
+            threshold_minutes=threshold_minutes,
+            limit=limit
+        )
+
+        return {
+            "success": True,
+            "count": len(stale),
+            "threshold_minutes": threshold_minutes,
+            "tasks": stale
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting stale tasks: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get stale tasks: {str(e)}")
+
+
+@app.get("/tasks/orphaned")
+async def get_orphaned_tasks(
+    limit: int = 50,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Get tasks where ALL dependencies have failed.
+
+    These tasks have zero chance of running without recreating
+    their entire dependency chain.
+    """
+    try:
+        service = get_task_queue_service()
+        orphaned = await service.get_orphaned_tasks(limit=limit)
+
+        return {
+            "success": True,
+            "count": len(orphaned),
+            "tasks": orphaned
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting orphaned tasks: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get orphaned tasks: {str(e)}")
+
+
+@app.post("/tasks/health-check")
+async def run_health_check(
+    alert_blocked: bool = True,
+    alert_stale_threshold_minutes: int = 60,
+    alert_orphaned: bool = True,
+    auto_fix_blocked: bool = False,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Run a comprehensive health check with alerts and optional auto-fix.
+
+    This endpoint should be called periodically by a scheduler or
+    monitoring system (e.g., every 5-10 minutes).
+
+    Args:
+        alert_blocked: Whether to alert on blocked tasks (default: True)
+        alert_stale_threshold_minutes: Stale task threshold (default: 60)
+        alert_orphaned: Whether to alert on orphaned tasks (default: True)
+        auto_fix_blocked: Whether to auto-fail blocked tasks (default: False)
+
+    Returns health check results including alert counts and auto-fix results.
+    """
+    try:
+        service = get_task_queue_service()
+
+        if auto_fix_blocked:
+            # Use the extended version with auto-fix
+            result = await service.run_health_check_with_auto_fix(
+                alert_blocked=alert_blocked,
+                alert_stale_threshold_minutes=alert_stale_threshold_minutes,
+                alert_orphaned=alert_orphaned,
+                auto_fix_blocked=True
+            )
+        else:
+            result = await service.run_health_check(
+                alert_blocked=alert_blocked,
+                alert_stale_threshold_minutes=alert_stale_threshold_minutes,
+                alert_orphaned=alert_orphaned
+            )
+
+        return {
+            "success": True,
+            **result
+        }
+
+    except Exception as e:
+        logger.error(f"Error running health check: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to run health check: {str(e)}")
+
+
+@app.post("/tasks/auto-fail-blocked")
+async def auto_fail_blocked_tasks(
+    limit: int = 100,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Automatically fail all tasks blocked by failed dependencies.
+
+    This is a cleanup operation that finds tasks with failed dependencies
+    and fails them with cascade=True, preventing orphaned chains.
+
+    Args:
+        limit: Maximum number of blocked tasks to process (default: 100)
+
+    Returns results including count of tasks failed and any errors.
+    """
+    try:
+        service = get_task_queue_service()
+        result = await service.auto_fail_blocked_tasks(limit=limit)
+
+        return {
+            "success": True,
+            **result
+        }
+
+    except Exception as e:
+        logger.error(f"Error auto-failing blocked tasks: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to auto-fail blocked tasks: {str(e)}")
+
+
 @app.post("/tasks/dispatch")
 async def dispatch_tasks(
     background_tasks: BackgroundTasks,
+    max_tasks: int = 10,
     _: bool = Depends(verify_api_key)
 ):
     """
     Manually trigger dispatch of all unblocked tasks.
 
-    Finds all queued tasks with dependencies met and dispatches
-    them to their assigned agent roles.
+    Uses atomic claiming with FOR UPDATE SKIP LOCKED to prevent race conditions.
+    Multiple workers can safely call this endpoint simultaneously - each task
+    will only be dispatched once.
+
+    Args:
+        max_tasks: Maximum number of tasks to dispatch (default: 10)
     """
     try:
         service = get_task_queue_service()
-        unblocked = await service.get_unblocked_tasks()
 
-        if not unblocked:
+        # Use atomic claim to prevent race conditions
+        # This claims and returns tasks in a single atomic operation
+        claimed_tasks = await service.claim_unblocked_tasks_atomic(max_tasks=max_tasks)
+
+        if not claimed_tasks:
             return {
                 "success": True,
                 "dispatched": 0,
@@ -895,23 +1356,21 @@ async def dispatch_tasks(
             }
 
         dispatched = []
-        for task in unblocked:
-            # Claim the task first
-            claimed = await service.claim_task(task.id)
-            if claimed:
-                logger.info(f"Handshake: Dispatching Task {task.id} to {task.role}")
-                # Run in background to not block the response
-                background_tasks.add_task(_run_task_agent, task)
-                dispatched.append({
-                    "task_id": str(task.id),
-                    "role": task.role
-                })
+        for task in claimed_tasks:
+            logger.info(f"Handshake: Dispatching Task {task.id} to {task.role}")
+            # Run in background to not block the response
+            # Task is already claimed atomically, so use fresh task data
+            background_tasks.add_task(_run_task_agent, task)
+            dispatched.append({
+                "task_id": str(task.id),
+                "role": task.role
+            })
 
         return {
             "success": True,
             "dispatched": len(dispatched),
             "tasks": dispatched,
-            "message": f"Dispatched {len(dispatched)} tasks"
+            "message": f"Dispatched {len(dispatched)} tasks (atomic claim)"
         }
 
     except Exception as e:
@@ -1132,14 +1591,27 @@ async def _dispatch_task(task: Task):
     Dispatch callback for auto-dispatch after task completion.
 
     Called by TaskQueueService when a task completes.
+
+    Uses atomic claiming to prevent race conditions - if another worker
+    already claimed this task, the claim will fail and we skip execution.
     """
     service = get_task_queue_service()
 
-    # Claim the task
-    claimed = await service.claim_task(task.id)
-    if claimed:
+    # Claim the task atomically
+    # This returns the fresh task data if successful, None if already claimed
+    claim_result = await service.claim_task_result(task.id)
+
+    if claim_result.success:
+        # Refresh task data from claim result for accurate started_at
+        # Note: claim_task_result returns minimal data, so we use the original task
+        # but could fetch fresh if needed
         logger.info(f"Handshake: Auto-dispatching Task {task.id} to {task.role}")
         await _run_task_agent(task)
+    else:
+        # Task already claimed by another worker - this is expected in concurrent scenarios
+        logger.debug(
+            f"Task {task.id} already claimed (likely by concurrent dispatch), skipping"
+        )
 
 
 async def _run_task_agent(task: Task):
@@ -1385,38 +1857,64 @@ DO NOT use any other repository. This is enforced by the orchestration system.
             # Sanitize error message before storing/sending
             sanitized_error_msg = sanitize_error_message(error_msg)
 
-            # Send failure update to Slack
-            await send_task_update(
-                task_id=task.id,
-                role=task.role,
-                event_type="task_failed",
-                message=f"Task failed: {sanitized_error_msg}"
-            )
-
-            await service.fail_task(
+            # Use fail_task_with_retry for automatic retry on transient errors
+            fail_result = await service.fail_task_with_retry(
                 task.id,
                 error=sanitized_error_msg
             )
-            logger.error(f"Task {task.id} failed: {sanitize_for_logging(error_msg)}")
+
+            # Send appropriate Slack update based on retry status
+            if fail_result.success and fail_result.data.get("retry_scheduled"):
+                retry_info = fail_result.data
+                await send_task_update(
+                    task_id=task.id,
+                    role=task.role,
+                    event_type="task_failed",
+                    message=f"Task failed (attempt {retry_info['retry_count']}/{retry_info['max_retries']}), "
+                            f"will retry in {retry_info['backoff_seconds']}s: {sanitized_error_msg}"
+                )
+                logger.warning(
+                    f"Task {task.id} failed (attempt {retry_info['retry_count']}), "
+                    f"retry scheduled for {retry_info['next_retry_at']}"
+                )
+            else:
+                await send_task_update(
+                    task_id=task.id,
+                    role=task.role,
+                    event_type="task_failed",
+                    message=f"Task permanently failed: {sanitized_error_msg}"
+                )
+                logger.error(f"Task {task.id} permanently failed: {sanitize_for_logging(error_msg)}")
 
     except Exception as e:
         # Sanitize exception before logging and storing
         sanitized_exc = sanitize_error_message(e)
         logger.error(f"Error running agent for task {task.id}: {sanitize_for_logging(str(e))}")
 
+        # Use fail_task_with_retry for exceptions too (often transient network/API errors)
+        fail_result = await service.fail_task_with_retry(task.id, error=sanitized_exc)
+
         # Send error update to Slack
         try:
-            await send_task_update(
-                task_id=task.id,
-                role=task.role,
-                event_type="error",
-                message=f"Exception during task execution: {sanitized_exc}"
-            )
+            if fail_result.success and fail_result.data.get("retry_scheduled"):
+                retry_info = fail_result.data
+                await send_task_update(
+                    task_id=task.id,
+                    role=task.role,
+                    event_type="error",
+                    message=f"Exception (attempt {retry_info['retry_count']}/{retry_info['max_retries']}), "
+                            f"will retry in {retry_info['backoff_seconds']}s: {sanitized_exc}"
+                )
+            else:
+                await send_task_update(
+                    task_id=task.id,
+                    role=task.role,
+                    event_type="error",
+                    message=f"Exception during task execution: {sanitized_exc}"
+                )
         except Exception as slack_error:
             # Don't fail the main operation if Slack update fails
             logger.warning(f"Slack notification failed for task {task.id}: {slack_error}")
-
-        await service.fail_task(task.id, error=sanitized_exc)
 
 
 # Import for timestamp

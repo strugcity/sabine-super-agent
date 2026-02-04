@@ -444,8 +444,580 @@ def get_task_thread(task_id: UUID) -> Optional[str]:
     return _task_threads.get(str(task_id))
 
 
+async def send_cascade_failure_alert(
+    source_task_id: UUID,
+    source_role: str,
+    source_error: str,
+    cascaded_task_ids: List[str],
+    cascaded_count: int
+) -> Optional[str]:
+    """
+    Send an alert about cascade failure propagation.
+
+    This is sent when a task failure causes dependent tasks to also fail,
+    providing visibility into orphaned dependency chains.
+
+    Args:
+        source_task_id: The original task that failed
+        source_role: Role of the original failed task
+        source_error: Error message from the original failure
+        cascaded_task_ids: List of task IDs that were failed due to cascade
+        cascaded_count: Total number of tasks failed in cascade
+
+    Returns:
+        Message timestamp if successful
+    """
+    if cascaded_count == 0:
+        return None
+
+    # Build a warning message with cascade details
+    task_list = ", ".join([f"`{tid[:8]}...`" for tid in cascaded_task_ids[:5]])
+    if len(cascaded_task_ids) > 5:
+        task_list += f" and {len(cascaded_task_ids) - 5} more"
+
+    formatted_text = (
+        f":warning: *Cascade Failure Alert*\n"
+        f"Task `{str(source_task_id)[:8]}...` (`{source_role}`) failed and triggered cascade failure.\n"
+        f"*{cascaded_count} dependent task(s) have been automatically failed:*\n"
+        f"{task_list}\n\n"
+        f"*Original error:* {source_error[:200]}{'...' if len(source_error) > 200 else ''}"
+    )
+
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": formatted_text
+            }
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f":rotating_light: Cascade failure at {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')} | Source: `{str(source_task_id)[:8]}...`"
+                }
+            ]
+        }
+    ]
+
+    result = await send_slack_message(
+        text=f":warning: Cascade failure: {cascaded_count} tasks failed due to {source_task_id}",
+        blocks=blocks,
+        thread_ts=None  # Send as new message, not threaded
+    )
+
+    if result:
+        # Log to agent_events
+        await log_agent_event(
+            event_type="cascade_failure",
+            content=f"{cascaded_count} tasks failed due to cascade from {source_task_id}",
+            task_id=source_task_id,
+            role=source_role,
+            metadata={
+                "cascaded_task_ids": cascaded_task_ids,
+                "cascaded_count": cascaded_count,
+                "source_error": source_error[:500]
+            }
+        )
+
+    return result.get("ts") if result else None
+
+
+async def send_stuck_task_alert(
+    stuck_tasks: List[Dict[str, Any]],
+    requeued_count: int,
+    failed_count: int
+) -> Optional[str]:
+    """
+    Send an alert about stuck tasks detected by the watchdog.
+
+    Args:
+        stuck_tasks: List of stuck task info dicts with task_id, role, elapsed
+        requeued_count: Number of tasks requeued for retry
+        failed_count: Number of tasks permanently failed
+
+    Returns:
+        Message timestamp if successful
+    """
+    if not stuck_tasks:
+        return None
+
+    total = len(stuck_tasks)
+
+    # Build task list
+    task_lines = []
+    for task in stuck_tasks[:5]:  # Limit to 5 tasks
+        task_lines.append(
+            f"- `{task.get('task_id', 'unknown')[:8]}...` ({task.get('role', 'unknown')}): "
+            f"ran for {task.get('elapsed', 'unknown')}"
+        )
+    if len(stuck_tasks) > 5:
+        task_lines.append(f"- ... and {len(stuck_tasks) - 5} more")
+
+    task_list = "\n".join(task_lines)
+
+    formatted_text = (
+        f":rotating_light: *Stuck Task Watchdog Alert*\n"
+        f"Detected *{total} stuck task(s)* that exceeded their timeout:\n"
+        f"{task_list}\n\n"
+        f"*Actions taken:*\n"
+        f"- {requeued_count} task(s) requeued for retry\n"
+        f"- {failed_count} task(s) permanently failed (max retries exceeded)"
+    )
+
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": formatted_text
+            }
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f":timer_clock: Watchdog scan at {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+                }
+            ]
+        }
+    ]
+
+    result = await send_slack_message(
+        text=f":rotating_light: Watchdog: {total} stuck tasks detected",
+        blocks=blocks,
+        thread_ts=None  # Send as new message
+    )
+
+    if result:
+        # Log to agent_events
+        await log_agent_event(
+            event_type="stuck_tasks_detected",
+            content=f"Watchdog detected {total} stuck tasks: {requeued_count} requeued, {failed_count} failed",
+            metadata={
+                "stuck_tasks": stuck_tasks[:10],  # Limit metadata size
+                "total_stuck": total,
+                "requeued_count": requeued_count,
+                "failed_count": failed_count
+            }
+        )
+
+    return result.get("ts") if result else None
+
+
 def clear_task_thread(task_id: UUID):
     """Clear the thread tracking for a completed task."""
     task_key = str(task_id)
     if task_key in _task_threads:
         del _task_threads[task_key]
+
+
+# =============================================================================
+# Health Check Alerts (P1 #5)
+# =============================================================================
+
+async def send_blocked_tasks_alert(
+    blocked_tasks: List[Dict[str, Any]]
+) -> Optional[str]:
+    """
+    Send an alert about tasks blocked by failed dependencies.
+
+    These tasks will never run without manual intervention.
+
+    Args:
+        blocked_tasks: List of blocked task info dicts from get_blocked_tasks()
+
+    Returns:
+        Message timestamp if successful
+    """
+    if not blocked_tasks:
+        return None
+
+    count = len(blocked_tasks)
+
+    # Group by failed dependency for cleaner display
+    by_failed_dep: Dict[str, List[Dict]] = {}
+    for task in blocked_tasks:
+        dep_id = task.get("failed_dependency_id", "unknown")
+        if dep_id not in by_failed_dep:
+            by_failed_dep[dep_id] = []
+        by_failed_dep[dep_id].append(task)
+
+    # Build task list - show up to 5 blocked tasks with their failed deps
+    task_lines = []
+    shown = 0
+    for dep_id, tasks in list(by_failed_dep.items())[:3]:
+        dep_role = tasks[0].get("failed_dependency_role", "unknown")
+        dep_error = tasks[0].get("failed_dependency_error", "Unknown error")
+        task_ids = ", ".join([f"`{t['task_id'][:8]}...`" for t in tasks[:3]])
+        if len(tasks) > 3:
+            task_ids += f" +{len(tasks) - 3} more"
+
+        task_lines.append(
+            f"- *Failed dep:* `{str(dep_id)[:8]}...` ({dep_role})\n"
+            f"  Blocking: {task_ids}\n"
+            f"  Error: _{dep_error[:100]}{'...' if len(dep_error) > 100 else ''}_"
+        )
+        shown += len(tasks)
+
+    if count > shown:
+        task_lines.append(f"- ... and {count - shown} more blocked tasks")
+
+    task_list = "\n".join(task_lines)
+
+    formatted_text = (
+        f":no_entry: *Blocked Tasks Alert*\n"
+        f"*{count} task(s)* are blocked by failed dependencies and will never run:\n\n"
+        f"{task_list}\n\n"
+        f"_These tasks require manual intervention (retry failed deps or cancel blocked tasks)._"
+    )
+
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": formatted_text
+            }
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f":health: Health check at {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+                }
+            ]
+        }
+    ]
+
+    result = await send_slack_message(
+        text=f":no_entry: {count} tasks blocked by failed dependencies",
+        blocks=blocks,
+        thread_ts=None
+    )
+
+    if result:
+        await log_agent_event(
+            event_type="blocked_tasks_alert",
+            content=f"{count} tasks blocked by failed dependencies",
+            metadata={
+                "blocked_count": count,
+                "sample_tasks": blocked_tasks[:5]
+            }
+        )
+
+    return result.get("ts") if result else None
+
+
+async def send_stale_tasks_alert(
+    stale_tasks: List[Dict[str, Any]],
+    threshold_minutes: int
+) -> Optional[str]:
+    """
+    Send an alert about tasks that have been queued for too long.
+
+    Args:
+        stale_tasks: List of stale task info dicts from get_stale_queued_tasks()
+        threshold_minutes: The threshold used for detection
+
+    Returns:
+        Message timestamp if successful
+    """
+    if not stale_tasks:
+        return None
+
+    count = len(stale_tasks)
+
+    # Build task list
+    task_lines = []
+    for task in stale_tasks[:5]:
+        queued_mins = task.get("queued_minutes", 0)
+        hours = int(queued_mins // 60)
+        mins = int(queued_mins % 60)
+        time_str = f"{hours}h {mins}m" if hours > 0 else f"{mins}m"
+
+        dep_info = ""
+        dep_count = task.get("dependency_count", 0)
+        pending = task.get("pending_dependencies", 0)
+        if dep_count > 0:
+            dep_info = f" | Deps: {pending}/{dep_count} pending"
+
+        task_lines.append(
+            f"- `{task['task_id'][:8]}...` ({task.get('task_role', 'unknown')}): "
+            f"queued {time_str}{dep_info}"
+        )
+
+    if count > 5:
+        task_lines.append(f"- ... and {count - 5} more stale tasks")
+
+    task_list = "\n".join(task_lines)
+
+    formatted_text = (
+        f":hourglass: *Stale Queued Tasks Alert*\n"
+        f"*{count} task(s)* have been queued for over {threshold_minutes} minutes:\n\n"
+        f"{task_list}\n\n"
+        f"_Check if these tasks have unmet dependencies or dispatch issues._"
+    )
+
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": formatted_text
+            }
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f":health: Health check at {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+                }
+            ]
+        }
+    ]
+
+    result = await send_slack_message(
+        text=f":hourglass: {count} tasks queued for over {threshold_minutes}m",
+        blocks=blocks,
+        thread_ts=None
+    )
+
+    if result:
+        await log_agent_event(
+            event_type="stale_tasks_alert",
+            content=f"{count} tasks queued for over {threshold_minutes} minutes",
+            metadata={
+                "stale_count": count,
+                "threshold_minutes": threshold_minutes,
+                "sample_tasks": stale_tasks[:5]
+            }
+        )
+
+    return result.get("ts") if result else None
+
+
+async def send_orphaned_tasks_alert(
+    orphaned_tasks: List[Dict[str, Any]]
+) -> Optional[str]:
+    """
+    Send an alert about tasks where ALL dependencies have failed.
+
+    These tasks have zero chance of running without recreating their
+    entire dependency chain.
+
+    Args:
+        orphaned_tasks: List of orphaned task info dicts from get_orphaned_tasks()
+
+    Returns:
+        Message timestamp if successful
+    """
+    if not orphaned_tasks:
+        return None
+
+    count = len(orphaned_tasks)
+
+    # Build task list
+    task_lines = []
+    for task in orphaned_tasks[:5]:
+        total_deps = task.get("total_dependencies", 0)
+        failed_deps = task.get("failed_dependencies", 0)
+
+        task_lines.append(
+            f"- `{task['task_id'][:8]}...` ({task.get('task_role', 'unknown')}): "
+            f"all {failed_deps}/{total_deps} dependencies failed"
+        )
+
+    if count > 5:
+        task_lines.append(f"- ... and {count - 5} more orphaned tasks")
+
+    task_list = "\n".join(task_lines)
+
+    formatted_text = (
+        f":skull: *Orphaned Tasks Alert*\n"
+        f"*{count} task(s)* have ALL dependencies failed - they cannot run:\n\n"
+        f"{task_list}\n\n"
+        f"_These tasks should be cancelled or their dependency chains recreated._"
+    )
+
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": formatted_text
+            }
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f":health: Health check at {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+                }
+            ]
+        }
+    ]
+
+    result = await send_slack_message(
+        text=f":skull: {count} tasks fully orphaned (all deps failed)",
+        blocks=blocks,
+        thread_ts=None
+    )
+
+    if result:
+        await log_agent_event(
+            event_type="orphaned_tasks_alert",
+            content=f"{count} tasks with all dependencies failed",
+            metadata={
+                "orphaned_count": count,
+                "sample_tasks": orphaned_tasks[:5]
+            }
+        )
+
+    return result.get("ts") if result else None
+
+
+async def send_health_summary(
+    health: Dict[str, Any],
+    issues_found: bool = False
+) -> Optional[str]:
+    """
+    Send a periodic health summary to Slack.
+
+    Args:
+        health: Health metrics dict from get_task_queue_health()
+        issues_found: Whether any issues were detected
+
+    Returns:
+        Message timestamp if successful
+    """
+    emoji = ":white_check_mark:" if not issues_found else ":warning:"
+    status = "Healthy" if not issues_found else "Issues Detected"
+
+    formatted_text = (
+        f"{emoji} *Task Queue Health Summary*\n\n"
+        f"*Queue Status:*\n"
+        f"- Queued: {health.get('total_queued', 0)}\n"
+        f"- In Progress: {health.get('total_in_progress', 0)}\n\n"
+        f"*Potential Issues:*\n"
+        f"- Blocked by failed deps: {health.get('blocked_by_failed_deps', 0)}\n"
+        f"- Stale (>1h): {health.get('stale_queued_1h', 0)}\n"
+        f"- Stale (>24h): {health.get('stale_queued_24h', 0)}\n"
+        f"- Stuck in-progress: {health.get('stuck_tasks', 0)}\n"
+        f"- Pending retries: {health.get('pending_retries', 0)}"
+    )
+
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": formatted_text
+            }
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f":health: Status: *{status}* | {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+                }
+            ]
+        }
+    ]
+
+    result = await send_slack_message(
+        text=f"{emoji} Task Queue: {status}",
+        blocks=blocks,
+        thread_ts=None
+    )
+
+    return result.get("ts") if result else None
+
+
+async def send_auto_fail_alert(
+    failed_count: int,
+    cascaded_count: int,
+    sample_tasks: List[Dict[str, Any]]
+) -> Optional[str]:
+    """
+    Send an alert about auto-failed blocked tasks.
+
+    This is sent when the auto_fail_blocked_tasks() method runs
+    and automatically fails tasks with failed dependencies.
+
+    Args:
+        failed_count: Number of tasks directly failed
+        cascaded_count: Number of additional tasks failed via cascade
+        sample_tasks: Sample of failed tasks for context
+
+    Returns:
+        Message timestamp if successful
+    """
+    if failed_count == 0:
+        return None
+
+    # Build task list
+    task_lines = []
+    for task in sample_tasks[:5]:
+        task_lines.append(
+            f"- `{task['task_id'][:8]}...` ({task.get('role', 'unknown')}): "
+            f"blocked by `{task.get('failed_dep_id', 'unknown')[:8]}...`"
+        )
+
+    if failed_count > 5:
+        task_lines.append(f"- ... and {failed_count - 5} more")
+
+    task_list = "\n".join(task_lines)
+
+    formatted_text = (
+        f":broom: *Auto-Fix: Blocked Tasks Failed*\n"
+        f"Automatically failed *{failed_count} blocked task(s)* "
+        f"(+{cascaded_count} via cascade):\n\n"
+        f"{task_list}\n\n"
+        f"_These tasks had failed dependencies and would never have run._"
+    )
+
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": formatted_text
+            }
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f":gear: Auto-fix at {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+                }
+            ]
+        }
+    ]
+
+    result = await send_slack_message(
+        text=f":broom: Auto-failed {failed_count} blocked tasks (+{cascaded_count} cascaded)",
+        blocks=blocks,
+        thread_ts=None
+    )
+
+    if result:
+        await log_agent_event(
+            event_type="auto_fail_blocked",
+            content=f"Auto-failed {failed_count} blocked tasks (+{cascaded_count} cascaded)",
+            metadata={
+                "failed_count": failed_count,
+                "cascaded_count": cascaded_count,
+                "sample_tasks": sample_tasks[:5]
+            }
+        )
+
+    return result.get("ts") if result else None

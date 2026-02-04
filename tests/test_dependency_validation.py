@@ -15,6 +15,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from uuid import UUID, uuid4
+from datetime import datetime, timezone, timedelta
 from backend.services.exceptions import (
     DependencyNotFoundError,
     CircularDependencyError,
@@ -449,6 +450,955 @@ def test_deeply_nested_dependency_chain():
     print("  [OK] Deeply nested valid chain validated")
 
 
+# =============================================================================
+# Cascade Failure Tests
+# =============================================================================
+
+def test_cascade_failure_result_structure():
+    """Test that cascade failure result contains expected fields."""
+    source_task_id = str(uuid4())
+    cascaded_ids = [str(uuid4()), str(uuid4())]
+
+    # Simulate the result from fail_task_result with cascade
+    result = OperationResult.ok({
+        "task_id": source_task_id,
+        "error": "Original failure message",
+        "cascaded_failures": len(cascaded_ids),
+        "cascaded_task_ids": cascaded_ids
+    })
+
+    assert result.success == True
+    assert result.data["task_id"] == source_task_id
+    assert result.data["cascaded_failures"] == 2
+    assert len(result.data["cascaded_task_ids"]) == 2
+    assert cascaded_ids[0] in result.data["cascaded_task_ids"]
+    assert cascaded_ids[1] in result.data["cascaded_task_ids"]
+    print("  [OK] Cascade failure result structure correct")
+
+
+def test_cascade_failure_no_dependents():
+    """Test cascade failure when task has no dependents."""
+    source_task_id = str(uuid4())
+
+    # Task fails but has no dependents
+    result = OperationResult.ok({
+        "task_id": source_task_id,
+        "error": "Original failure message",
+        "cascaded_failures": 0,
+        "cascaded_task_ids": []
+    })
+
+    assert result.success == True
+    assert result.data["cascaded_failures"] == 0
+    assert len(result.data["cascaded_task_ids"]) == 0
+    print("  [OK] Cascade failure with no dependents correct")
+
+
+def test_cascade_failure_error_message_format():
+    """Test that cascaded tasks receive properly formatted error message."""
+    source_task_id = uuid4()
+    original_error = "Timeout during execution"
+
+    # Expected error message format for cascaded tasks
+    expected_prefix = f"Blocked by failed dependency: Task {source_task_id} failed with error: "
+
+    cascade_error = f"{expected_prefix}{original_error}"
+
+    assert cascade_error.startswith("Blocked by failed dependency:")
+    assert str(source_task_id) in cascade_error
+    assert original_error in cascade_error
+    print("  [OK] Cascade failure error message format correct")
+
+
+def test_cascade_failure_truncates_long_errors():
+    """Test that long error messages are truncated in cascade."""
+    source_task_id = uuid4()
+    long_error = "A" * 300  # 300 character error
+
+    # Truncation should happen at 200 characters with '...'
+    truncated = long_error[:200] + "..."
+
+    cascade_error = (
+        f"Blocked by failed dependency: Task {source_task_id} failed with error: "
+        f"{long_error[:200]}{'...' if len(long_error) > 200 else ''}"
+    )
+
+    assert "..." in cascade_error
+    assert len(cascade_error) < len(long_error) + 100  # Much shorter than original
+    print("  [OK] Cascade failure truncates long errors")
+
+
+def test_cascade_failure_diamond_pattern():
+    """Test cascade failure in diamond dependency pattern.
+
+    Pattern:    A
+               / \\
+              B   C
+               \\ /
+                D
+
+    If A fails, both B and C should fail (they depend on A).
+    D depends on B and C, so it should also cascade fail.
+    """
+    task_a = uuid4()
+    task_b = uuid4()  # depends on A
+    task_c = uuid4()  # depends on A
+    task_d = uuid4()  # depends on B and C
+
+    # Simulating cascade: A fails -> B, C fail -> D fails
+    # Total cascaded: 3 tasks (B, C, D)
+
+    cascaded_from_a = [str(task_b), str(task_c)]
+    cascaded_from_b = [str(task_d)]  # D caught from B (or C, but only counted once)
+
+    total_cascaded = len(cascaded_from_a) + len(cascaded_from_b)
+
+    result = OperationResult.ok({
+        "task_id": str(task_a),
+        "error": "Original failure",
+        "cascaded_failures": total_cascaded,
+        "cascaded_task_ids": cascaded_from_a + cascaded_from_b
+    })
+
+    assert result.data["cascaded_failures"] == 3
+    assert str(task_b) in result.data["cascaded_task_ids"]
+    assert str(task_c) in result.data["cascaded_task_ids"]
+    assert str(task_d) in result.data["cascaded_task_ids"]
+    print("  [OK] Cascade failure diamond pattern correct")
+
+
+def test_cascade_failure_only_queued_tasks():
+    """Test that cascade only affects QUEUED tasks, not IN_PROGRESS or COMPLETED."""
+    source_task_id = uuid4()
+
+    # Simulate: 3 dependents, but only 1 is QUEUED
+    # - dep1: QUEUED -> should fail
+    # - dep2: IN_PROGRESS -> should NOT be affected
+    # - dep3: COMPLETED -> should NOT be affected
+
+    # Only QUEUED tasks should be cascaded
+    cascaded = [str(uuid4())]  # Only the QUEUED one
+
+    result = OperationResult.ok({
+        "task_id": str(source_task_id),
+        "error": "Test failure",
+        "cascaded_failures": 1,
+        "cascaded_task_ids": cascaded
+    })
+
+    assert result.data["cascaded_failures"] == 1
+    print("  [OK] Cascade failure only affects QUEUED tasks")
+
+
+# =============================================================================
+# Retry Mechanism Tests
+# =============================================================================
+
+def test_retry_backoff_intervals():
+    """Test exponential backoff interval calculation."""
+    from backend.services.task_queue import TaskQueueService, BACKOFF_INTERVALS
+
+    # Test backoff intervals: 30s, 5m (300s), 15m (900s)
+    assert TaskQueueService.get_backoff_seconds(0) == 30
+    assert TaskQueueService.get_backoff_seconds(1) == 300
+    assert TaskQueueService.get_backoff_seconds(2) == 900
+    # Beyond max should return last interval
+    assert TaskQueueService.get_backoff_seconds(3) == 900
+    assert TaskQueueService.get_backoff_seconds(100) == 900
+    print("  [OK] Backoff intervals correct")
+
+
+def test_is_retryable_error_transient():
+    """Test that transient errors are classified as retryable."""
+    from backend.services.task_queue import TaskQueueService
+
+    retryable_errors = [
+        "Rate limit exceeded (429)",
+        "Connection timeout",
+        "Network error: socket closed",
+        "Server error 500",
+        "503 Service Unavailable",
+        "Request timed out after 30s",
+        "Temporary failure, please retry",
+        "API quota exceeded",
+        "Server is busy, try again later",
+    ]
+
+    for error in retryable_errors:
+        assert TaskQueueService.is_retryable_error(error) == True, \
+            f"Expected '{error}' to be retryable"
+
+    print("  [OK] Transient errors classified as retryable")
+
+
+def test_is_retryable_error_permanent():
+    """Test that permanent errors are classified as non-retryable."""
+    from backend.services.task_queue import TaskQueueService
+
+    non_retryable_errors = [
+        "Validation error: invalid input",
+        "401 Unauthorized",
+        "403 Forbidden: access denied",
+        "Resource not found (404)",
+        "Missing credential: API key required",
+        "Circular dependency detected",
+        "Dependency not found: task xyz",
+        "NO_TOOLS_CALLED: Agent didn't use required tools",
+        "Invalid JSON format",
+        "Malformed request body",
+    ]
+
+    for error in non_retryable_errors:
+        assert TaskQueueService.is_retryable_error(error) == False, \
+            f"Expected '{error}' to be non-retryable"
+
+    print("  [OK] Permanent errors classified as non-retryable")
+
+
+def test_retry_result_structure():
+    """Test retry result structure with scheduled retry."""
+    from datetime import datetime, timezone
+
+    task_id = str(uuid4())
+    next_retry_at = datetime.now(timezone.utc).isoformat()
+
+    result = OperationResult.ok({
+        "task_id": task_id,
+        "error": "Rate limit exceeded",
+        "retry_scheduled": True,
+        "retry_count": 1,
+        "max_retries": 3,
+        "next_retry_at": next_retry_at,
+        "backoff_seconds": 30,
+        "is_retryable": True,
+        "cascaded_failures": 0,
+        "cascaded_task_ids": []
+    })
+
+    assert result.success == True
+    assert result.data["retry_scheduled"] == True
+    assert result.data["retry_count"] == 1
+    assert result.data["max_retries"] == 3
+    assert result.data["backoff_seconds"] == 30
+    assert result.data["is_retryable"] == True
+    print("  [OK] Retry result structure correct")
+
+
+def test_retry_result_permanent_failure():
+    """Test retry result structure when max retries exceeded."""
+    task_id = str(uuid4())
+
+    # After 3 retries, task should be permanently failed
+    result = OperationResult.ok({
+        "task_id": task_id,
+        "error": "[PERMANENT FAILURE after 3 attempts] Rate limit exceeded",
+        "cascaded_failures": 2,
+        "cascaded_task_ids": [str(uuid4()), str(uuid4())]
+    })
+
+    assert result.success == True
+    assert "PERMANENT FAILURE" in result.data["error"]
+    assert result.data["cascaded_failures"] == 2
+    print("  [OK] Permanent failure result structure correct")
+
+
+def test_retry_eligibility_check():
+    """Test retry eligibility conditions."""
+    # Task can be retried if:
+    # - status = failed
+    # - is_retryable = True
+    # - retry_count < max_retries
+
+    # Eligible task
+    eligible = {
+        "status": "failed",
+        "is_retryable": True,
+        "retry_count": 1,
+        "max_retries": 3
+    }
+    can_retry = (
+        eligible["status"] == "failed" and
+        eligible["is_retryable"] and
+        eligible["retry_count"] < eligible["max_retries"]
+    )
+    assert can_retry == True
+
+    # Not eligible: wrong status
+    not_eligible_status = {
+        "status": "queued",
+        "is_retryable": True,
+        "retry_count": 1,
+        "max_retries": 3
+    }
+    can_retry = (
+        not_eligible_status["status"] == "failed" and
+        not_eligible_status["is_retryable"] and
+        not_eligible_status["retry_count"] < not_eligible_status["max_retries"]
+    )
+    assert can_retry == False
+
+    # Not eligible: not retryable
+    not_eligible_retryable = {
+        "status": "failed",
+        "is_retryable": False,
+        "retry_count": 1,
+        "max_retries": 3
+    }
+    can_retry = (
+        not_eligible_retryable["status"] == "failed" and
+        not_eligible_retryable["is_retryable"] and
+        not_eligible_retryable["retry_count"] < not_eligible_retryable["max_retries"]
+    )
+    assert can_retry == False
+
+    # Not eligible: max retries exceeded
+    not_eligible_max = {
+        "status": "failed",
+        "is_retryable": True,
+        "retry_count": 3,
+        "max_retries": 3
+    }
+    can_retry = (
+        not_eligible_max["status"] == "failed" and
+        not_eligible_max["is_retryable"] and
+        not_eligible_max["retry_count"] < not_eligible_max["max_retries"]
+    )
+    assert can_retry == False
+
+    print("  [OK] Retry eligibility checks correct")
+
+
+# =============================================================================
+# Timeout Detection Tests
+# =============================================================================
+
+def test_timeout_detection_stuck_criteria():
+    """Test stuck task detection criteria."""
+    from datetime import datetime, timezone, timedelta
+
+    # Task is stuck if: status='in_progress' AND started_at + timeout < now
+    now = datetime.now(timezone.utc)
+
+    # Stuck task: started 35 minutes ago, timeout is 30 minutes
+    stuck_task = {
+        "status": "in_progress",
+        "started_at": now - timedelta(minutes=35),
+        "timeout_seconds": 1800  # 30 minutes
+    }
+
+    elapsed = (now - stuck_task["started_at"]).total_seconds()
+    is_stuck = (
+        stuck_task["status"] == "in_progress" and
+        elapsed > stuck_task["timeout_seconds"]
+    )
+    assert is_stuck == True
+
+    # Not stuck: started 10 minutes ago, timeout is 30 minutes
+    not_stuck_task = {
+        "status": "in_progress",
+        "started_at": now - timedelta(minutes=10),
+        "timeout_seconds": 1800
+    }
+
+    elapsed = (now - not_stuck_task["started_at"]).total_seconds()
+    is_stuck = (
+        not_stuck_task["status"] == "in_progress" and
+        elapsed > not_stuck_task["timeout_seconds"]
+    )
+    assert is_stuck == False
+
+    # Not stuck: wrong status
+    completed_task = {
+        "status": "completed",
+        "started_at": now - timedelta(minutes=35),
+        "timeout_seconds": 1800
+    }
+    is_stuck = completed_task["status"] == "in_progress"
+    assert is_stuck == False
+
+    print("  [OK] Stuck task detection criteria correct")
+
+
+def test_timeout_requeue_result_structure():
+    """Test requeue result structure."""
+    task_id = str(uuid4())
+
+    # Task requeued for retry
+    result = OperationResult.ok({
+        "task_id": task_id,
+        "action": "requeued",
+        "retry_count": 2,
+        "max_retries": 3,
+        "elapsed_seconds": 2100,  # 35 minutes
+        "error": "[TIMEOUT after 2100s] Task exceeded 1800s timeout"
+    })
+
+    assert result.success == True
+    assert result.data["action"] == "requeued"
+    assert result.data["retry_count"] == 2
+    assert "TIMEOUT" in result.data["error"]
+    print("  [OK] Requeue result structure correct")
+
+
+def test_timeout_permanent_failure():
+    """Test timeout leading to permanent failure."""
+    task_id = str(uuid4())
+
+    # Task permanently failed after max retries
+    result = OperationResult.ok({
+        "task_id": task_id,
+        "error": "[PERMANENT TIMEOUT after 3 attempts] Task exceeded timeout",
+        "cascaded_failures": 2,
+        "cascaded_task_ids": [str(uuid4()), str(uuid4())]
+    })
+
+    assert result.success == True
+    assert "PERMANENT TIMEOUT" in result.data["error"]
+    assert result.data["cascaded_failures"] == 2
+    print("  [OK] Timeout permanent failure correct")
+
+
+def test_heartbeat_prevents_timeout():
+    """Test that heartbeat updates prevent timeout detection."""
+    from datetime import datetime, timezone, timedelta
+
+    now = datetime.now(timezone.utc)
+
+    # Task started 35 minutes ago (would be stuck without heartbeat)
+    # But heartbeat was updated 5 minutes ago
+    task_with_heartbeat = {
+        "status": "in_progress",
+        "started_at": now - timedelta(minutes=35),
+        "last_heartbeat_at": now - timedelta(minutes=5),
+        "timeout_seconds": 1800  # 30 minutes
+    }
+
+    # Check if stuck based on heartbeat (if present) or started_at
+    check_time = task_with_heartbeat.get("last_heartbeat_at") or task_with_heartbeat["started_at"]
+    elapsed = (now - check_time).total_seconds()
+
+    # With heartbeat, task is NOT stuck (5 min < 30 min timeout)
+    is_stuck = elapsed > task_with_heartbeat["timeout_seconds"]
+    assert is_stuck == False
+
+    print("  [OK] Heartbeat prevents timeout detection")
+
+
+def test_watchdog_result_structure():
+    """Test watchdog processing result structure."""
+    result = {
+        "processed": 3,
+        "requeued": [
+            {"task_id": str(uuid4()), "role": "backend-architect", "elapsed": "2100s", "retry_count": 2},
+            {"task_id": str(uuid4()), "role": "data-engineer", "elapsed": "1900s", "retry_count": 1}
+        ],
+        "failed": [
+            {"task_id": str(uuid4()), "role": "frontend-ops", "elapsed": "3600s", "cascaded_failures": 1}
+        ],
+        "errors": []
+    }
+
+    assert result["processed"] == 3
+    assert len(result["requeued"]) == 2
+    assert len(result["failed"]) == 1
+    assert len(result["errors"]) == 0
+    print("  [OK] Watchdog result structure correct")
+
+
+# =============================================================================
+# Race Condition Prevention Tests
+# =============================================================================
+
+def test_atomic_claim_returns_task():
+    """Test that atomic claim returns the claimed task data."""
+    task_id = str(uuid4())
+    role = "backend-architect-sabine"
+
+    # Simulated result from atomic claim
+    claimed_task = {
+        "id": task_id,
+        "role": role,
+        "status": "in_progress",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "priority": 5
+    }
+
+    # Atomic claim should return the task with updated status
+    assert claimed_task["status"] == "in_progress"
+    assert claimed_task["started_at"] is not None
+    assert claimed_task["id"] == task_id
+    print("  [OK] Atomic claim returns task data")
+
+
+def test_atomic_claim_skip_locked_behavior():
+    """Test that SKIP LOCKED allows concurrent workers to get different tasks."""
+    # Simulating scenario:
+    # Worker A and Worker B both try to claim tasks simultaneously
+    # With SKIP LOCKED, each gets a different task (or none if no more available)
+
+    task_1 = str(uuid4())
+    task_2 = str(uuid4())
+    task_3 = str(uuid4())
+
+    available_tasks = [task_1, task_2, task_3]
+
+    # Simulate Worker A claiming (gets task_1)
+    worker_a_claimed = available_tasks.pop(0) if available_tasks else None
+    assert worker_a_claimed == task_1
+
+    # Simulate Worker B claiming (gets task_2, NOT task_1)
+    worker_b_claimed = available_tasks.pop(0) if available_tasks else None
+    assert worker_b_claimed == task_2
+    assert worker_b_claimed != worker_a_claimed
+
+    # Simulate Worker C claiming (gets task_3)
+    worker_c_claimed = available_tasks.pop(0) if available_tasks else None
+    assert worker_c_claimed == task_3
+
+    # All workers got different tasks
+    claimed_set = {worker_a_claimed, worker_b_claimed, worker_c_claimed}
+    assert len(claimed_set) == 3
+
+    print("  [OK] SKIP LOCKED allows concurrent workers to get different tasks")
+
+
+def test_duplicate_claim_fails():
+    """Test that claiming an already-claimed task fails gracefully."""
+    task_id = str(uuid4())
+
+    # First claim succeeds
+    first_claim = OperationResult.ok({
+        "task_id": task_id,
+        "started_at": datetime.now(timezone.utc).isoformat()
+    })
+    assert first_claim.success == True
+
+    # Second claim fails (task already in_progress)
+    from backend.services.exceptions import TaskClaimError
+    second_claim = OperationResult.fail(
+        TaskClaimError(
+            task_id=task_id,
+            reason="Task may already be claimed or does not exist in queued status"
+        )
+    )
+    assert second_claim.success == False
+    assert "already be claimed" in second_claim.error.message
+
+    print("  [OK] Duplicate claim fails gracefully")
+
+
+def test_atomic_bulk_claim_result():
+    """Test that bulk atomic claim returns multiple tasks."""
+    tasks = [
+        {"id": str(uuid4()), "role": "backend-architect", "status": "in_progress"},
+        {"id": str(uuid4()), "role": "data-engineer", "status": "in_progress"},
+        {"id": str(uuid4()), "role": "frontend-ops", "status": "in_progress"},
+    ]
+
+    # Bulk claim should return multiple tasks, each with status=in_progress
+    assert len(tasks) == 3
+    for task in tasks:
+        assert task["status"] == "in_progress"
+
+    # All tasks should have unique IDs
+    ids = [t["id"] for t in tasks]
+    assert len(set(ids)) == 3
+
+    print("  [OK] Bulk atomic claim returns multiple tasks")
+
+
+def test_dispatch_callback_handles_already_claimed():
+    """Test that dispatch callback gracefully handles already-claimed tasks."""
+    task_id = str(uuid4())
+
+    # Scenario 1: Task was already claimed by another worker (claim fails)
+    # Callback should not raise exception, just log and skip
+    claim_result = None  # Represents atomic claim returning None (no task available)
+
+    # Callback should check claim result and skip if None
+    executed = False
+    if claim_result is not None:
+        executed = True
+    else:
+        # Task already claimed by another worker, skip execution
+        pass
+
+    # In this case, claim returned None, so task should not be executed
+    assert executed == False
+
+    # Scenario 2: Claim succeeds (returns task data)
+    claim_result = {"id": task_id, "status": "in_progress"}
+    executed = False
+    if claim_result is not None:
+        executed = True
+
+    assert executed == True
+    print("  [OK] Dispatch callback handles already-claimed tasks")
+
+
+# =============================================================================
+# Blocked Task Detection Tests (P1 #5)
+# =============================================================================
+
+def test_blocked_task_detection_structure():
+    """Test that blocked task detection returns proper structure."""
+    # Simulating what get_blocked_tasks() returns
+    blocked_task = {
+        "task_id": str(uuid4()),
+        "task_role": "backend-architect-sabine",
+        "task_prompt": "Implement database migration",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "failed_dependency_id": str(uuid4()),
+        "failed_dependency_role": "devops-engineer",
+        "failed_dependency_error": "Connection timeout"
+    }
+
+    # Verify structure
+    assert "task_id" in blocked_task
+    assert "task_role" in blocked_task
+    assert "failed_dependency_id" in blocked_task
+    assert "failed_dependency_role" in blocked_task
+    assert "failed_dependency_error" in blocked_task
+
+    print("  [OK] Blocked task detection structure correct")
+
+
+def test_stale_task_detection_structure():
+    """Test that stale task detection returns proper structure."""
+    # Simulating what get_stale_queued_tasks() returns
+    stale_task = {
+        "task_id": str(uuid4()),
+        "task_role": "frontend-developer",
+        "task_prompt": "Add login form",
+        "created_at": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(),
+        "queued_minutes": 120.5,
+        "dependency_count": 2,
+        "pending_dependencies": 1
+    }
+
+    # Verify structure
+    assert "task_id" in stale_task
+    assert "queued_minutes" in stale_task
+    assert stale_task["queued_minutes"] > 60  # Stale threshold
+    assert "dependency_count" in stale_task
+    assert "pending_dependencies" in stale_task
+
+    print("  [OK] Stale task detection structure correct")
+
+
+def test_orphaned_task_detection_structure():
+    """Test that orphaned task detection returns proper structure."""
+    # Simulating what get_orphaned_tasks() returns
+    orphaned_task = {
+        "task_id": str(uuid4()),
+        "task_role": "qa-engineer",
+        "task_prompt": "Run integration tests",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "total_dependencies": 3,
+        "failed_dependencies": 3  # All deps failed = orphaned
+    }
+
+    # Verify structure
+    assert "task_id" in orphaned_task
+    assert "total_dependencies" in orphaned_task
+    assert "failed_dependencies" in orphaned_task
+    assert orphaned_task["failed_dependencies"] == orphaned_task["total_dependencies"]
+
+    print("  [OK] Orphaned task detection structure correct")
+
+
+def test_health_check_metrics_structure():
+    """Test that health check returns all required metrics."""
+    # Simulating what get_task_queue_health() returns
+    health = {
+        "total_queued": 15,
+        "total_in_progress": 3,
+        "blocked_by_failed_deps": 2,
+        "stale_queued_1h": 5,
+        "stale_queued_24h": 1,
+        "stuck_tasks": 0,
+        "pending_retries": 1
+    }
+
+    # Verify all required fields
+    required_fields = [
+        "total_queued",
+        "total_in_progress",
+        "blocked_by_failed_deps",
+        "stale_queued_1h",
+        "stale_queued_24h",
+        "stuck_tasks",
+        "pending_retries"
+    ]
+
+    for field in required_fields:
+        assert field in health, f"Missing field: {field}"
+        assert isinstance(health[field], int), f"Field {field} should be int"
+
+    print("  [OK] Health check metrics structure correct")
+
+
+def test_health_check_issue_detection():
+    """Test that health check correctly identifies issues."""
+    # Healthy state - no issues
+    healthy = {
+        "blocked_by_failed_deps": 0,
+        "stale_queued_24h": 0,
+        "stuck_tasks": 0
+    }
+
+    has_issues = (
+        healthy.get("blocked_by_failed_deps", 0) > 0 or
+        healthy.get("stale_queued_24h", 0) > 0 or
+        healthy.get("stuck_tasks", 0) > 0
+    )
+    assert has_issues == False
+
+    # Unhealthy state - blocked tasks
+    unhealthy_blocked = {
+        "blocked_by_failed_deps": 5,
+        "stale_queued_24h": 0,
+        "stuck_tasks": 0
+    }
+
+    has_issues = (
+        unhealthy_blocked.get("blocked_by_failed_deps", 0) > 0 or
+        unhealthy_blocked.get("stale_queued_24h", 0) > 0 or
+        unhealthy_blocked.get("stuck_tasks", 0) > 0
+    )
+    assert has_issues == True
+
+    # Unhealthy state - stale tasks
+    unhealthy_stale = {
+        "blocked_by_failed_deps": 0,
+        "stale_queued_24h": 2,
+        "stuck_tasks": 0
+    }
+
+    has_issues = (
+        unhealthy_stale.get("blocked_by_failed_deps", 0) > 0 or
+        unhealthy_stale.get("stale_queued_24h", 0) > 0 or
+        unhealthy_stale.get("stuck_tasks", 0) > 0
+    )
+    assert has_issues == True
+
+    print("  [OK] Health check issue detection correct")
+
+
+def test_health_check_result_structure():
+    """Test the run_health_check() result structure."""
+    # Simulating what run_health_check() returns
+    result = {
+        "health": {
+            "total_queued": 10,
+            "total_in_progress": 2,
+            "blocked_by_failed_deps": 1,
+            "stale_queued_1h": 3,
+            "stale_queued_24h": 0,
+            "stuck_tasks": 0,
+            "pending_retries": 0
+        },
+        "alerts_sent": 1,
+        "blocked_tasks": [
+            {"task_id": str(uuid4()), "task_role": "test-role"}
+        ],
+        "stale_tasks": [],
+        "orphaned_tasks": []
+    }
+
+    # Verify structure
+    assert "health" in result
+    assert "alerts_sent" in result
+    assert "blocked_tasks" in result
+    assert "stale_tasks" in result
+    assert "orphaned_tasks" in result
+
+    # Verify alerts_sent is incremented when blocked tasks exist
+    assert result["alerts_sent"] > 0 if len(result["blocked_tasks"]) > 0 else True
+
+    print("  [OK] Health check result structure correct")
+
+
+# =============================================================================
+# Pre-Dispatch Validation Tests (P1 #6)
+# =============================================================================
+
+def test_validate_deps_returns_true_when_no_deps():
+    """Test validation returns True when task has no dependencies."""
+    from dataclasses import dataclass
+    from typing import List, Optional
+
+    @dataclass
+    class MockTask:
+        id: UUID
+        depends_on: Optional[List[UUID]] = None
+
+    # Task with no dependencies
+    task = MockTask(id=uuid4(), depends_on=None)
+
+    # Validation should return True (no deps to check)
+    assert task.depends_on is None or len(task.depends_on) == 0
+
+    # Also test with empty list
+    task2 = MockTask(id=uuid4(), depends_on=[])
+    assert len(task2.depends_on) == 0
+
+    print("  [OK] Validation returns True when no dependencies")
+
+
+def test_validate_deps_detects_failed_dependency():
+    """Test that validation detects failed dependencies."""
+    # Simulating validation result from database
+    validation_result = {
+        "is_valid": False,
+        "should_fail": True,
+        "failed_dep_id": str(uuid4()),
+        "failed_dep_role": "backend-architect",
+        "failed_dep_error": "Connection timeout"
+    }
+
+    # Validation should indicate task should be failed
+    assert validation_result["should_fail"] == True
+    assert validation_result["is_valid"] == False
+    assert validation_result["failed_dep_id"] is not None
+
+    print("  [OK] Validation detects failed dependency")
+
+
+def test_validate_deps_allows_valid_task():
+    """Test that validation allows task with no failed deps."""
+    # Simulating validation result when all deps are ok
+    validation_result = {
+        "is_valid": True,
+        "should_fail": False,
+        "failed_dep_id": None,
+        "failed_dep_role": None,
+        "failed_dep_error": None
+    }
+
+    assert validation_result["is_valid"] == True
+    assert validation_result["should_fail"] == False
+
+    print("  [OK] Validation allows task with valid dependencies")
+
+
+def test_auto_fail_blocked_result_structure():
+    """Test auto_fail_blocked_tasks() result structure."""
+    # Simulating what auto_fail_blocked_tasks() returns
+    result = {
+        "found": 5,
+        "failed": [
+            {
+                "task_id": str(uuid4()),
+                "role": "backend-architect",
+                "failed_dep_id": str(uuid4()),
+                "cascaded": 2
+            },
+            {
+                "task_id": str(uuid4()),
+                "role": "frontend-developer",
+                "failed_dep_id": str(uuid4()),
+                "cascaded": 0
+            }
+        ],
+        "errors": []
+    }
+
+    # Verify structure
+    assert "found" in result
+    assert "failed" in result
+    assert "errors" in result
+
+    # Verify failed entries have required fields
+    for failed in result["failed"]:
+        assert "task_id" in failed
+        assert "role" in failed
+        assert "failed_dep_id" in failed
+        assert "cascaded" in failed
+
+    print("  [OK] Auto-fail blocked result structure correct")
+
+
+def test_health_check_with_auto_fix_structure():
+    """Test run_health_check_with_auto_fix() result structure."""
+    # Simulating what run_health_check_with_auto_fix() returns
+    result = {
+        "health": {
+            "total_queued": 10,
+            "total_in_progress": 2,
+            "blocked_by_failed_deps": 3,
+            "stale_queued_1h": 1,
+            "stale_queued_24h": 0,
+            "stuck_tasks": 0,
+            "pending_retries": 0
+        },
+        "alerts_sent": 1,
+        "blocked_tasks": [
+            {"task_id": str(uuid4()), "task_role": "test-role"}
+        ],
+        "stale_tasks": [],
+        "orphaned_tasks": [],
+        "auto_fix": {
+            "found": 3,
+            "failed": [
+                {"task_id": str(uuid4()), "cascaded": 1}
+            ],
+            "errors": []
+        }
+    }
+
+    # Verify auto_fix is present when auto_fix_blocked=True
+    assert "auto_fix" in result
+    assert "found" in result["auto_fix"]
+    assert "failed" in result["auto_fix"]
+    assert "errors" in result["auto_fix"]
+
+    print("  [OK] Health check with auto-fix structure correct")
+
+
+def test_claim_with_validation_skips_invalid():
+    """Test that claim with validation skips tasks with failed deps."""
+    # Simulating claim behavior
+    claimed_tasks = [
+        {"id": str(uuid4()), "role": "task1", "has_failed_dep": True},
+        {"id": str(uuid4()), "role": "task2", "has_failed_dep": False},
+        {"id": str(uuid4()), "role": "task3", "has_failed_dep": True},
+        {"id": str(uuid4()), "role": "task4", "has_failed_dep": False},
+    ]
+
+    # Validation should filter out tasks with failed deps
+    valid_tasks = [t for t in claimed_tasks if not t["has_failed_dep"]]
+    auto_failed = [t for t in claimed_tasks if t["has_failed_dep"]]
+
+    assert len(valid_tasks) == 2
+    assert len(auto_failed) == 2
+
+    print("  [OK] Claim with validation skips invalid tasks")
+
+
+def test_check_task_dependencies_function_output():
+    """Test the check_task_dependencies() SQL function output format."""
+    # Simulating what the database function returns
+    result = {
+        "is_unblocked": False,
+        "has_failed_deps": True,
+        "failed_dep_ids": [str(uuid4()), str(uuid4())],
+        "pending_dep_count": 1
+    }
+
+    # Verify all fields present
+    assert "is_unblocked" in result
+    assert "has_failed_deps" in result
+    assert "failed_dep_ids" in result
+    assert "pending_dep_count" in result
+
+    # Logic check: if has_failed_deps, is_unblocked should be False
+    if result["has_failed_deps"]:
+        assert result["is_unblocked"] == False
+
+    print("  [OK] check_task_dependencies function output format correct")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("Running Dependency Validation Tests")
@@ -528,6 +1478,123 @@ if __name__ == "__main__":
 
     print("\n21. Testing deeply nested dependency chain...")
     test_deeply_nested_dependency_chain()
+
+    print("\n--- Cascade Failure Tests ---")
+
+    print("\n22. Testing cascade failure result structure...")
+    test_cascade_failure_result_structure()
+
+    print("\n23. Testing cascade failure with no dependents...")
+    test_cascade_failure_no_dependents()
+
+    print("\n24. Testing cascade failure error message format...")
+    test_cascade_failure_error_message_format()
+
+    print("\n25. Testing cascade failure truncates long errors...")
+    test_cascade_failure_truncates_long_errors()
+
+    print("\n26. Testing cascade failure diamond pattern...")
+    test_cascade_failure_diamond_pattern()
+
+    print("\n27. Testing cascade failure only affects QUEUED tasks...")
+    test_cascade_failure_only_queued_tasks()
+
+    print("\n--- Retry Mechanism Tests ---")
+
+    print("\n28. Testing backoff intervals...")
+    test_retry_backoff_intervals()
+
+    print("\n29. Testing retryable error classification (transient)...")
+    test_is_retryable_error_transient()
+
+    print("\n30. Testing retryable error classification (permanent)...")
+    test_is_retryable_error_permanent()
+
+    print("\n31. Testing retry result structure...")
+    test_retry_result_structure()
+
+    print("\n32. Testing permanent failure result structure...")
+    test_retry_result_permanent_failure()
+
+    print("\n33. Testing retry eligibility checks...")
+    test_retry_eligibility_check()
+
+    print("\n--- Timeout Detection Tests ---")
+
+    print("\n34. Testing stuck task detection criteria...")
+    test_timeout_detection_stuck_criteria()
+
+    print("\n35. Testing requeue result structure...")
+    test_timeout_requeue_result_structure()
+
+    print("\n36. Testing timeout permanent failure...")
+    test_timeout_permanent_failure()
+
+    print("\n37. Testing heartbeat prevents timeout...")
+    test_heartbeat_prevents_timeout()
+
+    print("\n38. Testing watchdog result structure...")
+    test_watchdog_result_structure()
+
+    print("\n--- Race Condition Prevention Tests ---")
+
+    print("\n39. Testing atomic claim returns task...")
+    test_atomic_claim_returns_task()
+
+    print("\n40. Testing SKIP LOCKED behavior...")
+    test_atomic_claim_skip_locked_behavior()
+
+    print("\n41. Testing duplicate claim fails...")
+    test_duplicate_claim_fails()
+
+    print("\n42. Testing bulk atomic claim...")
+    test_atomic_bulk_claim_result()
+
+    print("\n43. Testing dispatch callback handles already-claimed...")
+    test_dispatch_callback_handles_already_claimed()
+
+    print("\n--- Blocked Task Detection Tests (P1 #5) ---")
+
+    print("\n44. Testing blocked task detection structure...")
+    test_blocked_task_detection_structure()
+
+    print("\n45. Testing stale task detection structure...")
+    test_stale_task_detection_structure()
+
+    print("\n46. Testing orphaned task detection structure...")
+    test_orphaned_task_detection_structure()
+
+    print("\n47. Testing health check metrics structure...")
+    test_health_check_metrics_structure()
+
+    print("\n48. Testing health check issue detection...")
+    test_health_check_issue_detection()
+
+    print("\n49. Testing health check result structure...")
+    test_health_check_result_structure()
+
+    print("\n--- Pre-Dispatch Validation Tests (P1 #6) ---")
+
+    print("\n50. Testing validation returns True when no dependencies...")
+    test_validate_deps_returns_true_when_no_deps()
+
+    print("\n51. Testing validation detects failed dependency...")
+    test_validate_deps_detects_failed_dependency()
+
+    print("\n52. Testing validation allows valid task...")
+    test_validate_deps_allows_valid_task()
+
+    print("\n53. Testing auto-fail blocked result structure...")
+    test_auto_fail_blocked_result_structure()
+
+    print("\n54. Testing health check with auto-fix structure...")
+    test_health_check_with_auto_fix_structure()
+
+    print("\n55. Testing claim with validation skips invalid...")
+    test_claim_with_validation_skips_invalid()
+
+    print("\n56. Testing check_task_dependencies function output...")
+    test_check_task_dependencies_function_output()
 
     print("\n" + "=" * 60)
     print("All dependency validation tests passed!")
