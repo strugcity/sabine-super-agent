@@ -91,6 +91,54 @@ send_team_update(
 
 ---
 
+## CORS Configuration (CRITICAL)
+
+When creating or modifying API endpoints that will be called from the frontend:
+
+### Before Adding New Endpoints:
+- [ ] **Check CORS middleware:** Verify `lib/agent/server.py` has the frontend origin in `allow_origins`
+- [ ] **Supported origins must be explicit:** FastAPI CORSMiddleware does NOT support wildcards like `https://*.vercel.app`
+
+### Current CORS Configuration Location:
+```python
+# lib/agent/server.py - around line 133
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "https://dream-team-strug.vercel.app",
+        # Add new Vercel preview URLs here if needed
+    ],
+    allow_origin_regex=r"https://dream-team-strug.*\.vercel\.app",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
+
+### When Adding New Frontend Integrations:
+1. **Add the origin explicitly** to `allow_origins` list
+2. **Test from the actual deployed frontend** - not just localhost
+3. **Check browser console for CORS errors** before marking task complete
+
+### Common CORS Mistakes:
+- Using `https://*.vercel.app` (wildcards don't work in FastAPI)
+- Forgetting to add preview deployment URLs
+- Not testing from the actual Vercel deployment
+
+---
+
+## Database Schema Changes
+
+When modifying Supabase tables:
+
+1. **Create a migration file:** `supabase/migrations/YYYYMMDDHHMMSS_description.sql`
+2. **Apply to production:** Run the migration in Supabase SQL Editor
+3. **Refresh PostgREST cache:** Include `NOTIFY pgrst, 'reload schema';` at the end
+4. **Update Python models:** Ensure `lib/db/models.py` matches the new schema
+
+---
+
 ## Verification Checkpoint
 
 Before completing any task, verify:
@@ -99,5 +147,7 @@ Before completing any task, verify:
 - [ ] Did I use the correct repo (`sabine-super-agent` for backend)?
 - [ ] Did I include actual code content (not placeholders)?
 - [ ] Did I send a `send_team_update` about my work?
+- [ ] **If adding API endpoints: Did I verify CORS allows frontend access?**
+- [ ] **If changing DB schema: Did I create a migration file?**
 
 If you cannot answer YES to all checkpoints, your task is NOT complete.

@@ -105,6 +105,39 @@ send_team_update(
 
 ---
 
+## Cross-System Integration Validation
+
+When other agents complete tasks that span frontend and backend, validate:
+
+### Deployment Validation Checklist:
+- [ ] **Vercel environment variables:** Are all `NEXT_PUBLIC_*` vars set with real values (not placeholders)?
+- [ ] **Railway environment variables:** Are all backend secrets configured?
+- [ ] **CORS configuration:** Does `server.py` allow requests from the Vercel domain?
+- [ ] **API authentication:** Is the API key correctly passed in the `X-API-Key` header?
+
+### Dependency Validation:
+- [ ] **package-lock.json updated:** When `package.json` changes, lockfile must also change
+- [ ] **requirements.txt synced:** Python dependencies match what's imported in code
+- [ ] **Migrations applied:** Database schema matches what the code expects
+
+### Common Integration Failures to Check:
+| Symptom | Likely Cause | How to Verify |
+|---------|--------------|---------------|
+| CORS errors in browser console | Frontend origin not in `allow_origins` | Check `server.py` CORSMiddleware |
+| "Invalid API key" error | Env var not set in Vercel | Check Vercel dashboard → Settings → Environment Variables |
+| Double-slash URLs (`//endpoint`) | Trailing slash in API URL env var | Check `NEXT_PUBLIC_API_URL` value |
+| Module not found on deploy | Lockfile not updated | Compare package.json vs package-lock.json |
+| Database column not found | Migration not applied | Run migration in Supabase SQL Editor |
+
+### Post-Deployment Smoke Test:
+After any cross-system change, verify:
+1. Open the deployed frontend URL (not localhost)
+2. Check browser DevTools → Network tab for failed requests
+3. Check browser DevTools → Console for errors
+4. Test the actual user flow end-to-end
+
+---
+
 ## Verification Checkpoint
 
 Before completing any task, verify:
@@ -112,5 +145,6 @@ Before completing any task, verify:
 - [ ] Did I create GitHub issues for all findings?
 - [ ] Did I document audit results in the repository?
 - [ ] Did I send team updates about security findings?
+- [ ] **For integration reviews: Did I check CORS, env vars, and lockfiles?**
 
 If you cannot answer YES to all checkpoints, your task is NOT complete.
