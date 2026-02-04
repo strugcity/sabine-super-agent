@@ -1987,7 +1987,7 @@ async def _run_task_agent(task: Task):
     Context Propagation: If this task depends on other tasks, their results
     are fetched and included as context for this agent.
     """
-    from lib.agent.slack_manager import send_task_update, log_agent_event
+    from lib.agent.slack_manager import send_task_update, log_agent_event, clear_task_thread
 
     service = get_task_queue_service()
 
@@ -2211,6 +2211,9 @@ DO NOT use any other repository. This is enforced by the orchestration system.
                 auto_dispatch=True  # Trigger next tasks in chain
             )
 
+            # Clean up Slack thread tracking to prevent memory leak (P3 fix)
+            clear_task_thread(task.id)
+
             if verification_passed:
                 logger.info(f"Task {task.id} completed successfully (verified: {success_count}/{call_count} tool calls succeeded)")
             else:
@@ -2247,6 +2250,8 @@ DO NOT use any other repository. This is enforced by the orchestration system.
                     event_type="task_failed",
                     message=f"Task permanently failed: {sanitized_error_msg}"
                 )
+                # Clean up Slack thread tracking for permanent failures (P3 fix)
+                clear_task_thread(task.id)
                 logger.error(f"Task {task.id} permanently failed: {sanitize_for_logging(error_msg)}")
 
     except Exception as e:
@@ -2275,6 +2280,8 @@ DO NOT use any other repository. This is enforced by the orchestration system.
                     event_type="error",
                     message=f"Exception during task execution: {sanitized_exc}"
                 )
+                # Clean up Slack thread tracking for permanent failures (P3 fix)
+                clear_task_thread(task.id)
         except Exception as slack_error:
             # Don't fail the main operation if Slack update fails
             logger.warning(f"Slack notification failed for task {task.id}: {slack_error}")

@@ -22,6 +22,7 @@ Owner: @backend-architect-sabine
 import asyncio
 import logging
 import os
+import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -37,7 +38,9 @@ SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN")
 SLACK_CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID", "dream-team-ops")
 
 # Track thread timestamps for task-based threading
+# Protected by _task_threads_lock for thread-safety (P3 fix)
 _task_threads: Dict[str, str] = {}  # task_id -> thread_ts
+_task_threads_lock = threading.Lock()
 
 # Global slack client reference
 _slack_app = None
@@ -368,7 +371,10 @@ async def send_task_update(
         Thread timestamp if successful
     """
     task_key = str(task_id)
-    thread_ts = _task_threads.get(task_key)
+
+    # Thread-safe read of existing thread
+    with _task_threads_lock:
+        thread_ts = _task_threads.get(task_key)
 
     # Build emoji based on event type
     emoji_map = {
@@ -418,10 +424,17 @@ async def send_task_update(
     if result:
         new_ts = result.get("ts")
 
-        # If this was the first message, store the thread_ts
+        # Thread-safe write if this was the first message
+        current_thread_ts = thread_ts
         if not thread_ts and new_ts:
-            _task_threads[task_key] = new_ts
-            logger.debug(f"Created new thread for task {task_key}: {new_ts}")
+            with _task_threads_lock:
+                # Double-check pattern: verify still not set
+                if task_key not in _task_threads:
+                    _task_threads[task_key] = new_ts
+                    current_thread_ts = new_ts
+                    logger.debug(f"Created new thread for task {task_key}: {new_ts}")
+                else:
+                    current_thread_ts = _task_threads[task_key]
 
         # Log to agent_events
         await log_agent_event(
@@ -430,18 +443,19 @@ async def send_task_update(
             task_id=task_id,
             role=role,
             metadata={"details": details} if details else None,
-            slack_thread_ts=_task_threads.get(task_key),
+            slack_thread_ts=current_thread_ts,
             slack_channel=SLACK_CHANNEL_ID
         )
 
-        return _task_threads.get(task_key, new_ts)
+        return current_thread_ts or new_ts
 
     return None
 
 
 def get_task_thread(task_id: UUID) -> Optional[str]:
-    """Get the Slack thread timestamp for a task."""
-    return _task_threads.get(str(task_id))
+    """Get the Slack thread timestamp for a task (thread-safe)."""
+    with _task_threads_lock:
+        return _task_threads.get(str(task_id))
 
 
 async def send_cascade_failure_alert(
@@ -608,11 +622,39 @@ async def send_stuck_task_alert(
     return result.get("ts") if result else None
 
 
-def clear_task_thread(task_id: UUID):
-    """Clear the thread tracking for a completed task."""
+def clear_task_thread(task_id: UUID) -> bool:
+    """
+    Clear the thread tracking for a completed/failed task (thread-safe).
+
+    This should be called when a task completes or fails to prevent
+    memory leaks from accumulating thread mappings.
+
+    Args:
+        task_id: The task ID to clear
+
+    Returns:
+        True if a thread was cleared, False if no thread existed
+    """
     task_key = str(task_id)
-    if task_key in _task_threads:
-        del _task_threads[task_key]
+    with _task_threads_lock:
+        if task_key in _task_threads:
+            del _task_threads[task_key]
+            logger.debug(f"Cleared thread mapping for task {task_key}")
+            return True
+    return False
+
+
+def get_task_threads_count() -> int:
+    """
+    Get the current number of tracked task threads.
+
+    Useful for monitoring memory usage and debugging leaks.
+
+    Returns:
+        Number of task threads currently being tracked
+    """
+    with _task_threads_lock:
+        return len(_task_threads)
 
 
 # =============================================================================
