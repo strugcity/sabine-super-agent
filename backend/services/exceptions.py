@@ -513,6 +513,7 @@ class TaskQueueError(SABINEError):
         operation: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None,
         original_error: Optional[Exception] = None,
+        status_code: int = 500,
     ):
         ctx = context or {}
         if task_id:
@@ -522,7 +523,7 @@ class TaskQueueError(SABINEError):
 
         super().__init__(
             message=message,
-            status_code=500,
+            status_code=status_code,
             category=ErrorCategory.TASK_QUEUE,
             context=ctx,
             original_error=original_error,

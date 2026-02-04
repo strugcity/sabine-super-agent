@@ -555,6 +555,32 @@ class TaskQueueService:
             )
 
         try:
+            # Validate task exists and is in correct state
+            task_result = await self.get_task_result(task_id)
+            if not task_result.success:
+                return task_result
+
+            task = task_result.data["task"]
+
+            # Only IN_PROGRESS tasks can be completed
+            if task.status == TaskStatus.COMPLETED:
+                return OperationResult.fail(
+                    TaskQueueError(
+                        message=f"Task already completed",
+                        operation="complete",
+                        status_code=409  # Conflict
+                    )
+                )
+
+            if task.status != TaskStatus.IN_PROGRESS:
+                return OperationResult.fail(
+                    TaskQueueError(
+                        message=f"Cannot complete task: status is '{task.status}', expected 'in_progress'",
+                        operation="complete",
+                        status_code=409  # Conflict
+                    )
+                )
+
             update_data = {
                 "status": TaskStatus.COMPLETED.value,
                 "result": result or {}
@@ -643,7 +669,8 @@ class TaskQueueService:
         task_id: UUID,
         error: str,
         cascade: bool = True,
-        _cascade_source: Optional[UUID] = None
+        _cascade_source: Optional[UUID] = None,
+        force: bool = False
     ) -> OperationResult:
         """
         Mark a task as failed with structured error handling.
@@ -656,6 +683,7 @@ class TaskQueueService:
             error: Error message/description
             cascade: If True, propagate failure to dependent tasks (default: True)
             _cascade_source: Internal use - the original failed task ID for cascade messages
+            force: If True, allow failing already-terminal tasks (for admin recovery)
 
         Returns:
             OperationResult indicating success or specific failure reason.
@@ -670,6 +698,23 @@ class TaskQueueService:
             )
 
         try:
+            # Validate task exists and check current state
+            task_result = await self.get_task_result(task_id)
+            if not task_result.success:
+                return task_result
+
+            task = task_result.data["task"]
+
+            # Check if task is already in a terminal state
+            if not force and task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                return OperationResult.fail(
+                    TaskQueueError(
+                        message=f"Cannot fail task: already in terminal state '{task.status}'",
+                        operation="fail",
+                        status_code=409  # Conflict
+                    )
+                )
+
             response = self.client.table(TASK_QUEUE_TABLE).update({
                 "status": TaskStatus.FAILED.value,
                 "error": error
@@ -955,6 +1000,112 @@ class TaskQueueService:
     # Dependency Validation
     # =========================================================================
 
+    async def _fetch_dependency_tree(
+        self,
+        root_task_ids: List[UUID],
+        max_depth: int = 100
+    ) -> Dict[str, Dict]:
+        """
+        Fetch the complete dependency tree in a single query.
+
+        Uses a PostgreSQL recursive CTE to traverse all dependencies from
+        the root tasks. This eliminates the N+1 query pattern that would
+        occur when fetching dependencies one level at a time.
+
+        Args:
+            root_task_ids: List of task IDs to start traversal from
+            max_depth: Maximum recursion depth (default: 100)
+
+        Returns:
+            Dict mapping task_id (string) to task data dict containing:
+            - id, status, depends_on, error, depth
+        """
+        if not root_task_ids or not self.client:
+            return {}
+
+        try:
+            # Convert UUIDs to strings for the RPC call
+            root_ids_str = [str(tid) for tid in root_task_ids]
+
+            response = self.client.rpc(
+                "get_dependency_tree",
+                {
+                    "start_task_ids": root_ids_str,
+                    "max_depth": max_depth
+                }
+            ).execute()
+
+            if response.data:
+                # Build dict mapping task_id -> task_data
+                return {
+                    row["task_id"]: {
+                        "id": row["task_id"],
+                        "status": row["status"],
+                        "depends_on": row["depends_on"],
+                        "error": row["error"],
+                        "depth": row["depth"]
+                    }
+                    for row in response.data
+                }
+
+            return {}
+
+        except Exception as e:
+            logger.warning(
+                f"RPC get_dependency_tree failed, falling back to manual fetch: {e}"
+            )
+            # Fallback to the original approach if RPC not available
+            return await self._fetch_dependency_tree_fallback(root_task_ids, max_depth)
+
+    async def _fetch_dependency_tree_fallback(
+        self,
+        root_task_ids: List[UUID],
+        max_depth: int = 100
+    ) -> Dict[str, Dict]:
+        """
+        Fallback method to fetch dependency tree without RPC.
+
+        This uses the original N+1 approach but is only used when the
+        database RPC function is not available.
+        """
+        if not root_task_ids or not self.client:
+            return {}
+
+        found_tasks: Dict[str, Dict] = {}
+        to_fetch = [str(tid) for tid in root_task_ids]
+        depth = 0
+
+        while to_fetch and depth < max_depth:
+            # Fetch current batch
+            response = self.client.table(TASK_QUEUE_TABLE).select(
+                "id", "status", "depends_on", "error"
+            ).in_("id", to_fetch).execute()
+
+            if not response.data:
+                break
+
+            # Add to found_tasks and collect next level dependencies
+            next_to_fetch = []
+            for row in response.data:
+                task_id = row["id"]
+                if task_id not in found_tasks:
+                    found_tasks[task_id] = {
+                        **row,
+                        "depth": depth
+                    }
+
+                    # Collect nested dependencies for next iteration
+                    if row.get("depends_on"):
+                        for dep_id in row["depends_on"]:
+                            dep_id_str = str(dep_id) if not isinstance(dep_id, str) else dep_id
+                            if dep_id_str not in found_tasks:
+                                next_to_fetch.append(dep_id_str)
+
+            to_fetch = list(set(next_to_fetch))  # Deduplicate
+            depth += 1
+
+        return found_tasks
+
     async def validate_dependencies(
         self,
         depends_on: List[UUID],
@@ -989,15 +1140,21 @@ class TaskQueueService:
             )
 
         try:
-            # Fetch all dependency tasks
             dep_ids_str = [str(d) for d in depends_on]
-            response = self.client.table(TASK_QUEUE_TABLE).select(
-                "id", "status", "depends_on", "error"
-            ).in_("id", dep_ids_str).execute()
 
-            found_tasks = {row["id"]: row for row in (response.data or [])}
+            # If we need to check circular dependencies, fetch the complete tree
+            # upfront to avoid N+1 queries during recursion
+            if check_circular and new_task_id:
+                # Fetch complete dependency tree in a single query
+                found_tasks = await self._fetch_dependency_tree(depends_on)
+            else:
+                # Just fetch direct dependencies (no circular check needed)
+                response = self.client.table(TASK_QUEUE_TABLE).select(
+                    "id", "status", "depends_on", "error"
+                ).in_("id", dep_ids_str).execute()
+                found_tasks = {row["id"]: row for row in (response.data or [])}
 
-            # Check 1: All dependencies must exist
+            # Check 1: All direct dependencies must exist
             for dep_id in depends_on:
                 if str(dep_id) not in found_tasks:
                     return OperationResult.fail(
@@ -1007,9 +1164,11 @@ class TaskQueueService:
                         )
                     )
 
-            # Check 2: No failed dependencies
-            for dep_id_str, task_data in found_tasks.items():
-                if task_data["status"] == TaskStatus.FAILED.value:
+            # Check 2: No failed direct dependencies
+            for dep_id in depends_on:
+                dep_id_str = str(dep_id)
+                task_data = found_tasks.get(dep_id_str)
+                if task_data and task_data["status"] == TaskStatus.FAILED.value:
                     return OperationResult.fail(
                         FailedDependencyError(
                             task_id=str(new_task_id) if new_task_id else None,
@@ -1018,7 +1177,7 @@ class TaskQueueService:
                         )
                     )
 
-            # Check 3: No circular dependencies
+            # Check 3: No circular dependencies (tree already fetched above)
             if check_circular and new_task_id:
                 circular_result = await self._check_circular_dependency(
                     new_task_id=new_task_id,
@@ -1097,10 +1256,11 @@ class TaskQueueService:
             visited.add(dep_id_str)
             chain.append(dep_id_str)
 
-            # Get the dependency's dependencies
+            # Get the dependency's dependencies from pre-fetched tree
+            # Note: found_tasks should already contain the complete tree
+            # via _fetch_dependency_tree() - no additional queries needed
             task_data = found_tasks.get(dep_id_str)
             if task_data and task_data.get("depends_on"):
-                # Fetch nested dependencies if not already fetched
                 nested_deps = task_data["depends_on"]
                 if nested_deps:
                     # Convert to UUIDs
@@ -1109,20 +1269,7 @@ class TaskQueueService:
                         for d in nested_deps
                     ]
 
-                    # Fetch any unfetched tasks
-                    unfetched = [
-                        str(d) for d in nested_dep_uuids
-                        if str(d) not in found_tasks
-                    ]
-                    if unfetched and self.client:
-                        response = self.client.table(TASK_QUEUE_TABLE).select(
-                            "id", "status", "depends_on", "error"
-                        ).in_("id", unfetched).execute()
-
-                        for row in (response.data or []):
-                            found_tasks[row["id"]] = row
-
-                    # Recurse
+                    # Recurse with pre-fetched data (no database query)
                     result = await self._check_circular_dependency(
                         new_task_id=new_task_id,
                         depends_on=nested_dep_uuids,
@@ -1670,6 +1817,312 @@ class TaskQueueService:
             "retried": retried,
             "failed": failed
         }
+
+    # =========================================================================
+    # Manual Recovery Operations
+    # =========================================================================
+
+    async def force_retry_task(
+        self,
+        task_id: UUID,
+        reason: str
+    ) -> OperationResult:
+        """
+        Force retry a failed task, bypassing retry limits and retryable checks.
+
+        Use this when:
+        - A task failed with is_retryable=False but the external issue was fixed
+        - A task exceeded max_retries but the root cause was addressed
+        - Manual operator intervention is needed to recover from failures
+
+        Args:
+            task_id: The task ID to force retry
+            reason: Required reason for audit trail (why is this being force-retried?)
+
+        Returns:
+            OperationResult with retry status
+        """
+        if not self.client:
+            return OperationResult.fail(
+                MissingCredentialsError(
+                    service="Supabase",
+                    required_keys=["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]
+                )
+            )
+
+        if not reason or not reason.strip():
+            return OperationResult.fail(
+                TaskQueueError(
+                    message="Reason is required for force-retry (audit trail)",
+                    operation="force_retry"
+                )
+            )
+
+        try:
+            # Get current task state
+            task_result = await self.get_task_result(task_id)
+            if not task_result.success:
+                return task_result
+
+            task = task_result.data["task"]
+
+            # Validate task is in FAILED status
+            if task.status != TaskStatus.FAILED:
+                return OperationResult.fail(
+                    TaskQueueError(
+                        message=f"Cannot force-retry task: status is '{task.status}', expected 'failed'",
+                        operation="force_retry",
+                        status_code=409
+                    )
+                )
+
+            # Reset to QUEUED, preserving retry_count for history
+            # Note: We do NOT reset retry_count - it shows total attempts
+            update_data = {
+                "status": TaskStatus.QUEUED.value,
+                "error": f"Force retry: {reason.strip()}",
+                "is_retryable": True,
+                "next_retry_at": None,
+                "started_at": None,
+                "last_heartbeat_at": None
+            }
+
+            response = self.client.table(TASK_QUEUE_TABLE).update(
+                update_data
+            ).eq("id", str(task_id)).execute()
+
+            if response.data and len(response.data) > 0:
+                logger.info(f"Force-retried task {task_id}: {reason}")
+                return OperationResult.ok({
+                    "task_id": str(task_id),
+                    "previous_status": "failed",
+                    "new_status": "queued",
+                    "reason": reason.strip(),
+                    "retry_count": task.retry_count  # Preserved for audit
+                })
+
+            return OperationResult.fail(
+                TaskNotFoundError(task_id=str(task_id))
+            )
+
+        except Exception as e:
+            logger.error(f"Error force-retrying task {task_id}: {e}")
+            return OperationResult.fail(
+                DatabaseError(
+                    message=f"Failed to force-retry task: {str(e)}",
+                    operation="update",
+                    table=TASK_QUEUE_TABLE,
+                    context={"task_id": str(task_id)},
+                    original_error=e,
+                )
+            )
+
+    async def rerun_task(
+        self,
+        task_id: UUID,
+        reason: str
+    ) -> OperationResult:
+        """
+        Re-queue a completed task for re-execution.
+
+        Use this when:
+        - A task completed but needs to be run again
+        - Results need to be regenerated
+        - Downstream processing requires a fresh run
+
+        Args:
+            task_id: The task ID to rerun
+            reason: Required reason for audit trail (why is this being rerun?)
+
+        Returns:
+            OperationResult with rerun status
+        """
+        if not self.client:
+            return OperationResult.fail(
+                MissingCredentialsError(
+                    service="Supabase",
+                    required_keys=["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]
+                )
+            )
+
+        if not reason or not reason.strip():
+            return OperationResult.fail(
+                TaskQueueError(
+                    message="Reason is required for rerun (audit trail)",
+                    operation="rerun"
+                )
+            )
+
+        try:
+            # Get current task state
+            task_result = await self.get_task_result(task_id)
+            if not task_result.success:
+                return task_result
+
+            task = task_result.data["task"]
+
+            # Validate task is in COMPLETED status
+            if task.status != TaskStatus.COMPLETED:
+                return OperationResult.fail(
+                    TaskQueueError(
+                        message=f"Cannot rerun task: status is '{task.status}', expected 'completed'",
+                        operation="rerun",
+                        status_code=409
+                    )
+                )
+
+            # Reset to QUEUED
+            update_data = {
+                "status": TaskStatus.QUEUED.value,
+                "result": None,  # Clear previous result
+                "error": f"Rerun requested: {reason.strip()}",
+                "started_at": None,
+                "last_heartbeat_at": None
+            }
+
+            response = self.client.table(TASK_QUEUE_TABLE).update(
+                update_data
+            ).eq("id", str(task_id)).execute()
+
+            if response.data and len(response.data) > 0:
+                logger.info(f"Rerun task {task_id}: {reason}")
+                return OperationResult.ok({
+                    "task_id": str(task_id),
+                    "previous_status": "completed",
+                    "new_status": "queued",
+                    "reason": reason.strip()
+                })
+
+            return OperationResult.fail(
+                TaskNotFoundError(task_id=str(task_id))
+            )
+
+        except Exception as e:
+            logger.error(f"Error rerunning task {task_id}: {e}")
+            return OperationResult.fail(
+                DatabaseError(
+                    message=f"Failed to rerun task: {str(e)}",
+                    operation="update",
+                    table=TASK_QUEUE_TABLE,
+                    context={"task_id": str(task_id)},
+                    original_error=e,
+                )
+            )
+
+    async def cancel_task(
+        self,
+        task_id: UUID,
+        reason: str,
+        cascade: bool = True
+    ) -> OperationResult:
+        """
+        Cancel a queued task (mark as failed without running).
+
+        Use this when:
+        - A queued task is no longer needed
+        - The task will never be able to run (known dependency issues)
+        - Manual cleanup of orphaned tasks
+
+        Args:
+            task_id: The task ID to cancel
+            reason: Required reason for audit trail (why is this being cancelled?)
+            cascade: If True, also cancel dependent queued tasks (default: True)
+
+        Returns:
+            OperationResult with cancellation status and cascade info
+        """
+        if not self.client:
+            return OperationResult.fail(
+                MissingCredentialsError(
+                    service="Supabase",
+                    required_keys=["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]
+                )
+            )
+
+        if not reason or not reason.strip():
+            return OperationResult.fail(
+                TaskQueueError(
+                    message="Reason is required for cancellation (audit trail)",
+                    operation="cancel"
+                )
+            )
+
+        try:
+            # Get current task state
+            task_result = await self.get_task_result(task_id)
+            if not task_result.success:
+                return task_result
+
+            task = task_result.data["task"]
+
+            # Validate task is in QUEUED status
+            if task.status != TaskStatus.QUEUED:
+                return OperationResult.fail(
+                    TaskQueueError(
+                        message=f"Cannot cancel task: status is '{task.status}', expected 'queued'",
+                        operation="cancel",
+                        status_code=409
+                    )
+                )
+
+            # Mark as failed with cancellation message
+            error_msg = f"Cancelled: {reason.strip()}"
+
+            response = self.client.table(TASK_QUEUE_TABLE).update({
+                "status": TaskStatus.FAILED.value,
+                "error": error_msg,
+                "is_retryable": False  # Cancelled tasks should not be auto-retried
+            }).eq("id", str(task_id)).execute()
+
+            if not (response.data and len(response.data) > 0):
+                return OperationResult.fail(
+                    TaskNotFoundError(task_id=str(task_id))
+                )
+
+            logger.info(f"Cancelled task {task_id}: {reason}")
+
+            # Cascade cancellation to dependent tasks
+            cascaded_count = 0
+            cascaded_task_ids = []
+
+            if cascade:
+                dependent_tasks = await self.get_dependent_tasks(task_id)
+
+                for dep_task in dependent_tasks:
+                    cascade_error = f"Cancelled: Parent task {task_id} was cancelled ({reason.strip()})"
+                    cascade_result = await self.cancel_task(
+                        dep_task.id,
+                        reason=f"Parent task {task_id} was cancelled",
+                        cascade=True  # Recursively cascade
+                    )
+                    if cascade_result.success:
+                        cascaded_count += 1
+                        cascaded_task_ids.append(str(dep_task.id))
+                        # Include nested cascades
+                        if "cascaded_count" in cascade_result.data:
+                            cascaded_count += cascade_result.data["cascaded_count"]
+                            cascaded_task_ids.extend(cascade_result.data.get("cascaded_task_ids", []))
+
+            return OperationResult.ok({
+                "task_id": str(task_id),
+                "previous_status": "queued",
+                "new_status": "failed",
+                "reason": reason.strip(),
+                "cascaded_count": cascaded_count,
+                "cascaded_task_ids": cascaded_task_ids
+            })
+
+        except Exception as e:
+            logger.error(f"Error cancelling task {task_id}: {e}")
+            return OperationResult.fail(
+                DatabaseError(
+                    message=f"Failed to cancel task: {str(e)}",
+                    operation="update",
+                    table=TASK_QUEUE_TABLE,
+                    context={"task_id": str(task_id)},
+                    original_error=e,
+                )
+            )
 
     # =========================================================================
     # Timeout Detection and Stuck Task Recovery

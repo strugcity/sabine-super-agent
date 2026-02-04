@@ -813,6 +813,7 @@ async def complete_task(
     Mark a task as completed.
 
     This will trigger auto-dispatch of any dependent tasks.
+    Only tasks in IN_PROGRESS status can be completed.
     """
     try:
         from uuid import UUID
@@ -823,10 +824,12 @@ async def complete_task(
         if not service._dispatch_callback:
             service.set_dispatch_callback(_dispatch_task)
 
-        success = await service.complete_task(UUID(task_id), result=result)
+        op_result = await service.complete_task_result(UUID(task_id), result=result)
 
-        if not success:
-            raise HTTPException(status_code=400, detail=f"Could not complete task {task_id}")
+        if not op_result.success:
+            error_msg = op_result.error.message if op_result.error else "Unknown error"
+            status_code = op_result.error.status_code if op_result.error else 400
+            raise HTTPException(status_code=status_code, detail=error_msg)
 
         return {
             "success": True,
@@ -846,17 +849,27 @@ async def complete_task(
 async def fail_task(
     task_id: str,
     error: str = "Unknown error",
+    force: bool = False,
     _: bool = Depends(verify_api_key)
 ):
-    """Mark a task as failed."""
+    """
+    Mark a task as failed.
+
+    Args:
+        task_id: The task ID to fail
+        error: Error message describing the failure
+        force: If True, allow failing already-terminal tasks (admin override)
+    """
     try:
         from uuid import UUID
 
         service = get_task_queue_service()
-        success = await service.fail_task(UUID(task_id), error=error)
+        result = await service.fail_task_result(UUID(task_id), error=error, force=force)
 
-        if not success:
-            raise HTTPException(status_code=400, detail=f"Could not fail task {task_id}")
+        if not result.success:
+            error_msg = result.error.message if result.error else "Unknown error"
+            status_code = result.error.status_code if result.error else 400
+            raise HTTPException(status_code=status_code, detail=error_msg)
 
         return {
             "success": True,
@@ -907,6 +920,131 @@ async def retry_task(
     except Exception as e:
         logger.error(f"Error retrying task {task_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to retry task: {str(e)}")
+
+
+@app.post("/tasks/{task_id}/force-retry")
+async def force_retry_task(
+    task_id: str,
+    reason: str,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Force retry a failed task, bypassing retry limits.
+
+    Use this when:
+    - A task failed with is_retryable=False but the external issue was fixed
+    - A task exceeded max_retries but the root cause was addressed
+    - Manual operator intervention is needed
+
+    Args:
+        task_id: The task ID to force retry
+        reason: Required reason for audit trail (why is this being force-retried?)
+    """
+    try:
+        from uuid import UUID
+
+        service = get_task_queue_service()
+        result = await service.force_retry_task(UUID(task_id), reason=reason)
+
+        if not result.success:
+            error_msg = result.error.message if result.error else "Unknown error"
+            status_code = result.error.status_code if result.error else 400
+            raise HTTPException(status_code=status_code, detail=error_msg)
+
+        return {
+            "success": True,
+            **result.data
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error force-retrying task {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to force-retry task: {str(e)}")
+
+
+@app.post("/tasks/{task_id}/rerun")
+async def rerun_task(
+    task_id: str,
+    reason: str,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Re-queue a completed task for re-execution.
+
+    Use this when:
+    - A task completed but needs to be run again
+    - Results need to be regenerated
+    - Downstream processing requires a fresh run
+
+    Args:
+        task_id: The task ID to rerun
+        reason: Required reason for audit trail (why is this being rerun?)
+    """
+    try:
+        from uuid import UUID
+
+        service = get_task_queue_service()
+        result = await service.rerun_task(UUID(task_id), reason=reason)
+
+        if not result.success:
+            error_msg = result.error.message if result.error else "Unknown error"
+            status_code = result.error.status_code if result.error else 400
+            raise HTTPException(status_code=status_code, detail=error_msg)
+
+        return {
+            "success": True,
+            **result.data
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error rerunning task {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to rerun task: {str(e)}")
+
+
+@app.post("/tasks/{task_id}/cancel")
+async def cancel_task(
+    task_id: str,
+    reason: str,
+    cascade: bool = True,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Cancel a queued task (mark as failed without running).
+
+    Use this when:
+    - A queued task is no longer needed
+    - The task will never be able to run (known dependency issues)
+    - Manual cleanup of orphaned tasks
+
+    Args:
+        task_id: The task ID to cancel
+        reason: Required reason for audit trail (why is this being cancelled?)
+        cascade: If True, also cancel dependent queued tasks (default: True)
+    """
+    try:
+        from uuid import UUID
+
+        service = get_task_queue_service()
+        result = await service.cancel_task(UUID(task_id), reason=reason, cascade=cascade)
+
+        if not result.success:
+            error_msg = result.error.message if result.error else "Unknown error"
+            status_code = result.error.status_code if result.error else 400
+            raise HTTPException(status_code=status_code, detail=error_msg)
+
+        return {
+            "success": True,
+            **result.data
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error cancelling task {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to cancel task: {str(e)}")
 
 
 @app.get("/tasks/retryable")
