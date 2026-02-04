@@ -38,6 +38,29 @@ logger = logging.getLogger(__name__)
 # Role-Based Persona Loading
 # =============================================================================
 
+# Engineering roles whose role manifests are self-contained.  When one of these
+# roles is active we skip the full consumer-facing Sabine system prompt (custody
+# schedules, reminder guides, etc.) because it is irrelevant and wastes input
+# tokens against the org-level rate limit.
+ENGINEERING_ROLES = {
+    "frontend-ops-sabine",
+    "backend-architect-sabine",
+    "data-ai-engineer-sabine",
+    "product-manager-sabine",
+    "qa-security-sabine",
+    "SABINE_ARCHITECT",
+}
+
+# Tools that engineering roles actually use.  Filtering the tool list removes
+# ~2-4k tokens of serialised schemas for Gmail/Calendar/Drive/Weather that
+# engineering agents never call.
+ENGINEERING_TOOLS = {
+    "github_issues",
+    "run_python_sandbox",
+    "send_team_update",
+    "sync_project_board",
+}
+
 # Cache for loaded role manifests (avoid re-reading files)
 _role_manifest_cache: Dict[str, RoleManifest] = {}
 
@@ -391,6 +414,14 @@ def build_static_context(deep_context: Dict[str, Any], role: Optional[str] = Non
     if role:
         role_manifest = load_role_manifest(role)
         if role_manifest:
+            # Engineering roles are self-contained: the manifest already defines
+            # identity, responsibilities, tools, and directives.  Return it alone
+            # to avoid injecting the full consumer-facing context (~4-5k tokens of
+            # custody / reminder / scheduling text that these agents never need).
+            if role in ENGINEERING_ROLES:
+                logger.info(f"Engineering role {role}: returning manifest-only prompt (token-optimised)")
+                return role_manifest.instructions
+
             prompt += f"""# ROLE-SPECIFIC INSTRUCTIONS
 
 {role_manifest.instructions}
@@ -963,10 +994,14 @@ async def create_agent(
     role_info = f", role={role}" if role else ""
     logger.info(f"Creating agent for user {user_id}, session {session_id}{role_info}")
 
-    # Load all tools
+    # Load all tools, then narrow to engineering-only when appropriate.
+    # Engineering roles use 3-4 tools; serialising the full set adds ~2-4k
+    # tokens of unused schemas per API call.
     tools = await get_all_tools()
+    if role and role in ENGINEERING_ROLES:
+        tools = [t for t in tools if t.name in ENGINEERING_TOOLS]
+        logger.info(f"Engineering role {role}: filtered to {len(tools)} tools")
     logger.info(f"Loaded {len(tools)} tools for agent")
-    # Log tool names for debugging
     tool_names = [t.name for t in tools]
     logger.info(f"Tool names: {tool_names}")
 

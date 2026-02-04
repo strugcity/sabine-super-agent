@@ -1958,6 +1958,39 @@ def _task_requires_tool_execution(payload: dict) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# LLM-call rate limiter
+# ---------------------------------------------------------------------------
+# The org-level input-token quota is shared across every concurrent call.
+# Even after prompt / tool trimming, firing N tasks simultaneously can still
+# saturate the per-minute bucket.  This semaphore + minimum-interval guard
+# stagger outbound LLM calls so that concurrent task dispatches don't all
+# hit the API in the same second.
+#
+# Semaphore value of 2  →  at most 2 calls in flight at once.
+# _MIN_LLM_CALL_INTERVAL  →  at least 2 s between any two calls leaving
+#                              this process, regardless of concurrency.
+# ---------------------------------------------------------------------------
+import time as _time
+
+_llm_semaphore = asyncio.Semaphore(2)
+_last_llm_call_time: float = 0.0
+_MIN_LLM_CALL_INTERVAL: float = 2.0  # seconds
+
+
+async def _rate_limited_run_agent(**kwargs):
+    """Thin wrapper around run_agent that enforces the inter-call interval."""
+    global _last_llm_call_time
+    async with _llm_semaphore:
+        now = _time.time()
+        wait = _MIN_LLM_CALL_INTERVAL - (now - _last_llm_call_time)
+        if wait > 0:
+            logger.debug(f"Rate limiter: sleeping {wait:.2f}s before LLM call")
+            await asyncio.sleep(wait)
+        _last_llm_call_time = _time.time()
+        return await run_agent(**kwargs)
+
+
 async def _dispatch_task(task: Task):
     """
     Dispatch callback for auto-dispatch after task completion.
@@ -2017,7 +2050,12 @@ async def _run_task_agent(task: Task):
             message = f"Execute task: {task.payload}"
 
         # === CONTEXT PROPAGATION ===
-        # Fetch results from parent tasks (dependencies) and include as context
+        # Fetch results from parent tasks (dependencies) and include as context.
+        # Each parent output is capped individually and the whole block is capped
+        # to keep the user-message portion of the input well under rate-limit budgets.
+        MAX_PER_PARENT_CHARS = 1500
+        MAX_PARENT_CONTEXT_CHARS = 3000
+
         parent_context = ""
         if task.depends_on and len(task.depends_on) > 0:
             logger.info(f"Task {task.id} has {len(task.depends_on)} parent dependencies - fetching context")
@@ -2028,6 +2066,9 @@ async def _run_task_agent(task: Task):
                 if parent_task and parent_task.result:
                     parent_response = parent_task.result.get("response", "")
                     if parent_response:
+                        if len(parent_response) > MAX_PER_PARENT_CHARS:
+                            logger.info(f"  - Truncating parent {parent_id} output: {len(parent_response)} → {MAX_PER_PARENT_CHARS} chars")
+                            parent_response = parent_response[:MAX_PER_PARENT_CHARS] + f"\n[...truncated, original {len(parent_response)} chars]"
                         parent_results.append({
                             "task_id": str(parent_id),
                             "role": parent_task.role,
@@ -2046,6 +2087,11 @@ async def _run_task_agent(task: Task):
 
                 parent_context += "=== END OF PREVIOUS TASK CONTEXT ===\n\n"
                 parent_context += "Now, here is YOUR task:\n\n"
+
+                # Final hard cap on the assembled block
+                if len(parent_context) > MAX_PARENT_CONTEXT_CHARS:
+                    logger.info(f"Truncating total parent context: {len(parent_context)} → {MAX_PARENT_CONTEXT_CHARS} chars")
+                    parent_context = parent_context[:MAX_PARENT_CONTEXT_CHARS] + "\n[...parent context truncated]\n\nNow, here is YOUR task:\n\n"
 
                 logger.info(f"Built parent context ({len(parent_context)} chars) from {len(parent_results)} tasks")
 
@@ -2087,8 +2133,10 @@ DO NOT use any other repository. This is enforced by the orchestration system.
             details=message[:200] if len(message) > 200 else message
         )
 
-        # Run the agent with the task's role (using full_message which includes parent context)
-        result = await run_agent(
+        # Run the agent with the task's role (using full_message which includes parent context).
+        # Goes through _rate_limited_run_agent to stagger concurrent LLM calls
+        # and stay within the org input-token-per-minute quota.
+        result = await _rate_limited_run_agent(
             user_id=user_id,
             session_id=f"task-{task.id}",
             user_message=full_message,
