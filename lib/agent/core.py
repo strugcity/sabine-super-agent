@@ -32,6 +32,9 @@ from supabase import create_client, Client
 
 from .registry import get_all_tools
 from .models import RoleManifest
+from .model_router import get_model_router, RoutingDecision
+from .llm_config import ModelProvider
+from .providers import get_provider
 
 logger = logging.getLogger(__name__)
 
@@ -951,26 +954,31 @@ def get_context_hash(deep_context: Dict[str, Any]) -> str:
 async def create_agent(
     user_id: str,
     session_id: str,
-    model_name: str = "claude-sonnet-4-20250514",
+    model_name: str = None,  # Now optional - router decides if not specified
     enable_caching: bool = True,
-    role: Optional[str] = None
+    role: Optional[str] = None,
+    use_hybrid_routing: bool = True,  # Enable hybrid LLM routing
+    task_payload: Optional[Dict[str, Any]] = None,  # For complexity analysis
 ) -> tuple[Any, Dict[str, Any]]:
     """
-    Create a Personal Super Agent instance with full context.
+    Create a Personal Super Agent instance with intelligent model routing.
 
     This function:
     1. Loads all available tools (local + MCP)
     2. Loads deep context for the user
     3. Loads role-specific persona if provided
-    4. Builds the system prompt (with caching support)
-    5. Creates a LangGraph ReAct agent
+    4. Routes to appropriate model tier (if hybrid routing enabled)
+    5. Builds the system prompt (with caching support for Anthropic)
+    6. Creates a LangGraph ReAct agent
 
     Args:
         user_id: The user's UUID
         session_id: The conversation session ID
-        model_name: The Anthropic model to use (default: Claude Sonnet for reliable tool use)
+        model_name: Override model (default: None, let router decide)
         enable_caching: Whether to enable prompt caching (default: True)
         role: Optional role ID for specialized persona (e.g., "backend-architect-sabine")
+        use_hybrid_routing: Whether to use hybrid LLM routing (default: True)
+        task_payload: Optional task payload for complexity analysis
 
     Returns:
         Tuple of (agent, deep_context)
@@ -985,30 +993,99 @@ async def create_agent(
     tool_names = [t.name for t in tools]
     logger.info(f"Tool names: {tool_names}")
 
+    # Determine tool requirements
+    requires_tools = len(tools) > 0
+
     # Load deep context
     deep_context = await load_deep_context(user_id)
     context_hash = get_context_hash(deep_context)
     logger.info(f"Loaded deep context for user {user_id} (hash: {context_hash})")
 
     # Store role in deep_context for tracking
+    role_manifest = None
     if role:
         deep_context["_role"] = role
         role_manifest = load_role_manifest(role)
         if role_manifest:
             deep_context["_role_title"] = role_manifest.title
 
+    # =========================================================================
+    # Model Routing
+    # =========================================================================
+    if use_hybrid_routing and model_name is None:
+        # Use intelligent model routing based on role and task
+        router = get_model_router()
+        routing_decision = router.route(
+            role=role,
+            role_manifest=role_manifest,
+            task_payload=task_payload,
+            requires_tools=requires_tools,
+        )
+
+        model_config = routing_decision.model_config
+        selected_model = model_config.model_id
+        selected_provider = model_config.provider
+
+        logger.info(
+            f"Model routing: {model_config.display_name} "
+            f"(tier={routing_decision.tier.value}, reason={routing_decision.reason})"
+        )
+
+        # Store routing info in deep_context
+        deep_context["_routing"] = {
+            "model": selected_model,
+            "model_key": next(
+                (k for k, v in __import__('lib.agent.llm_config', fromlist=['MODEL_REGISTRY']).MODEL_REGISTRY.items()
+                 if v.model_id == selected_model),
+                None
+            ),
+            "provider": selected_provider.value,
+            "tier": routing_decision.tier.value,
+            "reason": routing_decision.reason,
+            "fallback_chain": routing_decision.fallback_chain,
+        }
+
+        # Create LLM using provider adapter
+        provider = get_provider(selected_provider)
+        max_tokens = model_config.max_tokens
+
+        llm = provider.create_llm(
+            config=model_config,
+            temperature=0.7,
+            max_tokens=max_tokens,
+        )
+
+        # Prompt caching only works with Anthropic
+        caching_enabled = enable_caching and selected_provider == ModelProvider.ANTHROPIC
+
+    else:
+        # Use legacy behavior: explicit model_name or default to Claude Sonnet
+        if model_name is None:
+            model_name = "claude-sonnet-4-20250514"
+
+        selected_provider = ModelProvider.ANTHROPIC
+        logger.info(f"Using explicit model: {model_name} (hybrid routing disabled)")
+
+        deep_context["_routing"] = {
+            "model": model_name,
+            "provider": "anthropic",
+            "tier": "premium",
+            "reason": "Explicit model_name or hybrid routing disabled",
+            "fallback_chain": ["claude-sonnet"],
+        }
+
+        llm = ChatAnthropic(
+            model=model_name,
+            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+            temperature=0.7,
+            max_tokens=4096
+        )
+
+        caching_enabled = enable_caching
+
     # Build system prompt components (with role injection if provided)
     static_prompt = build_static_context(deep_context, role=role)
     dynamic_prompt = build_dynamic_context(deep_context)
-
-    # Create LLM with caching support
-    # Note: We use model_kwargs to pass extra parameters if needed
-    llm = ChatAnthropic(
-        model=model_name,
-        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-        temperature=0.7,
-        max_tokens=4096
-    )
 
     # Create ReAct agent with system prompt
     # Combine static + dynamic for the full system message
@@ -1024,10 +1101,16 @@ async def create_agent(
     deep_context["_cache_info"] = {
         "context_hash": context_hash,
         "static_tokens_approx": len(static_prompt) // 4,  # Rough estimate
-        "caching_enabled": enable_caching
+        "caching_enabled": caching_enabled,
+        "caching_note": "Prompt caching only available with Anthropic provider" if not caching_enabled and enable_caching else None,
     }
 
-    logger.info(f"Agent created (caching: {enable_caching}, context_hash: {context_hash})")
+    provider_info = deep_context.get("_routing", {}).get("provider", "anthropic")
+    tier_info = deep_context.get("_routing", {}).get("tier", "premium")
+    logger.info(
+        f"Agent created (provider: {provider_info}, tier: {tier_info}, "
+        f"caching: {caching_enabled}, context_hash: {context_hash})"
+    )
 
     return agent, deep_context
 
