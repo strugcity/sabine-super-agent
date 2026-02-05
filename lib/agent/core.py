@@ -1026,10 +1026,14 @@ async def create_agent(
         selected_model = model_config.model_id
         selected_provider = model_config.provider
 
+        # Log routing decision prominently for cost tracking
         logger.info(
-            f"Model routing: {model_config.display_name} "
-            f"(tier={routing_decision.tier.value}, reason={routing_decision.reason})"
+            f"[ROUTING] >>> Using {model_config.display_name} | "
+            f"Tier: {routing_decision.tier.value.upper()} | "
+            f"Provider: {selected_provider.value} | "
+            f"Cost: ~${model_config.cost_per_1m_input}/M tokens"
         )
+        logger.info(f"[ROUTING] Reason: {routing_decision.reason}")
 
         # Store routing info in deep_context
         deep_context["_routing"] = {
