@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, TypedDict, Tuple
 
+import pytz
+
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import StructuredTool
@@ -32,6 +34,14 @@ from .registry import get_all_tools
 from .models import RoleManifest
 
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# Timezone Configuration
+# =============================================================================
+
+# User's timezone - US Central (consistent with other components)
+SCHEDULER_TIMEZONE = os.getenv("SCHEDULER_TIMEZONE", "America/Chicago")
+USER_TIMEZONE = pytz.timezone(SCHEDULER_TIMEZONE)
 
 
 # =============================================================================
@@ -871,7 +881,7 @@ def build_dynamic_context(deep_context: Dict[str, Any]) -> str:
     Build the DYNAMIC portion of system prompt (not cached).
 
     This content changes frequently and should NOT be cached:
-    - Current date/time
+    - Current date/time (in user's timezone)
     - Recent memories (may change between calls)
 
     Args:
@@ -882,12 +892,17 @@ def build_dynamic_context(deep_context: Dict[str, Any]) -> str:
     """
     memories = deep_context.get("recent_memories", [])
 
+    # Get current time in user's timezone (US Central)
+    now_utc = datetime.now(pytz.UTC)
+    now_local = now_utc.astimezone(USER_TIMEZONE)
+
     prompt = f"""
 
 # CURRENT SESSION CONTEXT
 
-Current date: {datetime.now().strftime("%A, %B %d, %Y")}
-Current time: {datetime.now().strftime("%I:%M %p")}
+**Timezone: US Central ({SCHEDULER_TIMEZONE})**
+Current date: {now_local.strftime("%A, %B %d, %Y")}
+Current time: {now_local.strftime("%I:%M %p %Z")}
 """
 
     # Inject recent memories (these can change frequently)
