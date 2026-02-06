@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Task cancellation states (`cancelled_failed`, `cancelled_in_progress`, `cancelled_other`) and approval metadata fields for the task queue.
+- Manual requeue operation that resets tasks to `queued` across statuses.
+- Tests for task approval metadata parsing and status handling.
+- Migrations to extend task status constraints and add approval fields.
+
+### Changed
+- Cancel endpoint now accepts a JSON payload with `cancel_status` and `previous_status` metadata.
+- Dependency validation treats cancelled tasks as failed dependencies.
+
 ## [0.2.0] - 2026-01-27
 
 ### Added

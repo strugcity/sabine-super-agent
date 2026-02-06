@@ -212,6 +212,25 @@ class MemoryQueryRequest(BaseModel):
     entity_limit: Optional[int] = Field(
         default=10, description="Max entities to retrieve")
 
+class CancelTaskRequest(BaseModel):
+    """Request body for /tasks/{task_id}/cancel endpoint."""
+    reason: str = Field(..., description="Reason for cancellation (audit trail)")
+    cancel_status: Optional[str] = Field(
+        default=None,
+        description="Explicit cancel status (cancelled_failed|cancelled_in_progress|cancelled_other)"
+    )
+    previous_status: Optional[str] = Field(
+        default=None,
+        description="Status observed by the caller at time of cancellation"
+    )
+    cascade: bool = Field(default=True, description="Cancel dependent queued tasks")
+
+class RequeueTaskRequest(BaseModel):
+    """Request body for /tasks/{task_id}/requeue endpoint."""
+    reason: Optional[str] = Field(default=None, description="Optional audit reason")
+    clear_error: bool = Field(default=True, description="Clear error fields on requeue")
+    clear_result: bool = Field(default=True, description="Clear result fields on requeue")
+
 
 # =============================================================================
 # Endpoints
@@ -1016,7 +1035,8 @@ async def rerun_task(
 @app.post("/tasks/{task_id}/cancel")
 async def cancel_task(
     task_id: str,
-    reason: str,
+    request: Optional[CancelTaskRequest] = None,
+    reason: Optional[str] = None,
     cascade: bool = True,
     _: bool = Depends(verify_api_key)
 ):
@@ -1030,6 +1050,7 @@ async def cancel_task(
 
     Args:
         task_id: The task ID to cancel
+        request: Optional JSON body with reason, cancel_status, previous_status, cascade
         reason: Required reason for audit trail (why is this being cancelled?)
         cascade: If True, also cancel dependent queued tasks (default: True)
     """
@@ -1037,7 +1058,18 @@ async def cancel_task(
         from uuid import UUID
 
         service = get_task_queue_service()
-        result = await service.cancel_task(UUID(task_id), reason=reason, cascade=cascade)
+        if request is None:
+            if not reason:
+                raise HTTPException(status_code=400, detail="Reason is required for cancellation")
+            request = CancelTaskRequest(reason=reason, cascade=cascade)
+
+        result = await service.cancel_task(
+            UUID(task_id),
+            reason=request.reason,
+            cancel_status=request.cancel_status,
+            previous_status=request.previous_status,
+            cascade=request.cascade
+        )
 
         if not result.success:
             error_msg = result.error.message if result.error else "Unknown error"
@@ -1197,19 +1229,29 @@ async def update_task_heartbeat(
 @app.post("/tasks/{task_id}/requeue")
 async def requeue_stuck_task(
     task_id: str,
+    request: Optional[RequeueTaskRequest] = None,
     error: str = "Manually requeued",
     _: bool = Depends(verify_api_key)
 ):
     """
     Requeue a stuck task (reset to queued status).
 
-    Only works for tasks currently in 'in_progress' status.
+    Accepts an optional JSON body with reason, clear_error, and clear_result fields.
+    Falls back to the legacy query-param interface when no body is provided.
     """
     try:
         from uuid import UUID
 
         service = get_task_queue_service()
-        result = await service.requeue_stuck_task(UUID(task_id), error=error)
+        if request is None:
+            request = RequeueTaskRequest(reason=error)
+
+        result = await service.requeue_task(
+            UUID(task_id),
+            reason=request.reason,
+            clear_error=request.clear_error,
+            clear_result=request.clear_result
+        )
 
         if not result.success:
             error_msg = result.error.message if result.error else "Unknown error"

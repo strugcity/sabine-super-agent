@@ -65,8 +65,12 @@ class TaskStatus(str, Enum):
     """Valid task statuses."""
     QUEUED = "queued"
     IN_PROGRESS = "in_progress"
+    AWAITING_APPROVAL = "awaiting_approval"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED_FAILED = "cancelled_failed"
+    CANCELLED_IN_PROGRESS = "cancelled_in_progress"
+    CANCELLED_OTHER = "cancelled_other"
 
 
 # =============================================================================
@@ -87,6 +91,11 @@ class Task(BaseModel):
     updated_at: datetime
     created_by: Optional[str] = None
     session_id: Optional[str] = None
+    # Approval fields
+    approval_required: bool = False
+    approval_reason: Optional[str] = None
+    approved_by: Optional[str] = None
+    approved_at: Optional[datetime] = None
     # Retry mechanism fields
     retry_count: int = 0
     max_retries: int = 3
@@ -109,6 +118,8 @@ class CreateTaskRequest(BaseModel):
     priority: int = 0
     created_by: Optional[str] = None
     session_id: Optional[str] = None
+    approval_required: bool = False
+    approval_reason: Optional[str] = None
     max_retries: int = 3  # Configurable max retries (default: 3)
     timeout_seconds: int = 1800  # Configurable timeout (default: 30 minutes)
 
@@ -163,6 +174,8 @@ class TaskQueueService:
         priority: int = 0,
         created_by: Optional[str] = None,
         session_id: Optional[str] = None,
+        approval_required: bool = False,
+        approval_reason: Optional[str] = None,
         max_retries: int = 3,
         timeout_seconds: int = 1800
     ) -> UUID:
@@ -198,6 +211,8 @@ class TaskQueueService:
             "depends_on": [str(dep) for dep in depends_on],  # Convert UUIDs to strings
             "created_by": created_by,
             "session_id": session_id,
+            "approval_required": approval_required,
+            "approval_reason": approval_reason,
             "max_retries": max_retries,
             "retry_count": 0,
             "is_retryable": True,
@@ -715,7 +730,15 @@ class TaskQueueService:
             task = task_result.data["task"]
 
             # Check if task is already in a terminal state
-            if not force and task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+            terminal_statuses = (
+                TaskStatus.COMPLETED,
+                TaskStatus.FAILED,
+                TaskStatus.CANCELLED_FAILED,
+                TaskStatus.CANCELLED_IN_PROGRESS,
+                TaskStatus.CANCELLED_OTHER,
+            )
+
+            if not force and task.status in terminal_statuses:
                 return OperationResult.fail(
                     TaskQueueError(
                         message=f"Cannot fail task: already in terminal state '{task.status}'",
@@ -998,6 +1021,10 @@ class TaskQueueService:
             updated_at=data["updated_at"],
             created_by=data.get("created_by"),
             session_id=data.get("session_id"),
+            approval_required=data.get("approval_required", False),
+            approval_reason=data.get("approval_reason"),
+            approved_by=data.get("approved_by"),
+            approved_at=data.get("approved_at"),
             # Retry mechanism fields
             retry_count=data.get("retry_count", 0),
             max_retries=data.get("max_retries", 3),
@@ -1178,10 +1205,17 @@ class TaskQueueService:
                     )
 
             # Check 2: No failed direct dependencies
+            failed_statuses = {
+                TaskStatus.FAILED.value,
+                TaskStatus.CANCELLED_FAILED.value,
+                TaskStatus.CANCELLED_IN_PROGRESS.value,
+                TaskStatus.CANCELLED_OTHER.value,
+            }
+
             for dep_id in depends_on:
                 dep_id_str = str(dep_id)
                 task_data = found_tasks.get(dep_id_str)
-                if task_data and task_data["status"] == TaskStatus.FAILED.value:
+                if task_data and task_data["status"] in failed_statuses:
                     return OperationResult.fail(
                         FailedDependencyError(
                             task_id=str(new_task_id) if new_task_id else None,
@@ -1346,6 +1380,13 @@ class TaskQueueService:
             blocking_count = 0
             all_met = True
 
+            failed_statuses = {
+                TaskStatus.FAILED.value,
+                TaskStatus.CANCELLED_FAILED.value,
+                TaskStatus.CANCELLED_IN_PROGRESS.value,
+                TaskStatus.CANCELLED_OTHER.value,
+            }
+
             for dep_id in task.depends_on:
                 dep_id_str = str(dep_id)
                 dep_data = next(
@@ -1364,7 +1405,7 @@ class TaskQueueService:
                         "status": dep_data["status"],
                         "role": dep_data["role"],
                         "is_blocking": is_blocking,
-                        "error": dep_data.get("error") if dep_data["status"] == TaskStatus.FAILED.value else None,
+                        "error": dep_data.get("error") if dep_data["status"] in failed_statuses else None,
                         "created_at": dep_data["created_at"]
                     })
                 else:
@@ -1905,6 +1946,99 @@ class TaskQueueService:
     # Manual Recovery Operations
     # =========================================================================
 
+    async def requeue_task(
+        self,
+        task_id: UUID,
+        reason: Optional[str] = None,
+        clear_error: bool = True,
+        clear_result: bool = True
+    ) -> OperationResult:
+        """
+        Manually requeue a task regardless of its current status.
+
+        Resets the task to 'queued' so it will be picked up again by the
+        next poll.  Unlike ``requeue_stuck_task``, this works from *any*
+        status (failed, cancelled_*, completed, etc.).
+
+        Args:
+            task_id: The task to requeue.
+            reason: Optional audit reason.
+            clear_error: Clear error/error_type fields (default True).
+            clear_result: Clear the result field (default True).
+
+        Returns:
+            OperationResult with previous/new status.
+        """
+        if not self.client:
+            return OperationResult.fail(
+                MissingCredentialsError(
+                    service="Supabase",
+                    required_keys=["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]
+                )
+            )
+        try:
+            task_result = await self.get_task_result(task_id)
+            if not task_result.success:
+                return task_result
+
+            task = task_result.data["task"]
+
+            if task.status == TaskStatus.QUEUED:
+                return OperationResult.ok({
+                    "task_id": str(task_id),
+                    "previous_status": TaskStatus.QUEUED.value,
+                    "new_status": TaskStatus.QUEUED.value,
+                    "message": "Task already queued"
+                })
+
+            update_data = {
+                "status": TaskStatus.QUEUED.value,
+                "started_at": None,
+                "last_heartbeat_at": None,
+                "completed_at": None,
+                "duration_ms": None,
+                "next_retry_at": None,
+            }
+
+            if clear_error:
+                update_data["error"] = None
+                update_data["error_type"] = None
+
+            if clear_result:
+                update_data["result"] = None
+
+            response = self.client.table(TASK_QUEUE_TABLE).update(
+                update_data
+            ).eq("id", str(task_id)).execute()
+
+            if response.data and len(response.data) > 0:
+                logger.info(
+                    f"Requeued task {task_id} from {task.status}"
+                    f"{': ' + reason.strip() if reason else ''}"
+                )
+                return OperationResult.ok({
+                    "task_id": str(task_id),
+                    "previous_status": task.status.value if hasattr(task.status, 'value') else str(task.status),
+                    "new_status": TaskStatus.QUEUED.value,
+                    "reason": reason.strip() if reason else None
+                })
+
+            return OperationResult.fail(
+                TaskNotFoundError(task_id=str(task_id))
+            )
+
+        except Exception as e:
+            logger.error(f"Error requeuing task {task_id}: {e}")
+            return OperationResult.fail(
+                DatabaseError(
+                    message=f"Failed to requeue task: {str(e)}",
+                    operation="update",
+                    table=TASK_QUEUE_TABLE,
+                    context={"task_id": str(task_id)},
+                    original_error=e,
+                )
+            )
+
     async def force_retry_task(
         self,
         task_id: UUID,
@@ -2096,6 +2230,8 @@ class TaskQueueService:
         self,
         task_id: UUID,
         reason: str,
+        cancel_status: Optional[str] = None,
+        previous_status: Optional[str] = None,
         cascade: bool = True
     ) -> OperationResult:
         """
@@ -2138,21 +2274,33 @@ class TaskQueueService:
 
             task = task_result.data["task"]
 
-            # Validate task is in QUEUED status
-            if task.status != TaskStatus.QUEUED:
-                return OperationResult.fail(
-                    TaskQueueError(
-                        message=f"Cannot cancel task: status is '{task.status}', expected 'queued'",
-                        operation="cancel",
-                        status_code=409
+            # Determine the target cancel status
+            if cancel_status:
+                try:
+                    target_status = TaskStatus(cancel_status)
+                except ValueError:
+                    return OperationResult.fail(
+                        TaskQueueError(
+                            message=f"Invalid cancel_status: '{cancel_status}'",
+                            operation="cancel",
+                            status_code=400
+                        )
                     )
-                )
+            else:
+                # Derive from current task status
+                status_map = {
+                    TaskStatus.QUEUED: TaskStatus.CANCELLED_OTHER,
+                    TaskStatus.IN_PROGRESS: TaskStatus.CANCELLED_IN_PROGRESS,
+                    TaskStatus.FAILED: TaskStatus.CANCELLED_FAILED,
+                    TaskStatus.AWAITING_APPROVAL: TaskStatus.CANCELLED_OTHER,
+                }
+                target_status = status_map.get(task.status, TaskStatus.CANCELLED_OTHER)
 
-            # Mark as failed with cancellation message
+            # Mark with cancellation status
             error_msg = f"Cancelled: {reason.strip()}"
 
             response = self.client.table(TASK_QUEUE_TABLE).update({
-                "status": TaskStatus.FAILED.value,
+                "status": target_status.value,
                 "error": error_msg,
                 "is_retryable": False  # Cancelled tasks should not be auto-retried
             }).eq("id", str(task_id)).execute()
@@ -2188,8 +2336,8 @@ class TaskQueueService:
 
             return OperationResult.ok({
                 "task_id": str(task_id),
-                "previous_status": "queued",
-                "new_status": "failed",
+                "previous_status": task.status.value if hasattr(task.status, 'value') else str(task.status),
+                "new_status": target_status.value,
                 "reason": reason.strip(),
                 "cascaded_count": cascaded_count,
                 "cascaded_task_ids": cascaded_task_ids
