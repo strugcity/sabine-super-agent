@@ -225,6 +225,17 @@ ngrok http 3000
 - **[Twilio Integration Guide](docs/TWILIO_INTEGRATION.md)** - Complete guide for SMS setup
 - **[Agent Core README](lib/agent/README.md)** - Deep dive into agent architecture
 - **[Supabase README](supabase/README.md)** - Database schema documentation
+- **[Task Execution Flow](TASK_EXECUTION_FLOW.md)** - How Dream Team task orchestration works
+- **[Task Execution Summary](TASK_EXECUTION_SUMMARY.md)** - Quick reference for task dispatch
+
+### 🔍 Understanding Task Execution (Dream Team)
+
+The Dream Team orchestration system manages complex multi-agent workflows. Key findings:
+
+- Tasks require **manual dispatch** via `POST /tasks/dispatch` - there's no automatic polling by default
+- Tasks transition: `queued` → `in_progress` (when dispatched) → `completed`/`failed`
+- Completed tasks auto-dispatch dependent tasks in the chain
+- See [TASK_EXECUTION_SUMMARY.md](TASK_EXECUTION_SUMMARY.md) for root cause analysis and fix recommendations
 
 ## 🧪 Testing
 
