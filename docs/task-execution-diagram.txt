@@ -1,0 +1,148 @@
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                    SABINE SUPER AGENT - TASK EXECUTION FLOW              ║
+║                         (Current State - Feb 2026)                        ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          TASK CREATION                                   │
+└─────────────────────────────────────────────────────────────────────────┘
+
+  Mission Control UI / API Client
+          │
+          │ POST /tasks
+          │ {role: "SABINE_ARCHITECT", payload: {...}}
+          │
+          v
+  ┌────────────────────┐
+  │  task_queue table  │
+  │  status: "queued"  │
+  └────────────────────┘
+          │
+          │ ⚠️  CRITICAL GAP IDENTIFIED ⚠️
+          │
+          │ NO AUTOMATIC DISPATCHER EXISTS
+          │ Task sits here forever unless...
+          │
+          v
+    [ WAITING... ]
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    MANUAL DISPATCH REQUIRED                              │
+└─────────────────────────────────────────────────────────────────────────┘
+
+  ??? WHO CALLS THIS ???
+          │
+          │ POST /tasks/dispatch
+          │ (Manual trigger needed)
+          │
+          v
+  ┌─────────────────────────────────┐
+  │ claim_unblocked_tasks_atomic()  │
+  │                                 │
+  │ SELECT ... FOR UPDATE           │
+  │ SKIP LOCKED                     │
+  │                                 │
+  │ (Postgres atomic lock)          │
+  └─────────────────────────────────┘
+          │
+          │ status: queued → in_progress
+          │
+          v
+  ┌────────────────────────────────┐
+  │ background_tasks.add_task()    │
+  │ (_run_task_agent)              │
+  └────────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        AGENT EXECUTION                                   │
+└─────────────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────┐
+  │  _run_task_agent()   │
+  │  lib/agent/server.py │
+  │  Line 2031           │
+  └──────────┬───────────┘
+             │
+             │ 1. Extract message from payload
+             │ 2. Fetch parent task context (dependencies)
+             │ 3. Inject repository targeting
+             │ 4. Send "task_started" to Slack
+             │
+             v
+  ┌──────────────────────┐
+  │   run_agent()        │
+  │   lib/agent/core.py  │
+  └──────────┬───────────┘
+             │
+             │ Execute SABINE_ARCHITECT agent
+             │ • Load tools
+             │ • Stream to Claude API
+             │ • Execute tool calls
+             │
+             v
+  ┌─────────────────────────────────────────┐
+  │         Agent Performs Work             │
+  │  • GitHub operations (create issues)    │
+  │  • File operations                      │
+  │  • Analysis and planning                │
+  └─────────────────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      COMPLETION & AUTO-DISPATCH                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+             │
+             v
+  ┌──────────────────────┐
+  │  complete_task()     │
+  │  Status: completed   │
+  └──────────┬───────────┘
+             │
+             │ Triggers auto-dispatch
+             │
+             v
+  ┌──────────────────────────┐
+  │   _auto_dispatch()       │
+  │                          │
+  │ Find dependent tasks     │
+  │ whose deps are now met   │
+  └──────────┬───────────────┘
+             │
+             v
+  ┌────────────────────────────────────┐
+  │  Dispatch dependent tasks          │
+  │  (calls _dispatch_task callback)   │
+  │                                    │
+  │  Creates chain reaction            │
+  └────────────────────────────────────┘
+
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                            ROOT CAUSE                                     ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+  ❌ NO automatic polling/worker process exists
+  ❌ /tasks/dispatch must be called manually  
+  ❌ First task in chain never executes without external trigger
+  ✅ Dependent tasks auto-dispatch after parent completes
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                               FIX                                         ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+  Add to lib/agent/server.py startup_event():
+
+    asyncio.create_task(task_dispatcher_loop())
+
+    async def task_dispatcher_loop():
+        while True:
+            claimed = await service.claim_unblocked_tasks_atomic(max_tasks=5)
+            for task in claimed:
+                asyncio.create_task(_run_task_agent(task))
+            await asyncio.sleep(30)  # Poll every 30 seconds
+
+  ✅ This fixes the "tasks stuck in queued" issue
+  ✅ No other code changes needed
