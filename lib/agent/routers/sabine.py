@@ -118,7 +118,8 @@ async def invoke_agent(
                 ingest_user_message,
                 user_id=UUID(request.user_id),
                 content=request.message,  # Ingest original message, not enhanced
-                source="api"
+                source="api",
+                role="assistant"
             )
             logger.info("✓ Queued message ingestion as background task")
 

@@ -59,7 +59,8 @@ async def search_similar_memories(
     query_embedding: List[float],
     user_id: Optional[UUID] = None,
     threshold: float = DEFAULT_MEMORY_THRESHOLD,
-    limit: int = DEFAULT_MEMORY_COUNT
+    limit: int = DEFAULT_MEMORY_COUNT,
+    role_filter: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """
     Search for memories similar to the query embedding using pgvector.
@@ -71,6 +72,9 @@ async def search_similar_memories(
         user_id: Optional user UUID for filtering (multi-tenancy)
         threshold: Similarity threshold (0-1, higher = more similar)
         limit: Maximum number of results
+        role_filter: Optional role filter (e.g., "assistant", "backend-architect-sabine").
+                     If provided, only returns memories from this role (or legacy memories with no role).
+                     If None, returns all memories.
 
     Returns:
         List of memory dictionaries with similarity scores
@@ -79,7 +83,8 @@ async def search_similar_memories(
         >>> memories = await search_similar_memories(
         ...     query_embedding=[0.1, 0.2, ...],
         ...     threshold=0.7,
-        ...     limit=5
+        ...     limit=5,
+        ...     role_filter="assistant"
         ... )
         >>> memories[0]['similarity']
         0.85
@@ -97,7 +102,8 @@ async def search_similar_memories(
                 "query_embedding": pgvector_embedding,
                 "match_threshold": threshold,
                 "match_count": limit,
-                "user_id_filter": str(user_id) if user_id else None
+                "user_id_filter": str(user_id) if user_id else None,
+                "role_filter": role_filter
             }
         ).execute()
 
@@ -380,7 +386,8 @@ async def retrieve_context(
     query: str,
     memory_threshold: float = DEFAULT_MEMORY_THRESHOLD,
     memory_limit: int = DEFAULT_MEMORY_COUNT,
-    entity_limit: int = DEFAULT_ENTITY_LIMIT
+    entity_limit: int = DEFAULT_ENTITY_LIMIT,
+    role_filter: str = "assistant"
 ) -> str:
     """
     Retrieve relevant context for a user query by blending vector memories
@@ -398,6 +405,9 @@ async def retrieve_context(
         memory_threshold: Similarity threshold for memory search (0-1)
         memory_limit: Max memories to retrieve
         entity_limit: Max entities to retrieve
+        role_filter: Filter memories by agent role (e.g., "assistant", "backend-architect-sabine").
+                     Defaults to "assistant". Memories without a role field (legacy) are included
+                     for backward compatibility.
 
     Returns:
         Formatted context string ready for LLM system prompt
@@ -405,7 +415,8 @@ async def retrieve_context(
     Example:
         >>> context = await retrieve_context(
         ...     user_id=UUID("..."),
-        ...     query="What's happening with the PriceSpider contract?"
+        ...     query="What's happening with the PriceSpider contract?",
+        ...     role_filter="assistant"
         ... )
         >>> print(context)
         [CONTEXT FOR: "What's happening with the PriceSpider contract?"]
@@ -436,7 +447,8 @@ async def retrieve_context(
             query_embedding=query_embedding,
             user_id=user_id,
             threshold=memory_threshold,
-            limit=memory_limit
+            limit=memory_limit,
+            role_filter=role_filter
         )
 
         # STEP 3: Extract keywords and search entities

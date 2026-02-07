@@ -426,7 +426,8 @@ async def store_memory(
 async def ingest_user_message(
     user_id: UUID,
     content: str,
-    source: str = "api"
+    source: str = "api",
+    role: str = "assistant"
 ) -> Dict[str, Any]:
     """
     The complete ingestion pipeline - converts raw user input into structured knowledge.
@@ -441,6 +442,8 @@ async def ingest_user_message(
         user_id: UUID of the user (for future multi-tenancy)
         content: Raw message content
         source: Source identifier (sms, email, api, etc.)
+        role: Agent role that created this memory (e.g., "assistant", "backend-architect-sabine")
+              Used to filter memories by agent type during retrieval. Defaults to "assistant".
 
     Returns:
         Dict with ingestion summary:
@@ -456,7 +459,8 @@ async def ingest_user_message(
         >>> result = await ingest_user_message(
         ...     user_id=UUID("..."),
         ...     content="Baseball game moved to 5 PM Saturday",
-        ...     source="sms"
+        ...     source="sms",
+        ...     role="assistant"
         ... )
         >>> result["status"]
         'success'
@@ -524,7 +528,8 @@ async def ingest_user_message(
             "source": source,
             "timestamp": datetime.utcnow().isoformat(),
             "domain": extracted.domain.value,
-            "original_content": content[:500]  # Truncate for safety
+            "original_content": content[:500],  # Truncate for safety
+            "role": role
         }
 
         memory = await store_memory(
