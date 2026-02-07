@@ -393,6 +393,42 @@ def get_all_tools_sync() -> List[StructuredTool]:
     return asyncio.run(get_all_tools())
 
 
+async def get_scoped_tools(role: "AgentRole") -> List[StructuredTool]:
+    """
+    Get tools scoped to a specific agent role.
+
+    This function loads all tools and filters them based on the role's
+    allowed tool set as defined in tool_sets.py.
+
+    Args:
+        role: Agent role ("assistant" for Sabine, "coder" for Dream Team)
+
+    Returns:
+        List of StructuredTool objects allowed for the role
+
+    Raises:
+        ValueError: If an invalid role is provided
+
+    Example:
+        >>> tools = await get_scoped_tools("assistant")
+        >>> print(f"Sabine has {len(tools)} tools")
+    """
+    from .tool_sets import AgentRole, get_tool_names
+
+    # Get all available tools
+    all_tools = await get_all_tools()
+
+    # Get allowed tool names for this role
+    allowed_names = get_tool_names(role)
+
+    # Filter tools to only those allowed for this role
+    scoped_tools = [tool for tool in all_tools if tool.name in allowed_names]
+
+    logger.info(f"Scoped {len(scoped_tools)} tools for role '{role}' (from {len(all_tools)} total)")
+
+    return scoped_tools
+
+
 # =============================================================================
 # Registry Management
 # =============================================================================
