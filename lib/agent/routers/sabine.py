@@ -87,6 +87,18 @@ async def invoke_agent(
             # WAL failure should not block the request - log and continue
             logger.warning(f"WAL write failed (non-blocking): {wal_error}")
 
+        # Deprecation warnings for removed parameters
+        if hasattr(request, 'role') and request.role:
+            logger.warning(
+                f"Deprecation: 'role' parameter is no longer supported in /invoke endpoint. "
+                f"Sabine agent has no role. Ignoring role='{request.role}'"
+            )
+        if hasattr(request, 'use_caching') and request.use_caching:
+            logger.info(
+                f"Note: 'use_caching' parameter is handled internally by run_sabine_agent(). "
+                f"Explicit use_caching={request.use_caching} is no longer needed."
+            )
+
         # Run the Sabine agent (handles context retrieval internally)
         # Note: Sabine router now uses run_sabine_agent() which:
         # - Loads only Sabine tools (calendar, reminders, weather, custody)

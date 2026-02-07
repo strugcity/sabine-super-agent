@@ -104,6 +104,8 @@ async def run_task_agent(
         from .core import (
             load_role_manifest,
             create_react_agent_with_tools,
+            extract_tool_execution_details,
+            classify_agent_error,
         )
         
         logger.info(f"Running task agent for user {user_id}, session {session_id}, role: {role}")
@@ -192,123 +194,15 @@ The user has assigned you the following task. Execute it using the tools availab
         agent_messages = result.get("messages", [])
         logger.info(f"Agent returned {len(agent_messages)} messages")
         
-        # Track all tool calls and their results
-        tool_executions = []
-        tool_calls_detected = 0
-        tool_successes = 0
-        tool_failures = 0
-        
-        for i, msg in enumerate(agent_messages):
-            msg_type = type(msg).__name__
-            content_preview = ""
-            
-            # Check for ToolMessage (tool results)
-            if msg_type == "ToolMessage":
-                tool_name = getattr(msg, 'name', 'unknown')
-                tool_content = msg.content if hasattr(msg, 'content') else None
-                
-                # Parse tool result to determine success/failure
-                tool_status = "unknown"
-                tool_error = None
-                artifact_created = None
-                
-                if tool_content:
-                    # Try to parse as JSON to extract status
-                    try:
-                        import json
-                        if isinstance(tool_content, str):
-                            result_data = json.loads(tool_content)
-                        elif isinstance(tool_content, dict):
-                            result_data = tool_content
-                        else:
-                            result_data = {}
-                        
-                        # Check for status field
-                        if "status" in result_data:
-                            tool_status = result_data["status"]
-                            if tool_status == "success":
-                                tool_successes += 1
-                                # Extract artifact info if available
-                                if "file" in result_data:
-                                    artifact_created = result_data["file"].get("path") or result_data["file"].get("url")
-                                elif "issue" in result_data:
-                                    artifact_created = f"Issue #{result_data['issue'].get('number')}"
-                                elif "commit" in result_data:
-                                    artifact_created = f"Commit {result_data['commit'].get('sha', '')[:7]}"
-                            elif tool_status == "error":
-                                tool_failures += 1
-                                tool_error = result_data.get("error", "Unknown error")
-                        
-                        # Check for error field without status
-                        elif "error" in result_data:
-                            tool_status = "error"
-                            tool_failures += 1
-                            tool_error = result_data["error"]
-                        
-                        # Check for success indicators
-                        elif "success" in result_data:
-                            tool_status = "success" if result_data["success"] else "error"
-                            if tool_status == "success":
-                                tool_successes += 1
-                            else:
-                                tool_failures += 1
-                                tool_error = result_data.get("error", "Operation failed")
-                        
-                        else:
-                            # Assume success if no error indicators
-                            tool_status = "success"
-                            tool_successes += 1
-                    
-                    except (json.JSONDecodeError, TypeError):
-                        # If not JSON, check for error patterns in string
-                        content_str = str(tool_content).lower()
-                        if "error" in content_str or "failed" in content_str or "exception" in content_str:
-                            tool_status = "error"
-                            tool_failures += 1
-                            tool_error = str(tool_content)[:200]
-                        else:
-                            tool_status = "success"
-                            tool_successes += 1
-                
-                tool_executions.append({
-                    "type": "tool_result",
-                    "tool_name": tool_name,
-                    "tool_call_id": getattr(msg, 'tool_call_id', None),
-                    "status": tool_status,
-                    "error": tool_error,
-                    "artifact_created": artifact_created,
-                    "content_preview": str(tool_content)[:500] if tool_content else None
-                })
-                status_indicator = "OK" if tool_status == "success" else "FAIL"
-                content_preview = f"[TOOL_RESULT: {tool_name} - {status_indicator}]"
-            
-            elif hasattr(msg, 'content'):
-                if isinstance(msg.content, str):
-                    content_preview = msg.content[:100]
-                elif isinstance(msg.content, list):
-                    # Check for tool_use blocks in AIMessage
-                    for block in msg.content:
-                        if isinstance(block, dict) and block.get('type') == 'tool_use':
-                            tool_calls_detected += 1
-                            tool_name = block.get('name', 'unknown')
-                            tool_executions.append({
-                                "type": "tool_call",
-                                "tool_name": tool_name,
-                                "tool_call_id": block.get('id'),
-                                "input_preview": str(block.get('input', {}))[:200]
-                            })
-                            content_preview = f"[TOOL_USE: {tool_name}]"
-                    if not content_preview:
-                        content_preview = f"[list with {len(msg.content)} items]"
-                else:
-                    content_preview = str(msg.content)[:100]
-            
-            logger.debug(f"  Message {i}: [{msg_type}] {content_preview}")
-        
-        # Summarize tool executions
-        tool_names_used = list(set(t['tool_name'] for t in tool_executions if t['type'] == 'tool_call'))
-        artifacts_created = [t['artifact_created'] for t in tool_executions if t.get('artifact_created')]
-        failed_tools = [t for t in tool_executions if t.get('status') == 'error']
+        # Use shared helper to extract tool execution details
+        tool_details = extract_tool_execution_details(agent_messages)
+        tool_executions = tool_details["tool_executions"]
+        tool_calls_detected = tool_details["tool_calls_detected"]
+        tool_successes = tool_details["tool_successes"]
+        tool_failures = tool_details["tool_failures"]
+        tool_names_used = tool_details["tool_names_used"]
+        artifacts_created = tool_details["artifacts_created"]
+        failed_tools = tool_details["failed_tools"]
         
         logger.info(f"Tool calls detected: {tool_calls_detected}, Tools used: {tool_names_used}")
         logger.info(f"Tool results: {tool_successes} succeeded, {tool_failures} failed")
@@ -317,24 +211,10 @@ The user has assigned you the following task. Execute it using the tools availab
         if failed_tools:
             logger.warning(f"Failed tool calls: {[(t['tool_name'], t.get('error')) for t in failed_tools]}")
         
-        # === STEP 9: Persistent audit logging ===
-        # Log all tool executions to database for debugging and compliance
-        if tool_executions:
-            try:
-                from backend.services.audit_logging import log_tool_executions_batch
-                logged_count = await log_tool_executions_batch(
-                    executions=tool_executions,
-                    user_id=user_id,
-                    agent_role=role,
-                )
-                logger.info(f"Audit logging: {logged_count} tool executions logged to database")
-            except ImportError:
-                logger.debug("Audit logging service not available - skipping persistent logging")
-            except Exception as e:
-                # Don't let audit logging failures break the main flow
-                logger.warning(f"Audit logging failed (non-fatal): {e}")
+        # Note: Audit logging is handled by task_runner.py with task_id context
+        # This prevents double-logging and ensures task_id is included
         
-        # === STEP 10: Extract response ===
+        # === STEP 9: Extract response ===
         if agent_messages:
             last_message = agent_messages[-1]
             response_text = last_message.content if hasattr(last_message, "content") else str(last_message)
@@ -372,51 +252,16 @@ The user has assigned you the following task. Execute it using the tools availab
     except Exception as e:
         logger.error(f"Error running task agent: {e}", exc_info=True)
         
-        # Classify the error for better handling
-        error_type = "unknown"
-        error_category = "internal"
-        http_status = None
-        
-        error_str = str(e).lower()
-        error_class = type(e).__name__
-        
-        # Check for API-related errors (LLM, external services)
-        if "rate" in error_str and "limit" in error_str:
-            error_type = "rate_limited"
-            error_category = "external_service"
-            http_status = 429
-        elif "401" in error_str or "unauthorized" in error_str or "authentication" in error_str:
-            error_type = "auth_failed"
-            error_category = "authentication"
-            http_status = 401
-        elif "403" in error_str or "forbidden" in error_str or "permission" in error_str:
-            error_type = "permission_denied"
-            error_category = "authorization"
-            http_status = 403
-        elif "404" in error_str or "not found" in error_str:
-            error_type = "not_found"
-            error_category = "validation"
-            http_status = 404
-        elif "timeout" in error_str or "timed out" in error_str:
-            error_type = "timeout"
-            error_category = "external_service"
-            http_status = 504
-        elif "connection" in error_str or "network" in error_str:
-            error_type = "network_error"
-            error_category = "external_service"
-            http_status = 502
-        elif "validation" in error_str or "invalid" in error_str:
-            error_type = "validation_error"
-            error_category = "validation"
-            http_status = 400
+        # Use shared helper to classify the error
+        error_info = classify_agent_error(e)
         
         return {
             "success": False,
             "error": str(e),
-            "error_type": error_type,
-            "error_category": error_category,
-            "error_class": error_class,
-            "http_status": http_status,
+            "error_type": error_info["error_type"],
+            "error_category": error_info["error_category"],
+            "error_class": error_info["error_class"],
+            "http_status": error_info["http_status"],
             "user_id": user_id,
             "session_id": session_id,
             "role": role,

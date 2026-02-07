@@ -128,7 +128,8 @@ app.add_middleware(
 # Helper Functions
 # =============================================================================
 # Import task execution functions from task_runner module (Phase 2 refactoring)
-from lib.agent.task_runner import _task_requires_tool_execution, _dispatch_task, _run_task_agent
+# Only import what's needed by other modules - _task_requires_tool_execution is internal
+from lib.agent.task_runner import _dispatch_task, _run_task_agent
 
 
 from datetime import datetime, timezone
