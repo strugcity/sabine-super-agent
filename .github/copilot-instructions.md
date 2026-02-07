@@ -21,3 +21,9 @@
 
 4.  **Agent Protocol:**
     - If editing `gmail_handler.py`, ensure imports are lazy (inside functions) to avoid circular dependency loops with `server.py`.
+
+5.  **React/JSX (CRITICAL):**
+    - **NEVER use raw `"` or `'` or `{` or `}` or `>` characters inside JSX text content.** These violate the `react/no-unescaped-entities` ESLint rule and will break the production build.
+    - Use HTML entities instead: `&quot;` for `"`, `&apos;` for `'`, `&lbrace;` / `&rbrace;` for `{`/`}`, `&gt;` for `>`.
+    - Alternatively, wrap the text in a JavaScript expression: `{"some text with \"quotes\""}`.
+    - **Always run `npm run lint` after modifying any `.tsx` or `.jsx` file** to catch these errors before committing.
