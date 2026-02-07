@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, UploadFi
 from pydantic import BaseModel, Field
 
 # Import from server.py
-from lib.agent.server import verify_api_key, MemoryIngestRequest, MemoryQueryRequest
+from lib.agent.shared import verify_api_key, MemoryIngestRequest, MemoryQueryRequest
 from lib.agent.memory import ingest_user_message
 from lib.agent.retrieval import retrieve_context
 from lib.agent.parsing import parse_file, is_supported_mime_type, SUPPORTED_MIME_TYPES

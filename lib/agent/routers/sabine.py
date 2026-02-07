@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from pydantic import BaseModel, Field
 
 # Import from server.py
-from lib.agent.server import verify_api_key, InvokeRequest, InvokeResponse
+from lib.agent.shared import verify_api_key, InvokeRequest, InvokeResponse
 from lib.agent.core import run_agent, run_agent_with_caching
 from lib.agent.memory import ingest_user_message
 from lib.agent.retrieval import retrieve_context
@@ -29,7 +29,7 @@ from backend.services.output_sanitization import (
 logger = logging.getLogger(__name__)
 
 # Create router (no prefix - these are root-level endpoints)
-router = APIRouter()
+router = APIRouter(tags=["sabine"])
 
 
 @router.post("/invoke", response_model=InvokeResponse)

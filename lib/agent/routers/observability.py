@@ -26,7 +26,7 @@ from backend.services.wal import WALService
 from backend.services.task_queue import get_task_queue_service
 
 # Import from server.py for auth
-from lib.agent.server import verify_api_key
+from lib.agent.shared import verify_api_key
 
 logger = logging.getLogger(__name__)
 

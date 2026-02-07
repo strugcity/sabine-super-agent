@@ -25,142 +25,23 @@ from backend.services.exceptions import (
     CircularDependencyError,
     FailedDependencyError,
 )
-from lib.agent.server import verify_api_key
+from lib.agent.shared import (
+    verify_api_key,
+    ROLE_REPO_AUTHORIZATION,
+    VALID_REPOS,
+    validate_role_repo_authorization,
+    CreateTaskRequest,
+    TaskResponse,
+    CancelTaskRequest,
+    RequeueTaskRequest,
+)
+# Import helper functions directly from server.py to avoid duplication
+from lib.agent.server import _dispatch_task, _run_task_agent
 
 logger = logging.getLogger(__name__)
 
 # Create router (no prefix since we have multiple: /tasks, /orchestration, /roles, /repos)
 router = APIRouter(tags=["dream-team"])
-
-# =============================================================================
-# Role-Repository Authorization Mapping
-# =============================================================================
-
-ROLE_REPO_AUTHORIZATION = {
-    # Backend roles -> sabine-super-agent (Python backend, agent logic)
-    "backend-architect-sabine": ["sabine-super-agent"],
-    "data-ai-engineer-sabine": ["sabine-super-agent"],
-    "SABINE_ARCHITECT": ["sabine-super-agent"],
-
-    # Frontend roles -> dream-team-strug (Next.js dashboard)
-    "frontend-ops-sabine": ["dream-team-strug"],
-
-    # Cross-functional roles can access multiple repos
-    "product-manager-sabine": ["sabine-super-agent", "dream-team-strug"],
-    "qa-security-sabine": ["sabine-super-agent", "dream-team-strug"],
-}
-
-# Valid repository identifiers (owner/repo format)
-VALID_REPOS = {
-    "sabine-super-agent": {"owner": "strugcity", "repo": "sabine-super-agent"},
-    "dream-team-strug": {"owner": "strugcity", "repo": "dream-team-strug"},
-}
-
-
-def validate_role_repo_authorization(role: str, target_repo: str) -> tuple[bool, str]:
-    """
-    Validate that a role is authorized to work in the target repository.
-
-    Args:
-        role: The agent role (e.g., 'backend-architect-sabine')
-        target_repo: The target repository identifier (e.g., 'sabine-super-agent')
-
-    Returns:
-        Tuple of (is_valid, error_message)
-    """
-    # Check if repo is valid
-    if target_repo not in VALID_REPOS:
-        valid_repos = list(VALID_REPOS.keys())
-        return False, f"Invalid target_repo '{target_repo}'. Valid options: {valid_repos}"
-
-    # Check if role exists in authorization mapping
-    if role not in ROLE_REPO_AUTHORIZATION:
-        # Unknown roles default to requiring explicit authorization
-        return False, f"Role '{role}' not found in authorization mapping. Add it to ROLE_REPO_AUTHORIZATION."
-
-    # Check if role is authorized for this repo
-    authorized_repos = ROLE_REPO_AUTHORIZATION[role]
-    if target_repo not in authorized_repos:
-        return False, (
-            f"Role '{role}' is not authorized for repo '{target_repo}'. "
-            f"Authorized repos for this role: {authorized_repos}"
-        )
-
-    return True, ""
-
-
-# =============================================================================
-# Request/Response Models
-# =============================================================================
-
-class CreateTaskRequest(BaseModel):
-    """Request to create a new task."""
-    role: str = Field(..., description="Agent role to handle this task (e.g., 'backend-architect-sabine')")
-    target_repo: str = Field(..., description="Target repository for this task (e.g., 'sabine-super-agent' or 'dream-team-strug')")
-    payload: Dict = Field(default_factory=dict, description="Instructions/context for the agent")
-    depends_on: List[str] = Field(default_factory=list, description="List of task IDs that must complete first")
-    priority: int = Field(default=0, description="Task priority (higher = more important)")
-
-
-class TaskResponse(BaseModel):
-    """Response containing task information."""
-    id: str
-    role: str
-    target_repo: Optional[str] = None
-    status: str
-    priority: int
-    payload: Dict
-    depends_on: List[str]
-    result: Optional[Dict] = None
-    error: Optional[str] = None
-    created_at: str
-    updated_at: str
-
-
-class CancelTaskRequest(BaseModel):
-    """Request body for /tasks/{task_id}/cancel endpoint."""
-    reason: str = Field(..., description="Reason for cancellation (audit trail)")
-    cancel_status: Optional[str] = Field(
-        default=None,
-        description="Explicit cancel status (cancelled_failed|cancelled_in_progress|cancelled_other)"
-    )
-    previous_status: Optional[str] = Field(
-        default=None,
-        description="Status observed by the caller at time of cancellation"
-    )
-    cascade: bool = Field(default=True, description="Cancel dependent queued tasks")
-
-
-class RequeueTaskRequest(BaseModel):
-    """Request body for /tasks/{task_id}/requeue endpoint."""
-    reason: Optional[str] = Field(default=None, description="Optional audit reason")
-    clear_error: bool = Field(default=True, description="Clear error fields on requeue")
-    clear_result: bool = Field(default=True, description="Clear result fields on requeue")
-
-
-# =============================================================================
-# Helper Functions for Dispatch
-# =============================================================================
-# These wrapper functions use runtime imports to avoid circular dependencies
-# between server.py and routers. Moving these functions to a shared module
-# is planned for Phase 2 refactoring.
-
-async def _dispatch_task(task: Task):
-    """
-    Dispatch callback for auto-dispatch after task completion.
-    Imported from server.py at runtime to avoid circular imports.
-    """
-    from lib.agent.server import _dispatch_task as _dispatch
-    await _dispatch(task)
-
-
-async def _run_task_agent(task: Task):
-    """
-    Run the agent for a task.
-    Imported from server.py at runtime to avoid circular imports.
-    """
-    from lib.agent.server import _run_task_agent as _run
-    await _run(task)
 
 
 # =============================================================================

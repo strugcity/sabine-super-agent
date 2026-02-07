@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 # Import from server.py
-from lib.agent.server import verify_api_key
+from lib.agent.shared import verify_api_key
 from lib.agent.gmail_handler import handle_new_email_notification, get_config, get_access_token, load_processed_ids
 from lib.agent.mcp_client import MCPClient
 
