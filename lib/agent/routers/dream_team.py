@@ -25,6 +25,7 @@ from backend.services.exceptions import (
     CircularDependencyError,
     FailedDependencyError,
 )
+from lib.agent.server import verify_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -138,18 +139,11 @@ class RequeueTaskRequest(BaseModel):
 
 
 # =============================================================================
-# Auth Dependencies
-# =============================================================================
-
-async def verify_api_key(api_key: Optional[str] = None) -> bool:
-    """Verify API key - imported from server.py at runtime."""
-    from lib.agent.server import verify_api_key as _verify
-    return await _verify(api_key)
-
-
-# =============================================================================
 # Helper Functions for Dispatch
 # =============================================================================
+# These wrapper functions use runtime imports to avoid circular dependencies
+# between server.py and routers. Moving these functions to a shared module
+# is planned for Phase 2 refactoring.
 
 async def _dispatch_task(task: Task):
     """
