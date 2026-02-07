@@ -16,9 +16,9 @@ from pydantic import BaseModel, Field
 
 # Import from server.py
 from lib.agent.shared import verify_api_key, InvokeRequest, InvokeResponse
-from lib.agent.core import run_agent, run_agent_with_caching
+from lib.agent.core import run_agent_with_caching
+from lib.agent.sabine_agent import run_sabine_agent
 from lib.agent.memory import ingest_user_message
-from lib.agent.retrieval import retrieve_context
 from backend.services.wal import WALService
 from backend.services.output_sanitization import (
     sanitize_agent_output,
@@ -87,33 +87,28 @@ async def invoke_agent(
             # WAL failure should not block the request - log and continue
             logger.warning(f"WAL write failed (non-blocking): {wal_error}")
 
-        # PHASE 4: Retrieve context from Context Engine
-        try:
-            retrieved_context = await retrieve_context(
-                user_id=UUID(request.user_id),
-                query=request.message
-            )
-            logger.info(
-                f"✓ Retrieved context ({len(retrieved_context)} chars)")
-
-            # Prepend context to the message for the agent
-            # The agent will receive both the context and the user's query
-            enhanced_message = f"Context from Memory:\n{retrieved_context}\n\nUser Query: {request.message}"
-
-        except Exception as e:
+        # Deprecation warnings for removed parameters
+        if hasattr(request, 'role') and request.role:
             logger.warning(
-                f"Context retrieval failed, continuing without: {e}")
-            enhanced_message = request.message
-            retrieved_context = None
+                f"Deprecation: 'role' parameter is no longer supported in /invoke endpoint. "
+                f"Sabine agent has no role. Ignoring role='{request.role}'"
+            )
+        if hasattr(request, 'use_caching') and request.use_caching:
+            logger.info(
+                f"Note: 'use_caching' parameter is handled internally by run_sabine_agent(). "
+                f"Explicit use_caching={request.use_caching} is no longer needed."
+            )
 
-        # Run the agent (with optional caching and role-based persona)
-        result = await run_agent(
+        # Run the Sabine agent (handles context retrieval internally)
+        # Note: Sabine router now uses run_sabine_agent() which:
+        # - Loads only Sabine tools (calendar, reminders, weather, custody)
+        # - Handles memory retrieval internally
+        # - Does NOT accept a role parameter (Sabine has no role)
+        result = await run_sabine_agent(
             user_id=request.user_id,
             session_id=session_id,
-            user_message=enhanced_message,  # Use enhanced message with context
+            user_message=request.message,  # Pass original message (retrieval happens inside)
             conversation_history=request.conversation_history,
-            use_caching=request.use_caching,
-            role=request.role  # Pass role for specialized persona
         )
 
         # PHASE 4: Ingest message as background task (after response)

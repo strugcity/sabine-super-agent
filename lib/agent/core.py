@@ -33,10 +33,225 @@ from supabase import create_client, Client
 from .registry import get_all_tools
 from .models import RoleManifest
 from .model_router import get_model_router, RoutingDecision
-from .llm_config import ModelProvider
+from .llm_config import ModelProvider, MODEL_REGISTRY
 from .providers import get_provider
 
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# Shared Helper Functions (Phase 2)
+# =============================================================================
+
+def extract_tool_execution_details(agent_messages: List[BaseMessage]) -> Dict[str, Any]:
+    """
+    Extract tool execution details from agent messages.
+    
+    This function parses ToolMessage and AIMessage content to track:
+    - Tool calls detected
+    - Tool successes and failures
+    - Artifacts created
+    - Detailed execution logs
+    
+    Args:
+        agent_messages: List of messages returned from agent.ainvoke()
+        
+    Returns:
+        Dictionary with:
+        - tool_executions: List of execution details
+        - tool_calls_detected: Total number of tool calls
+        - tool_successes: Count of successful tool executions
+        - tool_failures: Count of failed tool executions
+        - tool_names_used: List of unique tool names used
+        - artifacts_created: List of artifacts created
+        - failed_tools: List of failed tool execution details
+    """
+    import json
+    
+    tool_executions = []
+    tool_calls_detected = 0
+    tool_successes = 0
+    tool_failures = 0
+    
+    for i, msg in enumerate(agent_messages):
+        msg_type = type(msg).__name__
+        content_preview = ""
+        
+        # Check for ToolMessage (tool results)
+        if msg_type == "ToolMessage":
+            tool_name = getattr(msg, 'name', 'unknown')
+            tool_content = msg.content if hasattr(msg, 'content') else None
+            
+            # Parse tool result to determine success/failure
+            tool_status = "unknown"
+            tool_error = None
+            artifact_created = None
+            
+            if tool_content:
+                # Try to parse as JSON to extract status
+                try:
+                    if isinstance(tool_content, str):
+                        result_data = json.loads(tool_content)
+                    elif isinstance(tool_content, dict):
+                        result_data = tool_content
+                    else:
+                        result_data = {}
+                    
+                    # Check for status field
+                    if "status" in result_data:
+                        tool_status = result_data["status"]
+                        if tool_status == "success":
+                            tool_successes += 1
+                            # Extract artifact info if available
+                            if "file" in result_data:
+                                artifact_created = result_data["file"].get("path") or result_data["file"].get("url")
+                            elif "issue" in result_data:
+                                artifact_created = f"Issue #{result_data['issue'].get('number')}"
+                            elif "commit" in result_data:
+                                artifact_created = f"Commit {result_data['commit'].get('sha', '')[:7]}"
+                        elif tool_status == "error":
+                            tool_failures += 1
+                            tool_error = result_data.get("error", "Unknown error")
+                    
+                    # Check for error field without status
+                    elif "error" in result_data:
+                        tool_status = "error"
+                        tool_failures += 1
+                        tool_error = result_data["error"]
+                    
+                    # Check for success indicators
+                    elif "success" in result_data:
+                        tool_status = "success" if result_data["success"] else "error"
+                        if tool_status == "success":
+                            tool_successes += 1
+                        else:
+                            tool_failures += 1
+                            tool_error = result_data.get("error", "Operation failed")
+                    
+                    else:
+                        # Assume success if no error indicators
+                        tool_status = "success"
+                        tool_successes += 1
+                
+                except (json.JSONDecodeError, TypeError):
+                    # If not JSON, check for error patterns in string
+                    content_str = str(tool_content).lower()
+                    if "error" in content_str or "failed" in content_str or "exception" in content_str:
+                        tool_status = "error"
+                        tool_failures += 1
+                        tool_error = str(tool_content)[:200]
+                    else:
+                        tool_status = "success"
+                        tool_successes += 1
+            
+            tool_executions.append({
+                "type": "tool_result",
+                "tool_name": tool_name,
+                "tool_call_id": getattr(msg, 'tool_call_id', None),
+                "status": tool_status,
+                "error": tool_error,
+                "artifact_created": artifact_created,
+                "content_preview": str(tool_content)[:500] if tool_content else None
+            })
+            status_indicator = "OK" if tool_status == "success" else "FAIL"
+            content_preview = f"[TOOL_RESULT: {tool_name} - {status_indicator}]"
+        
+        elif hasattr(msg, 'content'):
+            if isinstance(msg.content, str):
+                content_preview = msg.content[:100]
+            elif isinstance(msg.content, list):
+                # Check for tool_use blocks in AIMessage
+                for block in msg.content:
+                    if isinstance(block, dict) and block.get('type') == 'tool_use':
+                        tool_calls_detected += 1
+                        tool_name = block.get('name', 'unknown')
+                        tool_executions.append({
+                            "type": "tool_call",
+                            "tool_name": tool_name,
+                            "tool_call_id": block.get('id'),
+                            "input_preview": str(block.get('input', {}))[:200]
+                        })
+                        content_preview = f"[TOOL_USE: {tool_name}]"
+                if not content_preview:
+                    content_preview = f"[list with {len(msg.content)} items]"
+            else:
+                content_preview = str(msg.content)[:100]
+        
+        logger.debug(f"  Message {i}: [{msg_type}] {content_preview}")
+    
+    # Summarize tool executions
+    tool_names_used = list(set(t['tool_name'] for t in tool_executions if t['type'] == 'tool_call'))
+    artifacts_created = [t['artifact_created'] for t in tool_executions if t.get('artifact_created')]
+    failed_tools = [t for t in tool_executions if t.get('status') == 'error']
+    
+    return {
+        "tool_executions": tool_executions,
+        "tool_calls_detected": tool_calls_detected,
+        "tool_successes": tool_successes,
+        "tool_failures": tool_failures,
+        "tool_names_used": tool_names_used,
+        "artifacts_created": artifacts_created,
+        "failed_tools": failed_tools,
+    }
+
+
+def classify_agent_error(e: Exception) -> Dict[str, Any]:
+    """
+    Classify an agent error into type, category, and HTTP status.
+    
+    Args:
+        e: The exception to classify
+        
+    Returns:
+        Dictionary with:
+        - error_type: Specific error type (rate_limited, auth_failed, etc.)
+        - error_category: General category (external_service, authentication, etc.)
+        - error_class: Exception class name
+        - http_status: Appropriate HTTP status code (or None)
+    """
+    error_type = "unknown"
+    error_category = "internal"
+    http_status = None
+    
+    error_str = str(e).lower()
+    error_class = type(e).__name__
+    
+    # Check for API-related errors (LLM, external services)
+    if "rate" in error_str and "limit" in error_str:
+        error_type = "rate_limited"
+        error_category = "external_service"
+        http_status = 429
+    elif "401" in error_str or "unauthorized" in error_str or "authentication" in error_str:
+        error_type = "auth_failed"
+        error_category = "authentication"
+        http_status = 401
+    elif "403" in error_str or "forbidden" in error_str or "permission" in error_str:
+        error_type = "permission_denied"
+        error_category = "authorization"
+        http_status = 403
+    elif "404" in error_str or "not found" in error_str:
+        error_type = "not_found"
+        error_category = "validation"
+        http_status = 404
+    elif "timeout" in error_str or "timed out" in error_str:
+        error_type = "timeout"
+        error_category = "external_service"
+        http_status = 504
+    elif "connection" in error_str or "network" in error_str:
+        error_type = "network_error"
+        error_category = "external_service"
+        http_status = 502
+    elif "validation" in error_str or "invalid" in error_str:
+        error_type = "validation_error"
+        error_category = "validation"
+        http_status = 400
+    
+    return {
+        "error_type": error_type,
+        "error_category": error_category,
+        "error_class": error_class,
+        "http_status": http_status,
+    }
+
 
 # =============================================================================
 # Timezone Configuration
@@ -1039,7 +1254,7 @@ async def create_agent(
         deep_context["_routing"] = {
             "model": selected_model,
             "model_key": next(
-                (k for k, v in __import__('lib.agent.llm_config', fromlist=['MODEL_REGISTRY']).MODEL_REGISTRY.items()
+                (k for k, v in MODEL_REGISTRY.items()
                  if v.model_id == selected_model),
                 None
             ),
@@ -1117,6 +1332,159 @@ async def create_agent(
     )
 
     return agent, deep_context
+
+
+# =============================================================================
+# Shared Agent Creation Helper (Phase 2)
+# =============================================================================
+
+async def create_react_agent_with_tools(
+    tools: List[StructuredTool],
+    system_prompt: str,
+    user_id: str,
+    session_id: str,
+    role: Optional[str] = None,
+    use_hybrid_routing: bool = True,
+    task_payload: Optional[Dict[str, Any]] = None,
+) -> tuple[Any, Dict[str, Any]]:
+    """
+    Create a LangGraph ReAct agent with tools and system prompt.
+    
+    This is a shared helper for both sabine_agent and task_agent modules.
+    It handles model routing, LLM client creation, and agent instantiation.
+    
+    Args:
+        tools: List of StructuredTool objects to give to the agent
+        system_prompt: Full system prompt (static + dynamic context)
+        user_id: User ID for tracking
+        session_id: Session ID for tracking
+        role: Optional role ID for model routing decisions
+        use_hybrid_routing: Whether to use intelligent model routing
+        task_payload: Optional task payload for complexity analysis
+        
+    Returns:
+        Tuple of (agent, metadata_dict) where metadata contains routing info
+    """
+    logger.info(f"Creating ReAct agent with {len(tools)} tools (role: {role or 'None'})")
+    
+    # Determine tool requirements
+    requires_tools = len(tools) > 0
+    
+    # Load role manifest if needed for routing
+    role_manifest = None
+    if role:
+        role_manifest = load_role_manifest(role)
+    
+    # Metadata dictionary to return (similar to deep_context)
+    metadata: Dict[str, Any] = {
+        "user_id": user_id,
+        "session_id": session_id,
+    }
+    
+    # =========================================================================
+    # Model Routing
+    # =========================================================================
+    if use_hybrid_routing:
+        # Use intelligent model routing based on role and task
+        router = get_model_router()
+        routing_decision = router.route(
+            role=role,
+            role_manifest=role_manifest,
+            task_payload=task_payload,
+            requires_tools=requires_tools,
+        )
+        
+        model_config = routing_decision.model_config
+        selected_model = model_config.model_id
+        selected_provider = model_config.provider
+        
+        # Log routing decision prominently for cost tracking
+        logger.info(
+            f"[ROUTING] >>> Using {model_config.display_name} | "
+            f"Tier: {routing_decision.tier.value.upper()} | "
+            f"Provider: {selected_provider.value} | "
+            f"Cost: ~${model_config.cost_per_1m_input}/M tokens"
+        )
+        logger.info(f"[ROUTING] Reason: {routing_decision.reason}")
+        
+        # Store routing info in metadata
+        metadata["_routing"] = {
+            "model": selected_model,
+            "model_key": next(
+                (k for k, v in MODEL_REGISTRY.items()
+                 if v.model_id == selected_model),
+                None
+            ),
+            "provider": selected_provider.value,
+            "tier": routing_decision.tier.value,
+            "reason": routing_decision.reason,
+            "fallback_chain": routing_decision.fallback_chain,
+        }
+        
+        # Create LLM using provider adapter
+        provider = get_provider(selected_provider)
+        max_tokens = model_config.max_tokens
+        
+        llm = provider.create_llm(
+            config=model_config,
+            temperature=0.7,
+            max_tokens=max_tokens,
+        )
+        
+        # Prompt caching only works with Anthropic
+        caching_enabled = selected_provider == ModelProvider.ANTHROPIC
+        
+    else:
+        # Use default model (Claude Sonnet)
+        model_name = "claude-sonnet-4-20250514"
+        selected_provider = ModelProvider.ANTHROPIC
+        logger.info(f"Using explicit model: {model_name} (hybrid routing disabled)")
+        
+        metadata["_routing"] = {
+            "model": model_name,
+            "provider": "anthropic",
+            "tier": "premium",
+            "reason": "Hybrid routing disabled",
+            "fallback_chain": ["claude-sonnet"],
+        }
+        
+        llm = ChatAnthropic(
+            model=model_name,
+            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+            temperature=0.7,
+            max_tokens=4096
+        )
+        
+        caching_enabled = True
+    
+    # Create ReAct agent with system prompt
+    agent = create_react_agent(
+        llm,
+        tools,
+        prompt=SystemMessage(content=system_prompt)
+    )
+    
+    # Store caching info in metadata
+    metadata["_cache_info"] = {
+        "static_tokens_approx": len(system_prompt) // 4,  # Rough estimate
+        "caching_enabled": caching_enabled,
+        "caching_note": "Prompt caching only available with Anthropic provider" if not caching_enabled else None,
+    }
+    
+    # Store role info if provided
+    if role:
+        metadata["_role"] = role
+        if role_manifest:
+            metadata["_role_title"] = role_manifest.title
+    
+    provider_info = metadata.get("_routing", {}).get("provider", "anthropic")
+    tier_info = metadata.get("_routing", {}).get("tier", "premium")
+    logger.info(
+        f"ReAct agent created (provider: {provider_info}, tier: {tier_info}, "
+        f"caching: {caching_enabled})"
+    )
+    
+    return agent, metadata
 
 
 # =============================================================================

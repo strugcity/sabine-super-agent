@@ -35,8 +35,8 @@ from lib.agent.shared import (
     CancelTaskRequest,
     RequeueTaskRequest,
 )
-# Import helper functions directly from server.py to avoid duplication
-from lib.agent.server import _dispatch_task, _run_task_agent
+# Import helper functions from task_runner module
+from lib.agent.task_runner import _dispatch_task, _run_task_agent
 
 logger = logging.getLogger(__name__)
 
