@@ -95,7 +95,8 @@ async def run_sabine_agent(
         try:
             retrieved_context = await retrieve_context(
                 user_id=UUID(user_id),
-                query=user_message
+                query=user_message,
+                role_filter="assistant"  # Only retrieve Sabine memories, not Dream Team task content
             )
             logger.info(f"Retrieved context from memory ({len(retrieved_context)} chars)")
             

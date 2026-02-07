@@ -178,6 +178,79 @@ for file_path in task_files:
 if not found_in_task:
     print("✓ PASS: Task agent files do not call ingest_user_message")
 
+# Test 8: Verify sabine_agent.py passes role_filter explicitly
+print("\n" + "=" * 70)
+print("TEST 8: Verify sabine_agent.py passes role_filter explicitly")
+print("=" * 70)
+
+with open("lib/agent/sabine_agent.py", 'r') as f:
+    sabine_agent_content = f.read()
+
+if 'role_filter="assistant"' in sabine_agent_content:
+    print("✓ PASS: sabine_agent.py explicitly passes role_filter='assistant'")
+else:
+    print("❌ FAIL: sabine_agent.py does not explicitly pass role_filter")
+    all_passed = False
+
+# Test 9: Verify MemoryQueryRequest has role_filter field
+print("\n" + "=" * 70)
+print("TEST 9: Verify MemoryQueryRequest has role_filter field")
+print("=" * 70)
+
+with open("lib/agent/shared.py", 'r') as f:
+    shared_content = f.read()
+
+# Check for role_filter in MemoryQueryRequest
+memory_query_pattern = r'class MemoryQueryRequest.*?role_filter.*?Field'
+if re.search(memory_query_pattern, shared_content, re.DOTALL):
+    print("✓ PASS: MemoryQueryRequest has role_filter field")
+else:
+    print("❌ FAIL: MemoryQueryRequest missing role_filter field")
+    all_passed = False
+
+# Test 10: Verify memory router passes role_filter from request
+print("\n" + "=" * 70)
+print("TEST 10: Verify memory router passes role_filter from request")
+print("=" * 70)
+
+with open("lib/agent/routers/memory.py", 'r') as f:
+    memory_router_content = f.read()
+
+if 'role_filter=request.role_filter' in memory_router_content:
+    print("✓ PASS: memory router passes role_filter from request")
+else:
+    print("❌ FAIL: memory router does not pass role_filter")
+    all_passed = False
+
+# Test 11: Verify SQL migration drops both function signatures
+print("\n" + "=" * 70)
+print("TEST 11: Verify SQL migration drops both function signatures")
+print("=" * 70)
+
+with open("supabase/migrations/20260207170000_add_role_filter_to_match_memories.sql", 'r') as f:
+    migration_content = f.read()
+
+# Check for both DROP statements
+drop_4_param = "DROP FUNCTION IF EXISTS match_memories(text, float, int, uuid);"
+drop_5_param = "DROP FUNCTION IF EXISTS match_memories(text, float, int, uuid, text);"
+
+if drop_4_param in migration_content and drop_5_param in migration_content:
+    print("✓ PASS: SQL migration drops both 4-param and 5-param function signatures")
+else:
+    print("❌ FAIL: SQL migration missing proper DROP statements")
+    all_passed = False
+
+# Test 12: Verify SQL migration has TODO comment about NULL leak path
+print("\n" + "=" * 70)
+print("TEST 12: Verify SQL migration has TODO about legacy NULL role")
+print("=" * 70)
+
+if "TODO" in migration_content and "NULL" in migration_content and "leak" in migration_content.lower():
+    print("✓ PASS: SQL migration includes TODO comment about NULL role leak path")
+else:
+    print("❌ FAIL: SQL migration missing TODO comment about future tightening")
+    all_passed = False
+
 # Summary
 print("\n" + "=" * 70)
 if all_passed:
@@ -190,6 +263,11 @@ if all_passed:
     print("✓ Backward compatibility maintained (NULL role values)")
     print("✓ All Python files have valid syntax")
     print("✓ Task agent path does not call ingest_user_message")
+    print("✓ sabine_agent.py explicitly passes role_filter='assistant'")
+    print("✓ MemoryQueryRequest accepts role_filter parameter")
+    print("✓ Memory router passes role_filter from request")
+    print("✓ SQL migration drops both old and new function signatures")
+    print("✓ SQL migration includes TODO about NULL role leak path")
     print("\nNext Steps:")
     print("1. Deploy SQL migration to Supabase")
     print("2. Test end-to-end memory ingestion with different roles")

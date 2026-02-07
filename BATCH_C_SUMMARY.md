@@ -19,7 +19,11 @@ Added role-based tagging to memory ingestion and role-based filtering to memory 
 
 ### 2. Caller Updates
 - **`lib/agent/routers/sabine.py`**: Updated `/invoke` endpoint to explicitly pass `role="assistant"`
-- **`lib/agent/routers/memory.py`**: Updated `/memory/ingest` and file upload endpoints to pass `role="assistant"`
+- **`lib/agent/sabine_agent.py`**: Updated to explicitly pass `role_filter="assistant"` to `retrieve_context()`
+- **`lib/agent/routers/memory.py`**: 
+  - Updated `/memory/ingest` and file upload endpoints to pass `role="assistant"`
+  - Updated `/memory/query` endpoint to accept and pass `role_filter` parameter
+- **`lib/agent/shared.py`**: Added `role_filter` field to `MemoryQueryRequest` model
 - **Verified**: Task agent path (`task_runner.py`, `task_agent.py`) does NOT call `ingest_user_message`, so coding agent content never enters the memory stream
 
 ### 3. Memory Retrieval (`lib/agent/retrieval.py`)
@@ -31,6 +35,8 @@ Added role-based tagging to memory ingestion and role-based filtering to memory 
 
 ### 4. SQL Migration (`supabase/migrations/20260207170000_add_role_filter_to_match_memories.sql`)
 - **Added** `role_filter text DEFAULT NULL` parameter to `match_memories()` function
+- **Fixed** DROP FUNCTION statements to drop both old (4-param) and new (5-param) signatures to avoid function overloading
+- **Added** TODO comment about future tightening of NULL role clause after migration window
 - **Implemented** filtering logic:
   ```sql
   AND (
@@ -43,6 +49,7 @@ Added role-based tagging to memory ingestion and role-based filtering to memory 
   - When `role_filter IS NULL`, returns all memories (existing behavior)
   - Memories without a `role` field (legacy) are included in filtered results
   - No breaking changes to existing callers
+  - Clean function replacement (no overloading)
 
 ## Verification Results
 
@@ -59,12 +66,17 @@ Created `verify_batch_c_simple.py` script that validates all requirements:
    - ✓ `role_filter` is passed from `retrieve_context()` to `search_similar_memories()`
    - ✓ `role_filter` is passed from `search_similar_memories()` to RPC call
    - ✓ All callers pass `role="assistant"` explicitly
+   - ✓ `sabine_agent.py` explicitly passes `role_filter="assistant"` to retrieval
+   - ✓ `MemoryQueryRequest` accepts `role_filter` parameter for debugging
+   - ✓ Memory router passes `role_filter` from request to `retrieve_context()`
 
 3. **SQL Migration**
    - ✓ Migration file exists with correct timestamp
    - ✓ Contains `role_filter` parameter with default NULL
    - ✓ Contains backward compatibility logic for NULL roles
    - ✓ Contains filtering logic for role matching
+   - ✓ Drops both old (4-param) and new (5-param) function signatures
+   - ✓ Includes TODO comment about future NULL role tightening
 
 4. **Code Quality**
    - ✓ All modified Python files pass syntax checks
@@ -130,10 +142,13 @@ Sabine /invoke → ingest_user_message(role="assistant") → metadata["role"] = 
 
 1. `lib/agent/memory.py` - Added role parameter to ingestion
 2. `lib/agent/retrieval.py` - Added role filtering to retrieval
-3. `lib/agent/routers/sabine.py` - Pass role="assistant" in /invoke
-4. `lib/agent/routers/memory.py` - Pass role="assistant" in memory endpoints
-5. `supabase/migrations/20260207170000_add_role_filter_to_match_memories.sql` - New migration
-6. `verify_batch_c_simple.py` - Verification script
+3. `lib/agent/sabine_agent.py` - Explicitly pass role_filter to retrieval
+4. `lib/agent/routers/sabine.py` - Pass role="assistant" in /invoke
+5. `lib/agent/routers/memory.py` - Pass role="assistant" in memory endpoints, accept role_filter in query endpoint
+6. `lib/agent/shared.py` - Added role_filter to MemoryQueryRequest model
+7. `supabase/migrations/20260207170000_add_role_filter_to_match_memories.sql` - New migration with improved DROP statements
+8. `verify_batch_c_simple.py` - Enhanced verification script with additional tests
+9. `BATCH_C_SUMMARY.md` - Updated documentation
 
 ## Risk Assessment
 

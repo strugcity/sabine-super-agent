@@ -10,8 +10,13 @@
 --    - Memories where metadata->'role' = role_filter OR
 --    - Memories where metadata->'role' IS NULL (legacy memories)
 -- 3. When role_filter IS NULL, returns all memories (backward compatible)
+--
+-- TODO: After migration window, consider backfilling all NULL role memories with
+-- role="assistant" and removing the NULL clause to prevent future leak paths.
 -- =============================================================================
 
+-- Drop both old and new function signatures to ensure clean replacement
+DROP FUNCTION IF EXISTS match_memories(text, float, int, uuid);
 DROP FUNCTION IF EXISTS match_memories(text, float, int, uuid, text);
 
 CREATE OR REPLACE FUNCTION match_memories(
