@@ -5,6 +5,9 @@ import { DashboardHeader } from '@/components/DashboardHeader';
 import { FileUploader } from '@/components/FileUploader';
 import { Entity, Memory, DomainEnum, EntitiesByDomain } from '@/lib/types/database';
 
+// Force dynamic rendering - this page needs runtime environment variables
+export const dynamic = 'force-dynamic';
+
 async function getEntities(): Promise<EntitiesByDomain> {
   const supabase = await createClient();
   
