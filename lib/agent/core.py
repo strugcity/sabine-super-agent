@@ -1120,6 +1120,159 @@ async def create_agent(
 
 
 # =============================================================================
+# Shared Agent Creation Helper (Phase 2)
+# =============================================================================
+
+async def create_react_agent_with_tools(
+    tools: List[StructuredTool],
+    system_prompt: str,
+    user_id: str,
+    session_id: str,
+    role: Optional[str] = None,
+    use_hybrid_routing: bool = True,
+    task_payload: Optional[Dict[str, Any]] = None,
+) -> tuple[Any, Dict[str, Any]]:
+    """
+    Create a LangGraph ReAct agent with tools and system prompt.
+    
+    This is a shared helper for both sabine_agent and task_agent modules.
+    It handles model routing, LLM client creation, and agent instantiation.
+    
+    Args:
+        tools: List of StructuredTool objects to give to the agent
+        system_prompt: Full system prompt (static + dynamic context)
+        user_id: User ID for tracking
+        session_id: Session ID for tracking
+        role: Optional role ID for model routing decisions
+        use_hybrid_routing: Whether to use intelligent model routing
+        task_payload: Optional task payload for complexity analysis
+        
+    Returns:
+        Tuple of (agent, metadata_dict) where metadata contains routing info
+    """
+    logger.info(f"Creating ReAct agent with {len(tools)} tools (role: {role or 'None'})")
+    
+    # Determine tool requirements
+    requires_tools = len(tools) > 0
+    
+    # Load role manifest if needed for routing
+    role_manifest = None
+    if role:
+        role_manifest = load_role_manifest(role)
+    
+    # Metadata dictionary to return (similar to deep_context)
+    metadata: Dict[str, Any] = {
+        "user_id": user_id,
+        "session_id": session_id,
+    }
+    
+    # =========================================================================
+    # Model Routing
+    # =========================================================================
+    if use_hybrid_routing:
+        # Use intelligent model routing based on role and task
+        router = get_model_router()
+        routing_decision = router.route(
+            role=role,
+            role_manifest=role_manifest,
+            task_payload=task_payload,
+            requires_tools=requires_tools,
+        )
+        
+        model_config = routing_decision.model_config
+        selected_model = model_config.model_id
+        selected_provider = model_config.provider
+        
+        # Log routing decision prominently for cost tracking
+        logger.info(
+            f"[ROUTING] >>> Using {model_config.display_name} | "
+            f"Tier: {routing_decision.tier.value.upper()} | "
+            f"Provider: {selected_provider.value} | "
+            f"Cost: ~${model_config.cost_per_1m_input}/M tokens"
+        )
+        logger.info(f"[ROUTING] Reason: {routing_decision.reason}")
+        
+        # Store routing info in metadata
+        metadata["_routing"] = {
+            "model": selected_model,
+            "model_key": next(
+                (k for k, v in __import__('lib.agent.llm_config', fromlist=['MODEL_REGISTRY']).MODEL_REGISTRY.items()
+                 if v.model_id == selected_model),
+                None
+            ),
+            "provider": selected_provider.value,
+            "tier": routing_decision.tier.value,
+            "reason": routing_decision.reason,
+            "fallback_chain": routing_decision.fallback_chain,
+        }
+        
+        # Create LLM using provider adapter
+        provider = get_provider(selected_provider)
+        max_tokens = model_config.max_tokens
+        
+        llm = provider.create_llm(
+            config=model_config,
+            temperature=0.7,
+            max_tokens=max_tokens,
+        )
+        
+        # Prompt caching only works with Anthropic
+        caching_enabled = selected_provider == ModelProvider.ANTHROPIC
+        
+    else:
+        # Use default model (Claude Sonnet)
+        model_name = "claude-sonnet-4-20250514"
+        selected_provider = ModelProvider.ANTHROPIC
+        logger.info(f"Using explicit model: {model_name} (hybrid routing disabled)")
+        
+        metadata["_routing"] = {
+            "model": model_name,
+            "provider": "anthropic",
+            "tier": "premium",
+            "reason": "Hybrid routing disabled",
+            "fallback_chain": ["claude-sonnet"],
+        }
+        
+        llm = ChatAnthropic(
+            model=model_name,
+            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+            temperature=0.7,
+            max_tokens=4096
+        )
+        
+        caching_enabled = True
+    
+    # Create ReAct agent with system prompt
+    agent = create_react_agent(
+        llm,
+        tools,
+        prompt=SystemMessage(content=system_prompt)
+    )
+    
+    # Store caching info in metadata
+    metadata["_cache_info"] = {
+        "static_tokens_approx": len(system_prompt) // 4,  # Rough estimate
+        "caching_enabled": caching_enabled,
+        "caching_note": "Prompt caching only available with Anthropic provider" if not caching_enabled else None,
+    }
+    
+    # Store role info if provided
+    if role:
+        metadata["_role"] = role
+        if role_manifest:
+            metadata["_role_title"] = role_manifest.title
+    
+    provider_info = metadata.get("_routing", {}).get("provider", "anthropic")
+    tier_info = metadata.get("_routing", {}).get("tier", "premium")
+    logger.info(
+        f"ReAct agent created (provider: {provider_info}, tier: {tier_info}, "
+        f"caching: {caching_enabled})"
+    )
+    
+    return agent, metadata
+
+
+# =============================================================================
 # Direct API with Prompt Caching
 # =============================================================================
 
