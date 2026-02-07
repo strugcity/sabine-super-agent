@@ -25,8 +25,8 @@ from lib.agent.scheduler import get_scheduler
 from backend.services.wal import WALService
 from backend.services.task_queue import get_task_queue_service
 
-# Import from server.py for auth
-from lib.agent.shared import verify_api_key
+# Import from shared.py for auth and models
+from lib.agent.shared import verify_api_key, HealthResponse
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +34,6 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # Response Models
 # =============================================================================
-
-class HealthResponse(BaseModel):
-    """Health check response."""
-    status: str
-    version: str
-    tools_loaded: int
-    database_connected: bool
-
 
 class TriggerBriefingRequest(BaseModel):
     """Request body for manual briefing trigger."""

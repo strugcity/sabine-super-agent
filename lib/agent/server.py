@@ -81,11 +81,8 @@ logger = logging.getLogger(__name__)
 
 from lib.agent.shared import (
     verify_api_key,
-    AGENT_API_KEY,
-    api_key_header,
     InvokeRequest,
     InvokeResponse,
-    HealthResponse,
     MemoryIngestRequest,
     MemoryQueryRequest,
     CancelTaskRequest,
@@ -542,6 +539,8 @@ from datetime import datetime, timezone
 # =============================================================================
 # Import routers after all models and helper functions are defined
 # to avoid circular import issues
+# IMPORTANT: This import must remain below _dispatch_task and _run_task_agent
+# definitions (dream_team router imports them at load time)
 
 from lib.agent.routers import (
     sabine_router,
