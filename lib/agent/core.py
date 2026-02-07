@@ -1715,13 +1715,14 @@ async def run_agent(
     This function routes to the appropriate agent based on the 'role' parameter:
     - If role is None: Routes to run_sabine_agent() (personal assistant)
     - If role is provided: Routes to run_task_agent() (Dream Team coding agent)
+    - If use_caching is True and role is None: Routes to run_agent_with_caching()
     
     Args:
         user_id: The user's UUID
         session_id: The conversation session ID
         user_message: The user's input message
         conversation_history: Optional previous conversation history
-        use_caching: If True, use caching (only supported by Sabine agent)
+        use_caching: If True, use caching (only supported by Sabine agent without role)
         role: Optional role ID for specialized persona (e.g., "backend-architect-sabine")
 
     Returns:
@@ -1734,18 +1735,27 @@ async def run_agent(
         f"Called with role={role}, use_caching={use_caching}"
     )
     
+    # Handle use_caching mode (only works with Sabine, no role)
+    if use_caching:
+        if role is not None:
+            logger.warning(
+                f"use_caching=True is not supported with role parameter. "
+                f"Ignoring use_caching and routing to run_task_agent()"
+            )
+            # Fall through to role-based routing below
+        else:
+            # Use cached version for Sabine
+            return await run_agent_with_caching(
+                user_id=user_id,
+                session_id=session_id,
+                user_message=user_message,
+                conversation_history=conversation_history
+            )
+    
     # Route based on role parameter
     if role is None:
         # Personal assistant mode - use Sabine agent
         from .sabine_agent import run_sabine_agent
-        
-        # Note: use_caching parameter is handled internally by Sabine agent
-        # but we can't pass it directly, so it will be ignored here
-        if use_caching:
-            logger.warning(
-                "use_caching parameter is not directly supported in dispatcher mode. "
-                "Use run_sabine_agent() directly if caching is needed."
-            )
         
         return await run_sabine_agent(
             user_id=user_id,
@@ -1756,13 +1766,6 @@ async def run_agent(
     else:
         # Dream Team coding mode - use task agent
         from .task_agent import run_task_agent
-        
-        # Note: use_caching is not supported by task agents
-        if use_caching:
-            logger.warning(
-                "use_caching=True is not supported for task agents (Dream Team). "
-                "Ignoring use_caching parameter."
-            )
         
         return await run_task_agent(
             user_id=user_id,
