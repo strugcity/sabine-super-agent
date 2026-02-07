@@ -1,1 +1,7 @@
-npx lint-staged
+# Lint frontend files if any are staged
+STAGED_FRONTEND=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|tsx|js|jsx)$' || true)
+
+if [ -n "$STAGED_FRONTEND" ]; then
+  echo "🔍 Running Next.js lint on staged frontend files..."
+  npx next lint --no-cache --max-warnings=0
+fi
