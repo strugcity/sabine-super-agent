@@ -60,7 +60,8 @@ async def memory_ingest_endpoint(
         result = await ingest_user_message(
             user_id=UUIDType(request.user_id),
             content=request.content,
-            source=request.source or "manual"
+            source=request.source or "manual",
+            role="assistant"  # Manual ingestion defaults to assistant role
         )
 
         logger.info(f"✓ Ingestion complete: {result.get('entities_created', 0)} entities created, "
@@ -117,7 +118,8 @@ async def memory_query_endpoint(
             query=request.query,
             memory_threshold=request.memory_threshold or 0.7,
             memory_limit=request.memory_limit or 10,
-            entity_limit=request.entity_limit or 20
+            entity_limit=request.entity_limit or 20,
+            role_filter=request.role_filter  # Allow callers to override role filter for debugging
         )
 
         # Parse the context to extract metadata
@@ -280,7 +282,8 @@ async def memory_upload_endpoint(
                 result = await ingest_user_message(
                     user_id=UUIDType(user_id),
                     content=f"[File: {filename}]\n\n{extracted_text}",
-                    source=source
+                    source=source,
+                    role="assistant"  # File uploads default to assistant role
                 )
                 logger.info(f"✓ File content ingested: {result.get('memory_id')}")
 

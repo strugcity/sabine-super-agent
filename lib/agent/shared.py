@@ -128,6 +128,8 @@ class MemoryQueryRequest(BaseModel):
         default=5, description="Max memories to retrieve")
     entity_limit: Optional[int] = Field(
         default=10, description="Max entities to retrieve")
+    role_filter: Optional[str] = Field(
+        default="assistant", description="Filter memories by agent role (e.g., 'assistant', 'backend-architect-sabine')")
 
 
 class CancelTaskRequest(BaseModel):
