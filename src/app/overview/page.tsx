@@ -91,17 +91,17 @@ export default function OverviewPage() {
             <div className="space-y-4">
               <div className="flex items-center gap-3">
                 <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                <span className="text-sm text-gray-600">Task "Implement memory consolidation" completed</span>
+                <span className="text-sm text-gray-600">Task &ldquo;Implement memory consolidation&rdquo; completed</span>
                 <span className="text-xs text-gray-400">2 hours ago</span>
               </div>
               <div className="flex items-center gap-3">
                 <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-                <span className="text-sm text-gray-600">Task "Add LangSmith integration" started</span>
+                <span className="text-sm text-gray-600">Task &ldquo;Add LangSmith integration&rdquo; started</span>
                 <span className="text-xs text-gray-400">4 hours ago</span>
               </div>
               <div className="flex items-center gap-3">
                 <div className="w-2 h-2 bg-yellow-500 rounded-full"></div>
-                <span className="text-sm text-gray-600">Task "Create God View dashboard" assigned</span>
+                <span className="text-sm text-gray-600">Task &ldquo;Create God View dashboard&rdquo; assigned</span>
                 <span className="text-xs text-gray-400">6 hours ago</span>
               </div>
             </div>
