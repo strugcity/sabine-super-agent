@@ -393,7 +393,7 @@ def get_all_tools_sync() -> List[StructuredTool]:
     return asyncio.run(get_all_tools())
 
 
-async def get_scoped_tools(role: str) -> List[StructuredTool]:
+async def get_scoped_tools(role: "AgentRole") -> List[StructuredTool]:
     """
     Get tools scoped to a specific agent role.
 
@@ -413,13 +413,13 @@ async def get_scoped_tools(role: str) -> List[StructuredTool]:
         >>> tools = await get_scoped_tools("assistant")
         >>> print(f"Sabine has {len(tools)} tools")
     """
-    from .tool_sets import get_tool_names
+    from .tool_sets import AgentRole, get_tool_names
 
     # Get all available tools
     all_tools = await get_all_tools()
 
     # Get allowed tool names for this role
-    allowed_names = get_tool_names(role)  # type: ignore
+    allowed_names = get_tool_names(role)
 
     # Filter tools to only those allowed for this role
     scoped_tools = [tool for tool in all_tools if tool.name in allowed_names]

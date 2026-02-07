@@ -6,9 +6,30 @@ This module defines which tools are available to which agent roles:
 - DREAM_TEAM: Coding/project management tools (GitHub, sandbox, Slack)
 
 Part of Phase 2: Separate Agent Cores refactoring.
+
+NOTE: This is a different tool-scoping mechanism from RoleManifest.allowed_tools.
+- tool_sets.py: Hard-coded, agent-type-level scoping (assistant vs. coder)
+- RoleManifest.allowed_tools: Per-role tool filtering with wildcard support
+
+The relationship:
+1. Agent type (assistant/coder) determines base tool set via tool_sets.py
+2. RoleManifest.allowed_tools can further restrict tools for specific roles
+3. If RoleManifest.allowed_tools is empty, all tools from the agent type are allowed
+
+This layered approach allows coarse-grained agent separation (Phase 2) while
+preserving fine-grained per-role control (existing RoleManifest system).
 """
 
 from typing import Set, Literal
+
+# Public API
+__all__ = [
+    "AgentRole",
+    "SABINE_TOOLS",
+    "DREAM_TEAM_TOOLS",
+    "get_tool_names",
+    "is_tool_allowed",
+]
 
 # =============================================================================
 # Type Definitions
@@ -39,6 +60,10 @@ DREAM_TEAM_TOOLS: Set[str] = {
     "sync_project_board",
     "send_team_update",
 }
+
+# Validate that tool sets don't overlap
+assert SABINE_TOOLS.isdisjoint(DREAM_TEAM_TOOLS), \
+    f"Tool sets must not overlap. Found in both: {SABINE_TOOLS.intersection(DREAM_TEAM_TOOLS)}"
 
 
 # =============================================================================
