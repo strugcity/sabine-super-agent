@@ -120,7 +120,7 @@ async def memory_query_endpoint(
             memory_limit=request.memory_limit or 10,
             entity_limit=request.entity_limit or 20,
             role_filter=request.role_filter,  # Allow callers to override role filter for debugging
-            domain_filter=request.domain_filter  # NEW: Pass domain filter from request
+            domain_filter=request.domain_filter  # Pass domain filter from request
         )
 
         # Parse the context to extract metadata

@@ -368,14 +368,14 @@ def blend_context(
     lines = []
 
     # Generate domain label if filtering is active
-    domain_label = f" ({domain_filter.upper()} DOMAIN)" if domain_filter else ""
+    domain_label = f" ({domain_filter.upper()} DOMAIN)" if domain_filter and domain_filter.strip() else ""
 
     # Header
     lines.append(f'[CONTEXT FOR: "{query}"{domain_label}]')
     lines.append("")
 
     # Memories section
-    memory_header = f"[RELEVANT{' ' + domain_filter.upper() if domain_filter else ''} MEMORIES]"
+    memory_header = f"[RELEVANT{' ' + domain_filter.upper() if domain_filter and domain_filter.strip() else ''} MEMORIES]"
     if memories:
         lines.append(memory_header)
         for memory in memories:
@@ -387,7 +387,7 @@ def blend_context(
         lines.append("")
 
     # Entities section
-    entity_header = f"[RELATED{' ' + domain_filter.upper() if domain_filter else ''} ENTITIES]"
+    entity_header = f"[RELATED{' ' + domain_filter.upper() if domain_filter and domain_filter.strip() else ''} ENTITIES]"
     if entities:
         lines.append(entity_header)
         for entity in entities:

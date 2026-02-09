@@ -19,7 +19,7 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -254,7 +254,7 @@ async def main():
     print("\n" + "=" * 70)
     print("DOMAIN FILTER RETRIEVAL PIPELINE TEST")
     print("=" * 70)
-    print(f"Date: {datetime.utcnow().isoformat()}")
+    print(f"Date: {datetime.now(timezone.utc).isoformat()}")
     print("=" * 70 + "\n")
 
     # Step 1: Check environment
