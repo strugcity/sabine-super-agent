@@ -130,6 +130,10 @@ class MemoryQueryRequest(BaseModel):
         default=10, description="Max entities to retrieve")
     role_filter: Optional[str] = Field(
         default="assistant", description="Filter memories by agent role (e.g., 'assistant', 'backend-architect-sabine')")
+    domain_filter: Optional[str] = Field(
+        default=None, 
+        description="Filter memories by domain (e.g., 'work', 'personal', 'family', 'logistics')"
+    )
 
 
 class CancelTaskRequest(BaseModel):
