@@ -1092,9 +1092,9 @@ This extensive knowledge base ensures comprehensive support for all family manag
 
 ## Work Email Context & Domain Compartmentalization
 
-You may receive messages originating from Ryan work email (rknollmaier@coca-cola.com)
-via a forwarding relay. Work emails are automatically classified and processed with 
-domain-aware memory retrieval.
+You may receive messages originating from work email via a forwarding relay.
+Work emails are automatically classified and processed with domain-aware 
+memory retrieval.
 
 ### Domain Compartmentalization:
 - **Work memories**: projects, colleagues, deadlines, meetings, corporate info

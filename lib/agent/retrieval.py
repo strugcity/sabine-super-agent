@@ -575,7 +575,15 @@ async def get_memory_by_id(memory_id: UUID) -> Optional[Dict[str, Any]]:
 def find_overlapping_entities(
     primary: List[Entity], cross: List[Entity]
 ) -> List[tuple]:
-    """Find entities with similar names across both domain lists."""
+    """
+    Find entities with similar names across both domain lists.
+    
+    Uses exact case-insensitive string matching. This approach may miss
+    variations like "Mike Smith" vs "Michael Smith" but avoids false positives.
+    
+    TODO: Consider implementing fuzzy string matching (e.g., Levenshtein distance)
+    for more robust entity matching across domains.
+    """
     overlaps = []
     for p_entity in primary:
         for c_entity in cross:
@@ -656,6 +664,8 @@ async def cross_context_scan(
         )
 
         keywords = extract_keywords(query)
+        # TODO: Consider adding user_id parameter to search_entities_by_keywords
+        # for multi-tenant support (currently entities are shared across user context)
         cross_entities = await search_entities_by_keywords(
             keywords=keywords, limit=entity_limit, domain_filter=other_domain,
         )
