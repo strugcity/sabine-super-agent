@@ -76,3 +76,4 @@ NUL
 
 # Claude Code
 .claude/
+test_email_integration_demo.py
