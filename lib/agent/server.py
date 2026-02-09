@@ -150,6 +150,7 @@ from lib.agent.routers import (
     memory_router,
     dream_team_router,
     observability_router,
+    comments_router,
 )
 
 # Mount all routers
@@ -158,6 +159,7 @@ app.include_router(gmail_router)
 app.include_router(memory_router)
 app.include_router(dream_team_router)
 app.include_router(observability_router)
+app.include_router(comments_router)
 
 
 # =============================================================================

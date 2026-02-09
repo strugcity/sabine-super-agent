@@ -59,6 +59,18 @@ export interface Task {
 }
 
 // -----------------------------------------------------------------------------
+// Entity Comment Type
+// -----------------------------------------------------------------------------
+export interface EntityComment {
+  id: string;
+  entity_id: string;
+  user_id: string | null;
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// -----------------------------------------------------------------------------
 // Grouped Entities (for Dashboard Display)
 // -----------------------------------------------------------------------------
 export interface EntitiesByDomain {

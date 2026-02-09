@@ -7,6 +7,7 @@ This package contains modular routers for different API domains:
 - memory: Context engine and memory endpoints
 - dream_team: Task queue and orchestration endpoints
 - observability: Health, metrics, and monitoring endpoints
+- comments: Entity comments endpoints
 """
 
 from .sabine import router as sabine_router
@@ -14,6 +15,7 @@ from .gmail import router as gmail_router
 from .memory import router as memory_router
 from .dream_team import router as dream_team_router
 from .observability import router as observability_router
+from .comments import router as comments_router
 
 __all__ = [
     "sabine_router",
@@ -21,4 +23,5 @@ __all__ = [
     "memory_router",
     "dream_team_router",
     "observability_router",
+    "comments_router",
 ]

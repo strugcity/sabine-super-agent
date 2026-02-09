@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { Entity } from '@/lib/types/database'
 import { updateEntity, deleteEntity } from '@/app/dashboard/memory/actions'
+import { CommentSection } from './CommentSection'
 
 interface EntityCardProps {
   entity: Entity
@@ -26,6 +27,7 @@ export function EntityCard({ entity }: EntityCardProps) {
   const [isEditing, setIsEditing] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [showComments, setShowComments] = useState(false)
   const [editedAttributes, setEditedAttributes] = useState(
     JSON.stringify(entity.attributes, null, 2)
   )
@@ -223,6 +225,32 @@ export function EntityCard({ entity }: EntityCardProps) {
       <div className="text-xs text-gray-500 mt-3">
         Created: {new Date(entity.created_at).toLocaleDateString()}
       </div>
+
+      {/* Toggle Comments Button */}
+      <div className="mt-3 pt-3 border-t border-gray-200">
+        <button
+          onClick={() => setShowComments(!showComments)}
+          className="text-sm text-blue-600 hover:text-blue-800 font-medium transition-colors flex items-center gap-1"
+        >
+          <svg
+            className={`w-4 h-4 transition-transform ${showComments ? 'rotate-90' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M9 5l7 7-7 7"
+            />
+          </svg>
+          {showComments ? 'Hide Comments' : 'Show Comments'}
+        </button>
+      </div>
+
+      {/* Comments Section */}
+      {showComments && <CommentSection entityId={entity.id} />}
     </div>
   )
 }
