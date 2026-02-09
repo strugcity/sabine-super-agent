@@ -16,11 +16,6 @@ export function CommentSection({ entityId }: CommentSectionProps) {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Fetch comments on mount
-  useEffect(() => {
-    fetchComments()
-  }, [entityId])
-
   const fetchComments = async () => {
     setIsLoading(true)
     setError(null)
@@ -41,6 +36,12 @@ export function CommentSection({ entityId }: CommentSectionProps) {
       setIsLoading(false)
     }
   }
+
+  // Fetch comments on mount
+  useEffect(() => {
+    fetchComments()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entityId])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
