@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { EntityComment } from '@/lib/types/database'
 
 interface CommentSectionProps {
@@ -16,7 +16,7 @@ export function CommentSection({ entityId }: CommentSectionProps) {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const fetchComments = async () => {
+  const fetchComments = useCallback(async () => {
     setIsLoading(true)
     setError(null)
 
@@ -35,13 +35,12 @@ export function CommentSection({ entityId }: CommentSectionProps) {
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [entityId])
 
   // Fetch comments on mount
   useEffect(() => {
     fetchComments()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entityId])
+  }, [fetchComments])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
