@@ -60,7 +60,8 @@ async def search_similar_memories(
     user_id: Optional[UUID] = None,
     threshold: float = DEFAULT_MEMORY_THRESHOLD,
     limit: int = DEFAULT_MEMORY_COUNT,
-    role_filter: Optional[str] = None
+    role_filter: Optional[str] = None,
+    domain_filter: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """
     Search for memories similar to the query embedding using pgvector.
@@ -75,6 +76,9 @@ async def search_similar_memories(
         role_filter: Optional role filter (e.g., "assistant", "backend-architect-sabine").
                      If provided, only returns memories from this role (or legacy memories with no role).
                      If None, returns all memories.
+        domain_filter: Optional domain filter (e.g., "work", "personal", "family", "logistics").
+                       If provided, only returns memories from this domain.
+                       If None, returns all domains.
 
     Returns:
         List of memory dictionaries with similarity scores
@@ -103,7 +107,8 @@ async def search_similar_memories(
                 "match_threshold": threshold,
                 "match_count": limit,
                 "user_id_filter": str(user_id) if user_id else None,
-                "role_filter": role_filter
+                "role_filter": role_filter,
+                "domain_filter": domain_filter
             }
         ).execute()
 
@@ -173,7 +178,8 @@ def extract_keywords(query: str) -> List[str]:
 
 async def search_entities_by_keywords(
     keywords: List[str],
-    limit: int = DEFAULT_ENTITY_LIMIT
+    limit: int = DEFAULT_ENTITY_LIMIT,
+    domain_filter: Optional[str] = None
 ) -> List[Entity]:
     """
     Search for entities that match any of the provided keywords.
@@ -183,6 +189,9 @@ async def search_entities_by_keywords(
     Args:
         keywords: List of keywords to search for
         limit: Maximum total entities to return
+        domain_filter: Optional domain filter (e.g., "work", "personal", "family", "logistics").
+                       If provided, only returns entities from this domain.
+                       If None, returns all domains.
 
     Returns:
         List of matching Entity objects
@@ -205,9 +214,14 @@ async def search_entities_by_keywords(
         seen_ids = set()
 
         for keyword in keywords:
-            response = supabase.table("entities").select("*").ilike(
+            query = supabase.table("entities").select("*").ilike(
                 "name", f"%{keyword}%"
-            ).eq("status", "active").limit(limit).execute()
+            ).eq("status", "active")
+            
+            if domain_filter:
+                query = query.eq("domain", domain_filter)
+            
+            response = query.limit(limit).execute()
 
             for entity_data in response.data:
                 entity_id = entity_data['id']
@@ -319,7 +333,8 @@ def format_entity_for_context(entity: Entity) -> str:
 def blend_context(
     memories: List[Dict[str, Any]],
     entities: List[Entity],
-    query: str
+    query: str,
+    domain_filter: Optional[str] = None
 ) -> str:
     """
     Blend memories and entities into a clean, hierarchical context string.
@@ -331,6 +346,8 @@ def blend_context(
         memories: List of similar memory dictionaries
         entities: List of relevant Entity objects
         query: Original user query (for context)
+        domain_filter: Optional domain filter for labeling
+                       If provided, adds domain labels to section headers.
 
     Returns:
         Formatted context string ready for LLM system prompt
@@ -350,28 +367,34 @@ def blend_context(
     """
     lines = []
 
+    # Generate domain labels if filtering is active
+    domain_label = f" ({domain_filter.upper()} DOMAIN)" if domain_filter else ""
+    domain_prefix = f" {domain_filter.upper()}" if domain_filter else ""
+
     # Header
-    lines.append(f'[CONTEXT FOR: "{query}"]')
+    lines.append(f'[CONTEXT FOR: "{query}"{domain_label}]')
     lines.append("")
 
     # Memories section
+    memory_header = f"[RELEVANT{domain_prefix} MEMORIES]"
     if memories:
-        lines.append("[RELEVANT MEMORIES]")
+        lines.append(memory_header)
         for memory in memories:
             lines.append(format_memory_for_context(memory))
         lines.append("")
     else:
-        lines.append("[RELEVANT MEMORIES]")
+        lines.append(memory_header)
         lines.append("- No relevant memories found")
         lines.append("")
 
     # Entities section
+    entity_header = f"[RELATED{domain_prefix} ENTITIES]"
     if entities:
-        lines.append("[RELATED ENTITIES]")
+        lines.append(entity_header)
         for entity in entities:
             lines.append(format_entity_for_context(entity))
     else:
-        lines.append("[RELATED ENTITIES]")
+        lines.append(entity_header)
         lines.append("- No related entities found")
 
     return '\n'.join(lines)
@@ -387,7 +410,8 @@ async def retrieve_context(
     memory_threshold: float = DEFAULT_MEMORY_THRESHOLD,
     memory_limit: int = DEFAULT_MEMORY_COUNT,
     entity_limit: int = DEFAULT_ENTITY_LIMIT,
-    role_filter: str = "assistant"
+    role_filter: str = "assistant",
+    domain_filter: Optional[str] = None
 ) -> str:
     """
     Retrieve relevant context for a user query by blending vector memories
@@ -408,6 +432,9 @@ async def retrieve_context(
         role_filter: Filter memories by agent role (e.g., "assistant", "backend-architect-sabine").
                      Defaults to "assistant". Memories without a role field (legacy) are included
                      for backward compatibility.
+        domain_filter: Optional domain filter (e.g., "work", "personal", "family", "logistics").
+                       If provided, only returns memories and entities from this domain.
+                       If None, returns all domains (backward compatible).
 
     Returns:
         Formatted context string ready for LLM system prompt
@@ -448,7 +475,8 @@ async def retrieve_context(
             user_id=user_id,
             threshold=memory_threshold,
             limit=memory_limit,
-            role_filter=role_filter
+            role_filter=role_filter,
+            domain_filter=domain_filter
         )
 
         # STEP 3: Extract keywords and search entities
@@ -456,7 +484,8 @@ async def retrieve_context(
         keywords = extract_keywords(query)
         entities = await search_entities_by_keywords(
             keywords=keywords,
-            limit=entity_limit
+            limit=entity_limit,
+            domain_filter=domain_filter
         )
 
         # STEP 4: Blend into formatted context
@@ -464,7 +493,8 @@ async def retrieve_context(
         context = blend_context(
             memories=memories,
             entities=entities,
-            query=query
+            query=query,
+            domain_filter=domain_filter
         )
 
         # Calculate timing
