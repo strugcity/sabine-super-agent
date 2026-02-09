@@ -1219,6 +1219,44 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                     original_subject = "your email"
                 reply_subject = f"Re: {original_subject}" if not original_subject.lower().startswith("re:") else original_subject
 
+                # Ingest email content into memory (before generating AI response)
+                # Skip ingestion for very short emails (likely automated)
+                if len(email_body.strip()) >= 20:
+                    try:
+                        # Lazy import to avoid circular dependencies
+                        from lib.agent.memory import ingest_user_message
+                        from uuid import UUID
+
+                        # Format email content for entity extraction
+                        ingestion_content = (
+                            f"Email from {sender}"
+                            + (f" ({sender_name})" if sender_name else "")
+                            + f"\nSubject: {original_subject}\n"
+                            f"---\n"
+                            f"{email_body[:2000]}"  # Truncate very long emails
+                        )
+
+                        logger.info(f"Ingesting email into memory (domain={email_domain})...")
+                        ingestion_result = await ingest_user_message(
+                            user_id=UUID(config["user_id"]),
+                            content=ingestion_content,
+                            source="email",
+                            role="assistant",
+                            domain_hint=email_domain  # "work" or "personal" from classifier
+                        )
+
+                        logger.info(
+                            f"Email ingested: domain={ingestion_result.get('domain', email_domain)}, "
+                            f"entities_created={ingestion_result.get('entities_created', 0)}, "
+                            f"entities_updated={ingestion_result.get('entities_updated', 0)}, "
+                            f"memory_id={ingestion_result.get('memory_id', 'N/A')}"
+                        )
+                    except Exception as e:
+                        # Memory ingestion failure should NOT block email response
+                        logger.warning(f"Email memory ingestion failed (non-fatal): {e}", exc_info=True)
+                else:
+                    logger.info(f"Skipping memory ingestion for very short email ({len(email_body.strip())} chars)")
+
                 # Generate AI response
                 logger.info(f"Generating AI response for email from {sender}...")
                 ai_response = await generate_ai_response(
