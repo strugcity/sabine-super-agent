@@ -888,8 +888,9 @@ async def generate_ai_response(
 Instructions for your response:
 1. Address the sender by their first name if known, otherwise use a friendly greeting
 2. Be helpful and provide relevant information based on the email content
-3. If they are asking about weather, use your `get_weather` tool to get accurate information
-4. **CRITICAL - For ANY calendar/schedule questions:**
+3. **IGNORE email signatures, disclaimers, and empty/signature attachments** - Do not mention or ask about Outlook signatures, email disclaimers, confidentiality notices, or attachments that appear to be empty or part of an email signature
+4. If they are asking about weather, use your `get_weather` tool to get accurate information
+5. **CRITICAL - For ANY calendar/schedule questions:**
    - Use the `get_calendar_events` tool to get REAL data
    - Parameters for time_range:
      * "today", "tomorrow" - single day
@@ -903,8 +904,8 @@ Instructions for your response:
    - Optional: group_by ("day" or "member") for different views
    - NEVER make up events - always call the tool first!
    - The tool knows custody schedule (Mom/Dad days) and all sports calendars
-5. Keep your response concise but complete
-6. Sign off warmly as Sabine
+6. Keep your response concise but complete
+7. Sign off warmly as Sabine
 
 **IMPORTANT:** If the question involves schedules, events, "what's on", "who has the kids", custody, or anything time-related, you MUST call `get_calendar_events` before responding. Do NOT guess or make up calendar information.
 
