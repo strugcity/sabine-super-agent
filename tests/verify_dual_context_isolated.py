@@ -1,6 +1,7 @@
 """
 Isolated verification of dual-context briefing functions.
-Tests only the pure Python functions without imports.
+Tests only the pure Python formatting functions without external project dependencies.
+Uses standalone copies of the functions for isolated testing.
 """
 
 

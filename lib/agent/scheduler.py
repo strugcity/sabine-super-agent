@@ -54,6 +54,9 @@ SCHEDULER_TIMEZONE = os.getenv("SCHEDULER_TIMEZONE", "America/Chicago")  # CST
 BRIEFING_HOUR = int(os.getenv("BRIEFING_HOUR", "8"))  # 8 AM
 BRIEFING_MINUTE = int(os.getenv("BRIEFING_MINUTE", "0"))
 
+# SMS configuration
+SMS_LIMIT = 1600  # Max chars for concatenated SMS
+
 # Default user ID (single-user system for now)
 DEFAULT_USER_ID = UUID(os.getenv("DEFAULT_USER_ID", "00000000-0000-0000-0000-000000000001"))
 
@@ -283,7 +286,6 @@ async def synthesize_briefing(context: str, user_name: str = "Ryan") -> str:
             return f"Good morning, {user_name}! No major items on your radar today. Have a great day!"
 
         # Check for SMS length limit (1600 chars for concatenated SMS)
-        SMS_LIMIT = 1600
         if len(context) <= SMS_LIMIT:
             # Context is already concise, return as-is
             logger.info(f"Briefing ready ({len(context)} chars, within SMS limit)")

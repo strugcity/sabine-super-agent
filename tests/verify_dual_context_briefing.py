@@ -1,6 +1,7 @@
 """
 Simple verification script for dual-context briefing.
-Tests the core functions without requiring pytest.
+Tests the core functions using Python's built-in assertions (no pytest required).
+Can be run directly as a standalone script.
 """
 
 import sys
