@@ -146,7 +146,7 @@ async def test_domain_filter_parameter_passing():
             domain_filter=None
         )
         logger.info("   Without filter:")
-        logger.info(f"     Header: {context_no_filter.split(chr(10))[0]}")
+        logger.info(f"     Header: {context_no_filter.split('\\n')[0]}")
         assert "(WORK DOMAIN)" not in context_no_filter
         assert "[RELEVANT MEMORIES]" in context_no_filter
         assert "[RELATED ENTITIES]" in context_no_filter
@@ -160,7 +160,7 @@ async def test_domain_filter_parameter_passing():
             domain_filter="work"
         )
         logger.info("\n   With filter='work':")
-        logger.info(f"     Header: {context_with_filter.split(chr(10))[0]}")
+        logger.info(f"     Header: {context_with_filter.split('\\n')[0]}")
         assert "(WORK DOMAIN)" in context_with_filter
         assert "[RELEVANT WORK MEMORIES]" in context_with_filter
         assert "[RELATED WORK ENTITIES]" in context_with_filter
