@@ -21,7 +21,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
@@ -47,6 +47,11 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 WORK_RELAY_EMAIL = os.getenv("WORK_RELAY_EMAIL", "")           # e.g., "ryan@strugcity.com"
 WORK_ORIGIN_DOMAIN = os.getenv("WORK_ORIGIN_DOMAIN", "")       # e.g., "coca-cola.com"
 WORK_ORIGIN_EMAIL = os.getenv("WORK_ORIGIN_EMAIL", "")         # e.g., "rknollmaier@coca-cola.com"
+
+# Work email draft SMS length limits
+BODY_PREVIEW_LENGTH = 200           # Length of email body preview in SMS
+MAX_DRAFT_SMS_LENGTH = 500          # Maximum length of draft response in SMS
+DB_BODY_PREVIEW_LENGTH = 500        # Length of body preview stored in database
 
 _supabase: Optional[Client] = None
 
@@ -979,13 +984,12 @@ async def handle_work_email_draft(
         logger.info(f"Handling work email draft for message from {sender}")
         
         # Truncate body for SMS readability
-        body_preview = body_text[:200] + "..." if len(body_text) > 200 else body_text
+        body_preview = body_text[:BODY_PREVIEW_LENGTH] + "..." if len(body_text) > BODY_PREVIEW_LENGTH else body_text
         
         # Truncate draft response to fit within SMS limits (1600 chars total for concatenated SMS)
         # Reserve space for metadata (sender, subject, body preview, formatting)
-        max_draft_length = 500
-        draft_preview = draft_response[:max_draft_length]
-        if len(draft_response) > max_draft_length:
+        draft_preview = draft_response[:MAX_DRAFT_SMS_LENGTH]
+        if len(draft_response) > MAX_DRAFT_SMS_LENGTH:
             draft_preview += "...\n[Full draft in database]"
         
         # Format the SMS notification
@@ -1031,7 +1035,7 @@ async def handle_work_email_draft(
                 logger.error(f"Failed to send work email draft SMS: {e}", exc_info=True)
         else:
             logger.warning("Twilio credentials not fully configured - skipping SMS notification")
-            logger.info(f"Would send SMS: {draft_sms[:200]}...")
+            logger.info(f"Would send SMS: {draft_sms[:BODY_PREVIEW_LENGTH]}...")
         
         # Store pending draft in Supabase
         supabase = get_supabase()
@@ -1047,8 +1051,8 @@ async def handle_work_email_draft(
                         "subject": subject,
                         "draft_response": draft_response,
                         "domain": "work",
-                        "body_preview": body_text[:500],  # Store more in DB
-                        "created_at": datetime.utcnow().isoformat(),
+                        "body_preview": body_text[:DB_BODY_PREVIEW_LENGTH],  # Store more in DB
+                        "created_at": datetime.now(timezone.utc).isoformat(),
                     }
                 }).execute()
                 logger.info(f"Work email draft stored in Supabase for message {message_id}")
