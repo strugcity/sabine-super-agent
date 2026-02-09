@@ -54,6 +54,9 @@ SCHEDULER_TIMEZONE = os.getenv("SCHEDULER_TIMEZONE", "America/Chicago")  # CST
 BRIEFING_HOUR = int(os.getenv("BRIEFING_HOUR", "8"))  # 8 AM
 BRIEFING_MINUTE = int(os.getenv("BRIEFING_MINUTE", "0"))
 
+# SMS configuration
+SMS_LIMIT = 1600  # Max chars for concatenated SMS
+
 # Default user ID (single-user system for now)
 DEFAULT_USER_ID = UUID(os.getenv("DEFAULT_USER_ID", "00000000-0000-0000-0000-000000000001"))
 
@@ -82,220 +85,253 @@ def get_supabase_client() -> Client:
 # Context Retrieval for Briefing
 # =============================================================================
 
-async def get_briefing_context(user_id: UUID) -> Dict[str, Any]:
+async def get_briefing_context(user_id: UUID) -> str:
     """
-    Retrieve relevant context for the morning briefing.
+    Build a dual-context morning briefing with work/personal sections.
 
-    Queries:
-    1. Recent memories (last 24 hours)
-    2. Upcoming tasks/events
-    3. High-importance items
+    Uses domain-aware retrieval to separate work and personal/family context,
+    plus cross-context scanning for potential conflicts.
 
     Args:
         user_id: User UUID for filtering
 
     Returns:
-        Dictionary with categorized context items
+        Formatted dual-context briefing string
     """
     try:
-        supabase = get_supabase_client()
+        from lib.agent.retrieval import retrieve_context, cross_context_scan
+    except ImportError as e:
+        logger.error(f"Failed to import retrieval functions: {e}")
+        # Fallback if retrieval not available
+        return "Good morning, Ryan! Unable to load context - retrieval system unavailable."
 
-        # Calculate time boundaries (timezone-aware UTC)
-        now = datetime.now(timezone.utc)
-        yesterday = now - timedelta(days=1)
-        next_week = now + timedelta(days=7)
+    try:
+        logger.info("🔍 Building dual-context morning briefing...")
 
-        context = {
-            "recent_memories": [],
-            "upcoming_tasks": [],
-            "high_importance": [],
-            "entities": [],
-            "timestamp": now.isoformat()
-        }
+        # Retrieve work context
+        logger.info("  → Retrieving work context...")
+        work_context = await retrieve_context(
+            user_id=user_id,
+            query="work tasks meetings deadlines this week",
+            role_filter="assistant",
+            domain_filter="work",
+            memory_limit=5,
+            entity_limit=10,
+        )
 
-        # Query 1: Recent memories (last 24 hours)
+        # Retrieve personal/family context
+        logger.info("  → Retrieving personal context...")
+        personal_context = await retrieve_context(
+            user_id=user_id,
+            query="personal family events appointments this week",
+            role_filter="assistant",
+            domain_filter="personal",
+            memory_limit=5,
+            entity_limit=10,
+        )
+
+        # Also get family context
+        logger.info("  → Retrieving family context...")
+        family_context = await retrieve_context(
+            user_id=user_id,
+            query="kids custody schedule family events",
+            role_filter="assistant",
+            domain_filter="family",
+            memory_limit=3,
+            entity_limit=5,
+        )
+
+        # Cross-context scan for conflicts
+        logger.info("  → Scanning for cross-context conflicts...")
+        cross_alerts = ""
         try:
-            memories_response = supabase.table("memories").select("*").gte(
-                "created_at", yesterday.isoformat()
-            ).order("created_at", desc=True).limit(10).execute()
-
-            if memories_response.data:
-                context["recent_memories"] = [
-                    {
-                        "content": m.get("content", "")[:500],  # Truncate long content
-                        "source": m.get("source", "unknown"),
-                        "created_at": m.get("created_at"),
-                        "importance": m.get("importance", 0.5)
-                    }
-                    for m in memories_response.data
-                ]
-                logger.info(f"Found {len(context['recent_memories'])} recent memories")
+            cross_alerts = await cross_context_scan(
+                user_id=user_id,
+                query="schedule meetings appointments events today this week",
+                primary_domain="work",
+            )
         except Exception as e:
-            logger.warning(f"Failed to fetch recent memories: {e}")
+            logger.warning(f"Cross-context scan failed (may not be available): {e}")
 
-        # Query 2: Tasks table (if exists) - look for upcoming items
-        try:
-            # Check for tasks with dates in the next week
-            tasks_response = supabase.table("tasks").select("*").eq(
-                "status", "pending"
-            ).order("due_date", desc=False).limit(10).execute()
+        # Format the dual-context briefing
+        briefing = format_dual_briefing(work_context, personal_context, family_context, cross_alerts)
+        logger.info(f"✓ Dual-context briefing generated ({len(briefing)} chars)")
 
-            if tasks_response.data:
-                context["upcoming_tasks"] = [
-                    {
-                        "title": t.get("title", "Untitled"),
-                        "description": t.get("description", "")[:200],
-                        "due_date": t.get("due_date"),
-                        "priority": t.get("priority", "normal")
-                    }
-                    for t in tasks_response.data
-                ]
-                logger.info(f"Found {len(context['upcoming_tasks'])} upcoming tasks")
-        except Exception as e:
-            logger.debug(f"Tasks table query failed (may not exist): {e}")
-
-        # Query 3: High importance memories (importance_score column)
-        try:
-            important_response = supabase.table("memories").select("*").gte(
-                "importance_score", 0.8
-            ).order("created_at", desc=True).limit(5).execute()
-
-            if important_response.data:
-                context["high_importance"] = [
-                    {
-                        "content": m.get("content", "")[:300],
-                        "importance": m.get("importance_score", 0.8),
-                        "created_at": m.get("created_at")
-                    }
-                    for m in important_response.data
-                ]
-                logger.info(f"Found {len(context['high_importance'])} high-importance items")
-        except Exception as e:
-            logger.debug(f"High-importance memories query failed: {e}")
-
-        # Query 4: Active entities (for context)
-        try:
-            entities_response = supabase.table("entities").select("*").eq(
-                "status", "active"
-            ).order("updated_at", desc=True).limit(10).execute()
-
-            if entities_response.data:
-                context["entities"] = [
-                    {
-                        "name": e.get("name", "Unknown"),
-                        "type": e.get("type", "other"),
-                        "domain": e.get("domain", "personal"),
-                        "attributes": e.get("attributes", {})
-                    }
-                    for e in entities_response.data
-                ]
-                logger.info(f"Found {len(context['entities'])} active entities")
-        except Exception as e:
-            logger.warning(f"Failed to fetch entities: {e}")
-
-        return context
+        return briefing
 
     except Exception as e:
-        logger.error(f"Failed to get briefing context: {e}", exc_info=True)
-        return {
-            "recent_memories": [],
-            "upcoming_tasks": [],
-            "high_importance": [],
-            "entities": [],
-            "timestamp": datetime.utcnow().isoformat(),
-            "error": str(e)
-        }
+        logger.error(f"Failed to get dual-context briefing: {e}", exc_info=True)
+        return f"Good morning, Ryan! I had trouble preparing your briefing today: {str(e)}"
+
+
+# =============================================================================
+# Dual-Context Formatting
+# =============================================================================
+
+def extract_context_items(context_str: str) -> str:
+    """
+    Extract the memory and entity bullet points from a formatted context string.
+
+    Args:
+        context_str: Formatted context from retrieve_context()
+
+    Returns:
+        Extracted bullet points (newline-separated)
+
+    Example:
+        >>> extract_context_items("[CONTEXT]\\n- Memory 1\\n- Entity 1")
+        "- Memory 1\\n- Entity 1\\n"
+    """
+    lines = []
+    for line in context_str.split("\n"):
+        stripped = line.strip()
+        # Include lines that start with "- " but skip "No relevant" / "No related" messages
+        if stripped.startswith("- "):
+            # Check if this is a "No relevant/related" message
+            content_after_dash = stripped[2:].strip().lower()
+            if not (content_after_dash.startswith("no relevant") or 
+                    content_after_dash.startswith("no related")):
+                lines.append(line)
+    return "\n".join(lines) + "\n" if lines else ""
+
+
+def format_dual_briefing(
+    work_context: str,
+    personal_context: str,
+    family_context: str,
+    cross_alerts: str,
+) -> str:
+    """
+    Format a structured dual-context morning briefing.
+
+    Output format:
+    ---
+    Good morning, Ryan!
+
+    WORK
+    - [work memories and entities]
+
+    PERSONAL/FAMILY
+    - [personal + family memories and entities]
+
+    CROSS-CONTEXT ALERTS
+    - [any conflicts or overlaps detected]
+    ---
+
+    Args:
+        work_context: Work domain context from retrieve_context()
+        personal_context: Personal domain context from retrieve_context()
+        family_context: Family domain context from retrieve_context()
+        cross_alerts: Cross-context alerts from cross_context_scan()
+
+    Returns:
+        Formatted briefing string
+    """
+    sections = ["Good morning, Ryan!\n"]
+
+    # Work section
+    sections.append("WORK")
+    if work_context and "[No relevant memories found]" not in work_context:
+        # Extract just the memory/entity lines from the formatted context
+        work_items = extract_context_items(work_context)
+        if work_items.strip():
+            sections.append(work_items)
+        else:
+            sections.append("- No work items to report\n")
+    else:
+        sections.append("- No work items to report\n")
+
+    # Personal/Family section
+    sections.append("PERSONAL/FAMILY")
+    combined_personal = ""
+    if personal_context and "[No relevant memories found]" not in personal_context:
+        combined_personal += extract_context_items(personal_context)
+    if family_context and "[No relevant memories found]" not in family_context:
+        combined_personal += extract_context_items(family_context)
+
+    if combined_personal.strip():
+        sections.append(combined_personal)
+    else:
+        sections.append("- No personal items to report\n")
+
+    # Cross-context alerts (if any)
+    if cross_alerts and cross_alerts.strip():
+        sections.append("CROSS-CONTEXT ALERTS")
+        sections.append(cross_alerts)
+
+    return "\n".join(sections)
 
 
 # =============================================================================
 # Claude Synthesis
 # =============================================================================
 
-async def synthesize_briefing(context: Dict[str, Any], user_name: str = "Paul") -> str:
+async def synthesize_briefing(context: str, user_name: str = "Ryan") -> str:
     """
     Use Claude to synthesize context into a concise morning briefing.
 
+    The context is now a pre-formatted dual-context briefing string.
+    Claude's job is to make it more concise and natural while preserving structure.
+
     Args:
-        context: Dictionary with memories, tasks, entities
+        context: Pre-formatted dual-context briefing string
         user_name: Name to address in the briefing
 
     Returns:
-        Formatted briefing text suitable for SMS
+        Formatted briefing text suitable for SMS (max ~1600 chars)
     """
     try:
-        if not ANTHROPIC_API_KEY:
-            logger.error("ANTHROPIC_API_KEY not set for briefing synthesis")
-            return f"Good morning, {user_name}! Unable to generate briefing - API key not configured."
-
-        # Check if we have any content
-        has_content = (
-            context.get("recent_memories") or
-            context.get("upcoming_tasks") or
-            context.get("high_importance") or
-            context.get("entities")
-        )
-
-        if not has_content:
+        # If context is very short or empty, return as-is
+        if not context or len(context) < 50:
             return f"Good morning, {user_name}! No major items on your radar today. Have a great day!"
 
-        # Build context summary for Claude
-        context_text = []
+        # Check for SMS length limit (1600 chars for concatenated SMS)
+        if len(context) <= SMS_LIMIT:
+            # Context is already concise, return as-is
+            logger.info(f"Briefing ready ({len(context)} chars, within SMS limit)")
+            return context
 
-        if context.get("recent_memories"):
-            context_text.append("RECENT ACTIVITY (Last 24 hours):")
-            for m in context["recent_memories"][:5]:
-                context_text.append(f"  - [{m['source']}] {m['content'][:200]}")
+        # Context is too long, need to synthesize/truncate
+        if not ANTHROPIC_API_KEY:
+            logger.warning("ANTHROPIC_API_KEY not set - truncating briefing")
+            # Simple truncation fallback
+            return context[:SMS_LIMIT-50] + "\n\n[Briefing truncated for SMS]"
 
-        if context.get("upcoming_tasks"):
-            context_text.append("\nUPCOMING TASKS:")
-            for t in context["upcoming_tasks"][:5]:
-                due = t.get("due_date", "No date")
-                context_text.append(f"  - {t['title']} (Due: {due}, Priority: {t['priority']})")
+        # Use Claude to synthesize into a more concise version
+        logger.info(f"Synthesizing long briefing ({len(context)} chars) with Claude...")
 
-        if context.get("high_importance"):
-            context_text.append("\nHIGH PRIORITY ITEMS:")
-            for h in context["high_importance"][:3]:
-                context_text.append(f"  - {h['content'][:150]}")
-
-        if context.get("entities"):
-            context_text.append("\nACTIVE PROJECTS/PEOPLE:")
-            for e in context["entities"][:5]:
-                context_text.append(f"  - {e['name']} ({e['type']}, {e['domain']})")
-
-        context_str = "\n".join(context_text)
-
-        # Create Claude client
         llm = ChatAnthropic(
             model=SYNTHESIS_MODEL,
             temperature=0.7,
             anthropic_api_key=ANTHROPIC_API_KEY,
-            max_tokens=500
+            max_tokens=600
         )
 
-        system_prompt = f"""You are Sabine, an Executive Assistant AI. Write a concise morning briefing for {user_name}.
+        system_prompt = f"""You are Sabine, an Executive Assistant AI. Condense this morning briefing for {user_name}.
 
 RULES:
-1. Keep it SHORT - this will be sent via SMS (under 400 characters ideally)
-2. Use exactly 3 bullet points
-3. Focus on what's ACTIONABLE today
-4. Be warm but professional
-5. If there are deadlines or urgent items, mention them first
-6. End with something encouraging
+1. Keep it under 1500 characters for SMS delivery
+2. Preserve the WORK / PERSONAL/FAMILY / CROSS-CONTEXT ALERTS structure
+3. Prioritize cross-context alerts (conflicts) - these are most important
+4. Keep today's items, summarize or drop less urgent items
+5. Use bullet points for scannability
+6. Be warm but concise
 
-FORMAT:
+FORMAT (preserve this structure):
 Good morning, {user_name}!
 
-- [First bullet - most important/urgent item]
-- [Second bullet - key task or reminder]
-- [Third bullet - context or upcoming event]
+WORK
+- [Most important work items]
 
-[Brief encouraging sign-off]"""
+PERSONAL/FAMILY
+- [Most important personal/family items]
 
-        human_prompt = f"""Based on this context, write the morning briefing:
+CROSS-CONTEXT ALERTS (if any)
+- [Any conflicts or overlaps]"""
 
-{context_str}
+        human_prompt = f"""Condense this briefing to under 1500 characters while preserving the structure and most important items:
 
-Remember: Keep it under 400 characters if possible, use 3 bullets, be actionable."""
+{context}"""
 
         messages = [
             SystemMessage(content=system_prompt),
@@ -305,12 +341,15 @@ Remember: Keep it under 400 characters if possible, use 3 bullets, be actionable
         response = await llm.ainvoke(messages)
         briefing = response.content.strip()
 
-        logger.info(f"Generated briefing ({len(briefing)} chars)")
+        logger.info(f"Synthesized briefing ({len(briefing)} chars)")
         return briefing
 
     except Exception as e:
         logger.error(f"Failed to synthesize briefing: {e}", exc_info=True)
-        return f"Good morning, {user_name}! I had trouble preparing your briefing today. Check in when you have a moment."
+        # Return truncated original if synthesis fails
+        if context and len(context) > SMS_LIMIT:
+            return context[:SMS_LIMIT-50] + "\n\n[Briefing truncated]"
+        return context or f"Good morning, {user_name}! I had trouble preparing your briefing today."
 
 
 # =============================================================================
@@ -359,15 +398,15 @@ async def send_sms(to_number: str, message: str) -> bool:
 
 async def run_morning_briefing(
     user_id: Optional[UUID] = None,
-    user_name: str = "Paul",
+    user_name: str = "Ryan",
     phone_number: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Execute the morning briefing job.
 
     Steps:
-    1. Retrieve context from Context Engine
-    2. Synthesize briefing with Claude
+    1. Retrieve dual-context from Context Engine
+    2. Synthesize briefing with Claude (if needed for length)
     3. Send via SMS (if configured)
 
     Args:
@@ -395,19 +434,14 @@ async def run_morning_briefing(
     }
 
     try:
-        # Step 1: Retrieve context
-        logger.info("Step 1: Retrieving context...")
+        # Step 1: Retrieve dual-context
+        logger.info("Step 1: Retrieving dual-context...")
         context = await get_briefing_context(user_id)
 
-        result["context_summary"] = {
-            "recent_memories": len(context.get("recent_memories", [])),
-            "upcoming_tasks": len(context.get("upcoming_tasks", [])),
-            "high_importance": len(context.get("high_importance", [])),
-            "entities": len(context.get("entities", []))
-        }
+        result["context_length"] = len(context)
 
-        # Step 2: Synthesize briefing
-        logger.info("Step 2: Synthesizing briefing with Claude...")
+        # Step 2: Synthesize briefing (condense if needed)
+        logger.info("Step 2: Synthesizing briefing (if needed)...")
         briefing = await synthesize_briefing(context, user_name)
         result["briefing"] = briefing
 
@@ -532,7 +566,7 @@ class SabineScheduler:
     async def trigger_briefing_now(
         self,
         user_id: Optional[UUID] = None,
-        user_name: str = "Paul",
+        user_name: str = "Ryan",
         phone_number: Optional[str] = None
     ) -> Dict[str, Any]:
         """
