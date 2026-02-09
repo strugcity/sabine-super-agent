@@ -43,6 +43,11 @@ logger = logging.getLogger(__name__)
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
+# Work email relay configuration
+WORK_RELAY_EMAIL = os.getenv("WORK_RELAY_EMAIL", "")           # e.g., "ryan@strugcity.com"
+WORK_ORIGIN_DOMAIN = os.getenv("WORK_ORIGIN_DOMAIN", "")       # e.g., "coca-cola.com"
+WORK_ORIGIN_EMAIL = os.getenv("WORK_ORIGIN_EMAIL", "")         # e.g., "rknollmaier@coca-cola.com"
+
 _supabase: Optional[Client] = None
 
 def get_supabase() -> Optional[Client]:
@@ -55,6 +60,82 @@ def get_supabase() -> Optional[Client]:
         except Exception as e:
             logger.error(f"Failed to initialize Supabase: {e}")
     return _supabase
+
+
+def classify_email_domain(
+    sender_email: str,
+    subject: str,
+    headers: Optional[Dict[str, str]] = None
+) -> str:
+    """
+    Classify whether an email is 'work' or 'personal' based on sender,
+    subject, and headers.
+
+    Detection signals (priority order):
+    1. Headers: X-Forwarded-From or X-Original-Sender contains WORK_ORIGIN_DOMAIN
+    2. Sender matches WORK_RELAY_EMAIL (ryan@strugcity.com — the relay address)
+    3. Sender domain matches WORK_ORIGIN_DOMAIN
+    4. Subject contains forwarding indicators ("[Fwd:", "Fw:", "FW:") and
+       body/subject references work origin domain
+
+    Args:
+        sender_email: The sender's email address (normalized lowercase)
+        subject: The email subject line
+        headers: Optional dict of email headers (X-Forwarded-From, etc.)
+
+    Returns:
+        "work" or "personal"
+    """
+    # Normalize sender_email to lowercase
+    sender_email = sender_email.lower()
+    
+    # If work relay is not configured, always return "personal" (backward compatible)
+    if not WORK_RELAY_EMAIL:
+        logger.debug(f"WORK_RELAY_EMAIL not configured, classifying as personal")
+        return "personal"
+    
+    work_relay_email_lower = WORK_RELAY_EMAIL.lower()
+    work_origin_domain_lower = WORK_ORIGIN_DOMAIN.lower() if WORK_ORIGIN_DOMAIN else ""
+    
+    # Priority 1: Check headers for forwarding metadata
+    if headers:
+        forwarding_headers = [
+            "X-Forwarded-From",
+            "X-Original-Sender",
+            "X-Forwarded-To",
+        ]
+        for header_name in forwarding_headers:
+            header_value = headers.get(header_name, "")
+            if header_value and work_origin_domain_lower and work_origin_domain_lower in header_value.lower():
+                logger.info(f"Email classified as WORK via header {header_name}: {header_value}")
+                return "work"
+    
+    # Priority 2: Check if sender matches the relay email
+    if sender_email == work_relay_email_lower:
+        logger.info(f"Email classified as WORK via relay sender: {sender_email}")
+        return "work"
+    
+    # Priority 3: Check if sender domain matches work origin domain
+    if work_origin_domain_lower:
+        sender_domain = sender_email.split('@')[-1] if '@' in sender_email else ""
+        if sender_domain == work_origin_domain_lower:
+            logger.info(f"Email classified as WORK via sender domain: {sender_domain}")
+            return "work"
+    
+    # Priority 4: Check subject for forwarding indicators + work domain reference
+    if subject:
+        subject_lower = subject.lower()
+        forwarding_indicators = ["[fwd:", "fw:", "[fw:"]
+        has_fwd_indicator = any(ind in subject_lower for ind in forwarding_indicators)
+        
+        if has_fwd_indicator and work_origin_domain_lower and work_origin_domain_lower in subject_lower:
+            logger.info(f"Email classified as WORK via forwarding subject: {subject[:50]}")
+            return "work"
+    
+    # Default: personal
+    logger.debug(f"Email classified as PERSONAL (no work signals detected)")
+    return "personal"
+
 
 # Subjects that indicate auto-replies (to prevent loops)
 AUTO_REPLY_INDICATORS = [
@@ -379,6 +460,10 @@ def get_config() -> Dict[str, Any]:
         "google_client_secret": os.getenv("GOOGLE_CLIENT_SECRET", ""),
         "user_refresh_token": os.getenv("USER_REFRESH_TOKEN", ""),
         "agent_refresh_token": os.getenv("AGENT_REFRESH_TOKEN", ""),
+        # Work email relay configuration
+        "work_relay_email": WORK_RELAY_EMAIL,
+        "work_origin_domain": WORK_ORIGIN_DOMAIN,
+        "work_origin_email": WORK_ORIGIN_EMAIL,
     }
 
     logger.debug(f"Config loaded - Assistant: {config['assistant_email']}, User: {config['user_google_email']}")
@@ -964,6 +1049,7 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
             sender_name = None
             subject = None
             body_preview = None
+            email_domain = "personal"  # Default domain classification
 
             for candidate in emails:
                 candidate_id = candidate.get("id") or candidate.get("message_id")
@@ -1024,17 +1110,36 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                     save_processed_id(candidate_id)
                     continue
 
-                # Skip blocked sender patterns (notifications, automated systems, school platforms)
-                if any(pattern in candidate_sender_email for pattern in BLOCKED_SENDER_PATTERNS):
-                    logger.info(f"  -> Blocked sender pattern detected, skipping")
-                    save_processed_id(candidate_id)
-                    continue
+                # Classify email domain (work vs personal)
+                # Note: Headers may not be available in the list view, but we can still classify based on sender/subject
+                email_domain = classify_email_domain(
+                    sender_email=candidate_sender_email,
+                    subject=candidate_subject,
+                    headers=None  # Headers not available in list view; will be fetched later if needed
+                )
+                logger.info(f"  -> Email domain classified as: {email_domain}")
 
-                # Also check the full sender field (includes name)
-                if any(pattern in candidate_sender for pattern in BLOCKED_SENDER_PATTERNS):
-                    logger.info(f"  -> Blocked sender name pattern detected, skipping")
-                    save_processed_id(candidate_id)
-                    continue
+                # Work-aware sender filtering: relaxed blocking for work emails
+                if email_domain == "work":
+                    # Work emails: only block obvious automated patterns, not corporate system senders
+                    work_blocked_patterns = ["noreply", "no-reply", "donotreply", "mailer-daemon", "postmaster"]
+                    is_blocked = any(pattern in candidate_sender_email for pattern in work_blocked_patterns)
+                    if is_blocked:
+                        logger.info(f"  -> Work email blocked by strict pattern, skipping")
+                        save_processed_id(candidate_id)
+                        continue
+                else:
+                    # Personal: use full BLOCKED_SENDER_PATTERNS list
+                    if any(pattern in candidate_sender_email for pattern in BLOCKED_SENDER_PATTERNS):
+                        logger.info(f"  -> Blocked sender pattern detected, skipping")
+                        save_processed_id(candidate_id)
+                        continue
+
+                    # Also check the full sender field (includes name)
+                    if any(pattern in candidate_sender for pattern in BLOCKED_SENDER_PATTERNS):
+                        logger.info(f"  -> Blocked sender name pattern detected, skipping")
+                        save_processed_id(candidate_id)
+                        continue
 
                 # Skip blocked subject patterns (grade notifications, automated messages)
                 if any(pattern in candidate_subject for pattern in BLOCKED_SUBJECT_PATTERNS):
@@ -1062,6 +1167,9 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
             if not email_data:
                 logger.info("No unread emails from authorized senders found")
                 return {"success": True, "action": "no_authorized_emails"}
+
+            # Log the final classification for the selected email
+            logger.info(f"Selected email classified as: {email_domain} (from {sender})")
 
             # Add to in-flight processing set to prevent concurrent duplicate handling
             _processing_messages.add(message_id)
