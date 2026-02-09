@@ -873,10 +873,19 @@ async def generate_ai_response(
     sender_name: Optional[str],
     subject: str,
     body: str,
-    user_id: str
+    user_id: str,
+    email_domain: Optional[str] = None  # "work" or "personal"
 ) -> str:
     """
     Generate an AI response using the LangGraph agent.
+    
+    Args:
+        sender_email: Email address of the sender
+        sender_name: Display name of the sender (optional)
+        subject: Email subject line
+        body: Email body text
+        user_id: User ID for the agent
+        email_domain: Domain classification ("work" or "personal") for context retrieval
     """
     # Import here to avoid circular imports
     from lib.agent.core import run_agent
@@ -921,13 +930,17 @@ Please write ONLY the email body (no subject line, no 'To:' header). The respons
 
     try:
         session_id = f"email-response-{int(time.time())}"
+        
+        # Construct source_channel from email_domain: "email-work" or "email-personal"
+        source_channel = f"email-{email_domain}" if email_domain else None
 
         result = await run_agent(
             user_id=user_id,
             session_id=session_id,
             user_message=agent_prompt,
             conversation_history=None,
-            use_caching=False
+            use_caching=False,
+            source_channel=source_channel
         )
 
         if result.get("success") and result.get("response"):
@@ -1273,7 +1286,8 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                     sender_name=sender_name,
                     subject=original_subject,
                     body=email_body,
-                    user_id=config["user_id"]
+                    user_id=config["user_id"],
+                    email_domain=email_domain  # Pass domain classification
                 )
 
                 logger.info(f"AI response: {ai_response[:200]}...")

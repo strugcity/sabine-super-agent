@@ -88,6 +88,11 @@ class InvokeRequest(BaseModel):
         description="Role ID for specialized persona (e.g., 'backend-architect-sabine'). "
                     "See GET /roles for available roles."
     )
+    source_channel: Optional[str] = Field(
+        None,
+        description="Source channel: email-work, email-personal, sms, api. "
+                    "Drives domain-aware memory retrieval."
+    )
 
 
 class InvokeResponse(BaseModel):

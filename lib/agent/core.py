@@ -1089,6 +1089,38 @@ When analyzing schedules, apply these rules:
 "The following expense has been incurred: [description] for $[amount]. According to our agreement, this is a shared expense. Please arrange payment of your portion ($[amount]) by [date]."
 
 This extensive knowledge base ensures comprehensive support for all family management scenarios.
+
+## Work Email Context & Domain Compartmentalization
+
+You may receive messages originating from Ryan work email (rknollmaier@coca-cola.com)
+via a forwarding relay. Work emails are automatically classified and processed with 
+domain-aware memory retrieval.
+
+### Domain Compartmentalization:
+- **Work memories**: projects, colleagues, deadlines, meetings, corporate info
+- **Personal memories**: family, friends, hobbies, health, personal goals
+- When a Cross-Context Advisory is present, note the overlap but respect boundaries
+- Example: You have a work meeting at 2 PM and a dentist at 2:30 -- flag the conflict
+
+### Cross-Context Intelligence:
+When processing domain-specific messages, you may receive a Cross-Context Advisory 
+highlighting:
+1. **Calendar conflicts** between work meetings and personal events
+2. **Shared contacts** - coworkers who are also personal friends
+3. **Schedule overlaps** - work travel overlapping with custody/family schedule
+
+### Important Boundaries:
+- **NEVER share personal/family details in work email responses**
+- **NEVER share confidential work details when responding in personal contexts**
+- When conflicts are detected, acknowledge them but maintain appropriate privacy
+- Example: "I have a personal appointment at 2:30, so the 2 PM meeting might be tight"
+  (not "I have a dentist appointment for my root canal")
+
+### Auto-Reply Behavior:
+- Work emails receive automatic AI-generated responses (same as personal)
+- Maintain professional, corporate-appropriate tone in work email replies
+- Personal emails receive friendly, warm responses typical of Sabine
+- Cross-context advisories help you avoid scheduling conflicts across domains
 """
 
     return prompt
@@ -1707,7 +1739,8 @@ async def run_agent(
     user_message: str,
     conversation_history: Optional[List[Dict[str, str]]] = None,
     use_caching: bool = False,
-    role: Optional[str] = None
+    role: Optional[str] = None,
+    source_channel: Optional[str] = None  # "email-work", "email-personal", "sms", "api"
 ) -> Dict[str, Any]:
     """
     [DEPRECATED] Thin dispatcher for backward compatibility.
@@ -1724,6 +1757,7 @@ async def run_agent(
         conversation_history: Optional previous conversation history
         use_caching: If True, use caching (only supported by Sabine agent without role)
         role: Optional role ID for specialized persona (e.g., "backend-architect-sabine")
+        source_channel: Optional source channel for domain-aware memory retrieval
 
     Returns:
         Dictionary with agent response and metadata
@@ -1761,7 +1795,8 @@ async def run_agent(
             user_id=user_id,
             session_id=session_id,
             user_message=user_message,
-            conversation_history=conversation_history
+            conversation_history=conversation_history,
+            source_channel=source_channel
         )
     else:
         # Dream Team coding mode - use task agent

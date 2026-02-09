@@ -23,6 +23,7 @@ async def run_sabine_agent(
     session_id: str,
     user_message: str,
     conversation_history: Optional[List[Dict[str, str]]] = None,
+    source_channel: Optional[str] = None,  # "email-work", "email-personal", "sms", "api"
 ) -> Dict[str, Any]:
     """
     Run the Sabine personal assistant agent.
@@ -31,15 +32,18 @@ async def run_sabine_agent(
     1. Loads ONLY Sabine tools (calendar, reminders, weather, custody)
     2. Loads deep context (user rules, custody schedule, preferences)
     3. Builds system prompt from static and dynamic context
-    4. Retrieves relevant memories from the Context Engine
-    5. Creates and runs the agent
-    6. Returns response in the same format as the original run_agent()
+    4. Retrieves relevant memories from the Context Engine (with domain filtering)
+    5. Optionally performs cross-context scan for conflicts/overlaps
+    6. Creates and runs the agent
+    7. Returns response in the same format as the original run_agent()
     
     Args:
         user_id: The user's UUID
         session_id: The conversation session ID
         user_message: The user's input message
         conversation_history: Optional previous conversation history
+        source_channel: Optional source channel (email-work, email-personal, sms, api)
+                       for domain-aware memory retrieval
         
     Returns:
         Dictionary with agent response and metadata, same structure as run_agent():
@@ -90,19 +94,48 @@ async def run_sabine_agent(
         dynamic_prompt = build_dynamic_context(deep_context)
         full_system_prompt = static_prompt + dynamic_prompt
         
+        # === STEP 3b: Determine domain context ===
+        domain_filter = None
+        if source_channel == "email-work":
+            domain_filter = "work"
+        elif source_channel == "email-personal":
+            domain_filter = "personal"
+        # SMS and API: no domain filter (retrieve all)
+        
+        logger.info(f"Domain filter: {domain_filter} (source_channel: {source_channel})")
+        
         # === STEP 4: Retrieve memory context ===
         # Try to retrieve relevant memories for context augmentation
         try:
             retrieved_context = await retrieve_context(
                 user_id=UUID(user_id),
                 query=user_message,
-                role_filter="assistant"  # Only retrieve Sabine memories, not Dream Team task content
+                role_filter="assistant",  # Only retrieve Sabine memories, not Dream Team task content
+                domain_filter=domain_filter
             )
             logger.info(f"Retrieved context from memory ({len(retrieved_context)} chars)")
             
+            # === STEP 4b: Cross-context scan ===
+            cross_advisory = ""
+            if domain_filter:
+                try:
+                    from .retrieval import cross_context_scan
+                    cross_advisory = await cross_context_scan(
+                        user_id=UUID(user_id),
+                        query=user_message,
+                        primary_domain=domain_filter,
+                    )
+                    if cross_advisory:
+                        logger.info(f"Cross-context advisory generated ({len(cross_advisory)} chars)")
+                except Exception as e:
+                    logger.warning(f"Cross-context scan failed (non-fatal): {e}")
+            
             # Augment the user message with retrieved context
             if retrieved_context:
-                enhanced_message = f"Context from Memory:\n{retrieved_context}\n\nUser Query: {user_message}"
+                enhanced_message = f"Context from Memory:\n{retrieved_context}"
+                if cross_advisory:
+                    enhanced_message += f"\n\n{cross_advisory}"
+                enhanced_message += f"\n\nUser Query: {user_message}"
             else:
                 enhanced_message = user_message
                 
