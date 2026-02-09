@@ -495,11 +495,18 @@ async def ingest_user_message(
 
         # Override domain if hint provided (email relay is more reliable than LLM classification)
         if domain_hint:
-            from lib.db.models import DomainEnum
-            extracted.domain = DomainEnum(domain_hint)
-            for entity in extracted.extracted_entities:
-                entity.domain = DomainEnum(domain_hint)
-            logger.info(f"Domain overridden to '{domain_hint}' via hint (more reliable than LLM)")
+            try:
+                domain_value = DomainEnum(domain_hint)
+                extracted.domain = domain_value
+                for entity in extracted.extracted_entities:
+                    entity.domain = domain_value
+                logger.info(f"Domain overridden to '{domain_hint}' via hint (more reliable than LLM)")
+            except ValueError:
+                logger.warning(
+                    f"Invalid domain_hint '{domain_hint}' provided. "
+                    f"Valid values: {', '.join([d.value for d in DomainEnum])}. "
+                    f"Falling back to LLM-classified domain: {extracted.domain.value}"
+                )
 
         # STEP 3: Process entities (fuzzy match + merge or create)
         logger.info(
