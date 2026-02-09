@@ -427,7 +427,8 @@ async def ingest_user_message(
     user_id: UUID,
     content: str,
     source: str = "api",
-    role: str = "assistant"
+    role: str = "assistant",
+    domain_hint: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     The complete ingestion pipeline - converts raw user input into structured knowledge.
@@ -444,6 +445,9 @@ async def ingest_user_message(
         source: Source identifier (sms, email, api, etc.)
         role: Agent role that created this memory (e.g., "assistant", "backend-architect-sabine")
               Used to filter memories by agent type during retrieval. Defaults to "assistant".
+        domain_hint: Optional domain classification hint ("work", "personal", "family", "logistics").
+                    When provided, overrides LLM classification. Use when a more reliable domain 
+                    signal is available (e.g., email relay address).
 
     Returns:
         Dict with ingestion summary:
@@ -488,6 +492,21 @@ async def ingest_user_message(
         # STEP 2: Extract entities and context via LLM
         logger.info("Step 2: Extracting entities via Claude 3.5 Sonnet...")
         extracted = await extract_context(content)
+
+        # Override domain if hint provided (email relay is more reliable than LLM classification)
+        if domain_hint:
+            try:
+                domain_value = DomainEnum(domain_hint)
+                extracted.domain = domain_value
+                for entity in extracted.extracted_entities:
+                    entity.domain = domain_value
+                logger.info(f"Domain overridden to '{domain_hint}' via hint (more reliable than LLM)")
+            except ValueError:
+                logger.warning(
+                    f"Invalid domain_hint '{domain_hint}' provided. "
+                    f"Valid values: {', '.join([d.value for d in DomainEnum])}. "
+                    f"Falling back to LLM-classified domain: {extracted.domain.value}"
+                )
 
         # STEP 3: Process entities (fuzzy match + merge or create)
         logger.info(
@@ -558,6 +577,7 @@ async def ingest_user_message(
             "total_entities": len(entity_ids),
             "entity_ids": [str(eid) for eid in entity_ids],
             "domain": extracted.domain.value,
+            "domain_source": "hint" if domain_hint else "llm",
             "processing_time_ms": processing_time_ms
         }
 
