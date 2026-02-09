@@ -569,6 +569,123 @@ async def get_memory_by_id(memory_id: UUID) -> Optional[Dict[str, Any]]:
 
 
 # =============================================================================
+# Cross-Context Intelligence
+# =============================================================================
+
+def find_overlapping_entities(
+    primary: List[Entity], cross: List[Entity]
+) -> List[tuple]:
+    """
+    Find entities with similar names across both domain lists.
+    
+    Uses exact case-insensitive string matching. This approach may miss
+    variations like "Mike Smith" vs "Michael Smith" but avoids false positives.
+    
+    TODO: Consider implementing fuzzy string matching (e.g., Levenshtein distance)
+    for more robust entity matching across domains.
+    """
+    overlaps = []
+    for p_entity in primary:
+        for c_entity in cross:
+            if p_entity.name.lower() == c_entity.name.lower():
+                overlaps.append((p_entity, c_entity))
+    return overlaps
+
+
+def format_cross_context_advisory(
+    cross_memories: List[Dict[str, Any]],
+    cross_entities: List[Entity],
+    shared_entities: List[tuple],
+    other_domain: str,
+) -> str:
+    """Format cross-context findings into a compact advisory."""
+    lines = ["[CROSS-CONTEXT ADVISORY]"]
+    if shared_entities:
+        lines.append("")
+        lines.append("Shared Contacts/Entities (appear in both domains):")
+        for primary_e, cross_e in shared_entities:
+            lines.append(
+                f"- {primary_e.name}: {primary_e.domain.value}/{primary_e.type} "
+                f"AND {cross_e.domain.value}/{cross_e.type}"
+            )
+    if cross_memories:
+        lines.append("")
+        lines.append(f"Related {other_domain.upper()} memories:")
+        for mem in cross_memories[:3]:
+            content = mem.get("content", "Unknown")
+            lines.append(f"- {content}")
+    if cross_entities and not shared_entities:
+        lines.append("")
+        lines.append(f"Related {other_domain.upper()} entities:")
+        for entity in cross_entities[:3]:
+            lines.append(format_entity_for_context(entity))
+    return "\n".join(lines)
+
+
+async def cross_context_scan(
+    user_id: UUID,
+    query: str,
+    primary_domain: str,
+    memory_limit: int = 3,
+    entity_limit: int = 5,
+) -> str:
+    """
+    Scan the opposite domain for potential conflicts or overlaps.
+    Returns a compact advisory string for the LLM.
+
+    Use cases:
+    - Work meeting at 2 PM conflicts with personal dentist at 2:30 PM
+    - Coworker Jenny also appears as a personal friend
+    - Work travel overlapping with custody weekend
+    
+    Args:
+        user_id: User UUID
+        query: The query string to search for
+        primary_domain: The primary domain ("work" or "personal")
+        memory_limit: Max memories to retrieve from other domain
+        entity_limit: Max entities to retrieve per domain
+        
+    Returns:
+        Formatted cross-context advisory string (empty if no overlaps found)
+    """
+    other_domain = "personal" if primary_domain == "work" else "work"
+
+    try:
+        embeddings_client = get_embeddings()
+        query_embedding = await embeddings_client.aembed_query(query)
+
+        cross_memories = await search_similar_memories(
+            query_embedding=query_embedding,
+            user_id=user_id,
+            threshold=0.65,
+            limit=memory_limit,
+            role_filter="assistant",
+            domain_filter=other_domain,
+        )
+
+        keywords = extract_keywords(query)
+        # TODO: Consider adding user_id parameter to search_entities_by_keywords
+        # for multi-tenant support (currently entities are shared across user context)
+        cross_entities = await search_entities_by_keywords(
+            keywords=keywords, limit=entity_limit, domain_filter=other_domain,
+        )
+        primary_entities = await search_entities_by_keywords(
+            keywords=keywords, limit=entity_limit, domain_filter=primary_domain,
+        )
+        shared_entities = find_overlapping_entities(primary_entities, cross_entities)
+
+        if not cross_memories and not cross_entities and not shared_entities:
+            return ""
+
+        return format_cross_context_advisory(
+            cross_memories, cross_entities, shared_entities, other_domain
+        )
+    except Exception as e:
+        logger.warning(f"Cross-context scan failed: {e}")
+        return ""
+
+
+# =============================================================================
 # Testing / Example Usage
 # =============================================================================
 
