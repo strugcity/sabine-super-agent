@@ -946,6 +946,140 @@ Sabine Assistant
 """
 
 
+async def handle_work_email_draft(
+    sender: str,
+    subject: str,
+    body_text: str,
+    draft_response: str,
+    message_id: str,
+    thread_id: str,
+) -> Dict[str, Any]:
+    """
+    Handle a work email by drafting a reply and notifying Ryan for review.
+    Does NOT send the reply to the original sender.
+
+    Workflow:
+    1. Format a draft notification with the original email context + suggested reply
+    2. Send to Ryan via Twilio SMS
+    3. Store the pending draft in Supabase for later approval
+    4. Mark the original email as read
+
+    Args:
+        sender: Original email sender
+        subject: Email subject
+        body_text: Email body (truncated)
+        draft_response: AI-generated suggested reply
+        message_id: Gmail message ID
+        thread_id: Gmail thread ID
+
+    Returns:
+        Dict with draft status info
+    """
+    try:
+        logger.info(f"Handling work email draft for message from {sender}")
+        
+        # Truncate body for SMS readability
+        body_preview = body_text[:200] + "..." if len(body_text) > 200 else body_text
+        
+        # Truncate draft response to fit within SMS limits (1600 chars total for concatenated SMS)
+        # Reserve space for metadata (sender, subject, body preview, formatting)
+        max_draft_length = 500
+        draft_preview = draft_response[:max_draft_length]
+        if len(draft_response) > max_draft_length:
+            draft_preview += "...\n[Full draft in database]"
+        
+        # Format the SMS notification
+        draft_sms = (
+            f"📧 WORK EMAIL\n"
+            f"From: {sender}\n"
+            f"Re: {subject}\n"
+            f"---\n"
+            f"{body_preview}\n"
+            f"---\n"
+            f"Draft reply:\n{draft_preview}\n"
+            f"---\n"
+            f"Reply APPROVE to send, or send edits."
+        )
+        
+        logger.info(f"Draft SMS length: {len(draft_sms)} chars")
+        
+        # Send via Twilio SMS (reuse pattern from scheduler.py)
+        sms_sent = False
+        twilio_account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+        twilio_auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+        twilio_from_number = os.getenv("TWILIO_FROM_NUMBER")
+        user_phone = os.getenv("USER_PHONE")
+        
+        if all([twilio_account_sid, twilio_auth_token, twilio_from_number, user_phone]):
+            try:
+                from twilio.rest import Client as TwilioClient
+                
+                client = TwilioClient(twilio_account_sid, twilio_auth_token)
+                
+                # Send the SMS
+                sms = client.messages.create(
+                    body=draft_sms,
+                    from_=twilio_from_number,
+                    to=user_phone
+                )
+                
+                logger.info(f"Work email draft SMS sent successfully: {sms.sid}")
+                sms_sent = True
+                
+            except Exception as e:
+                # SMS failure should not prevent draft storage
+                logger.error(f"Failed to send work email draft SMS: {e}", exc_info=True)
+        else:
+            logger.warning("Twilio credentials not fully configured - skipping SMS notification")
+            logger.info(f"Would send SMS: {draft_sms[:200]}...")
+        
+        # Store pending draft in Supabase
+        supabase = get_supabase()
+        draft_stored = False
+        if supabase:
+            try:
+                supabase.table("email_tracking").insert({
+                    "message_id": message_id,
+                    "thread_id": thread_id,
+                    "tracking_type": "draft_pending",
+                    "metadata": {
+                        "sender": sender,
+                        "subject": subject,
+                        "draft_response": draft_response,
+                        "domain": "work",
+                        "body_preview": body_text[:500],  # Store more in DB
+                        "created_at": datetime.utcnow().isoformat(),
+                    }
+                }).execute()
+                logger.info(f"Work email draft stored in Supabase for message {message_id}")
+                draft_stored = True
+            except Exception as e:
+                logger.error(f"Failed to store work email draft in Supabase: {e}", exc_info=True)
+        else:
+            logger.warning("Supabase client not available - draft not stored in database")
+        
+        return {
+            "success": True,
+            "action": "draft_sent_for_review",
+            "recipient": sender,
+            "message_id": message_id,
+            "thread_id": thread_id,
+            "subject": subject,
+            "response_type": "work_draft",
+            "threaded": False,
+            "sms_sent": sms_sent,
+            "draft_stored": draft_stored,
+        }
+        
+    except Exception as e:
+        logger.error(f"Error handling work email draft: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e),
+            "action": "draft_failed"
+        }
+
+
 async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
     """
     Handle a new email notification by:
@@ -1269,61 +1403,85 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
 
                 logger.info(f"AI response: {ai_response[:200]}...")
 
-                # Convert plain text to simple HTML for email rendering
-                html_response = ai_response.replace('\n', '<br>\n')
-                html_body = f"""<html>
+                # Branch based on email domain classification
+                if email_domain == "work":
+                    # === WORK EMAIL: Draft mode — notify Ryan, don't send ===
+                    logger.info(f"Work email detected - creating draft for review instead of auto-sending")
+                    draft_result = await handle_work_email_draft(
+                        sender=sender,
+                        subject=original_subject,
+                        body_text=email_body,
+                        draft_response=ai_response,
+                        message_id=message_id,
+                        thread_id=thread_id,
+                    )
+                    
+                    # Mark the original email as read regardless of draft success
+                    await mark_as_read(agent_access_token, message_id)
+                    
+                    # Mark as processed (but NOT as replied - we only drafted)
+                    if message_id:
+                        save_processed_id(message_id)
+                    
+                    return draft_result
+                
+                else:
+                    # === PERSONAL EMAIL: Existing auto-reply behavior ===
+                    # Convert plain text to simple HTML for email rendering
+                    html_response = ai_response.replace('\n', '<br>\n')
+                    html_body = f"""<html>
 <body style="font-family: Arial, sans-serif; line-height: 1.6;">
 {html_response}
 </body>
 </html>"""
 
-                # Get original email's Message-ID header for threading
-                logger.info(f"Getting original email headers for threading...")
-                original_headers = await get_message_headers(mcp, agent_access_token, message_id)
-                in_reply_to = original_headers.get("message_id_header")
-                references = original_headers.get("references")
+                    # Get original email's Message-ID header for threading
+                    logger.info(f"Getting original email headers for threading...")
+                    original_headers = await get_message_headers(mcp, agent_access_token, message_id)
+                    in_reply_to = original_headers.get("message_id_header")
+                    references = original_headers.get("references")
 
-                # Send threaded reply using Gmail API directly
-                # This ensures the reply appears in the same email thread
-                logger.info(f"Sending threaded AI-generated reply to {sender} (thread: {thread_id})...")
-                send_result = await send_threaded_reply(
-                    access_token=agent_access_token,
-                    config=config,
-                    to=sender,
-                    subject=reply_subject,
-                    body=ai_response,
-                    html_body=html_body,
-                    thread_id=thread_id,
-                    in_reply_to=in_reply_to,
-                    references=references
-                )
+                    # Send threaded reply using Gmail API directly
+                    # This ensures the reply appears in the same email thread
+                    logger.info(f"Sending threaded AI-generated reply to {sender} (thread: {thread_id})...")
+                    send_result = await send_threaded_reply(
+                        access_token=agent_access_token,
+                        config=config,
+                        to=sender,
+                        subject=reply_subject,
+                        body=ai_response,
+                        html_body=html_body,
+                        thread_id=thread_id,
+                        in_reply_to=in_reply_to,
+                        references=references
+                    )
 
-                logger.info(f"Send result: {send_result}")
+                    logger.info(f"Send result: {send_result}")
 
-                if send_result.get("success"):
-                    logger.info(f"Threaded AI response sent to {sender} in thread {thread_id}")
+                    if send_result.get("success"):
+                        logger.info(f"Threaded AI response sent to {sender} in thread {thread_id}")
 
-                    # Mark the original email as read (like a real email client)
-                    await mark_as_read(agent_access_token, message_id)
+                        # Mark the original email as read (like a real email client)
+                        await mark_as_read(agent_access_token, message_id)
 
-                    # Mark thread as replied to prevent double-replies
-                    if thread_id:
-                        save_replied_thread(thread_id)
-                        logger.info(f"Thread {thread_id} marked as replied")
-                    return {
-                        "success": True,
-                        "action": "replied",
-                        "recipient": sender,
-                        "message_id": message_id,
-                        "thread_id": thread_id,
-                        "subject": reply_subject,
-                        "response_type": "ai_generated",
-                        "threaded": True
-                    }
-                else:
-                    error_msg = send_result.get("error", "Unknown error")
-                    logger.warning(f"Failed to send threaded reply to {sender}: {error_msg}")
-                    return {"success": False, "error": f"Failed to send threaded reply: {error_msg}"}
+                        # Mark thread as replied to prevent double-replies
+                        if thread_id:
+                            save_replied_thread(thread_id)
+                            logger.info(f"Thread {thread_id} marked as replied")
+                        return {
+                            "success": True,
+                            "action": "replied",
+                            "recipient": sender,
+                            "message_id": message_id,
+                            "thread_id": thread_id,
+                            "subject": reply_subject,
+                            "response_type": "ai_generated",
+                            "threaded": True
+                        }
+                    else:
+                        error_msg = send_result.get("error", "Unknown error")
+                        logger.warning(f"Failed to send threaded reply to {sender}: {error_msg}")
+                        return {"success": False, "error": f"Failed to send threaded reply: {error_msg}"}
 
             finally:
                 # Always remove from in-flight processing set when done
