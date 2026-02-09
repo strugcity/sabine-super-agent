@@ -106,19 +106,24 @@ def classify_email_domain(
         ]
         for header_name in forwarding_headers:
             header_value = headers.get(header_name, "")
-            if header_value and work_origin_domain_lower and work_origin_domain_lower in header_value.lower():
-                logger.info(f"Email classified as WORK via header {header_name}: {header_value}")
-                return "work"
+            if header_value and work_origin_domain_lower:
+                # Support comma-separated list of work domains
+                work_domains = [d.strip() for d in work_origin_domain_lower.split(',')]
+                if any(domain in header_value.lower() for domain in work_domains):
+                    logger.info(f"Email classified as WORK via header {header_name}: {header_value}")
+                    return "work"
     
     # Priority 2: Check if sender matches the relay email
     if sender_email == work_relay_email_lower:
         logger.info(f"Email classified as WORK via relay sender: {sender_email}")
         return "work"
     
-    # Priority 3: Check if sender domain matches work origin domain
+    # Priority 3: Check if sender domain matches work origin domain(s)
     if work_origin_domain_lower:
         sender_domain = sender_email.split('@')[-1] if '@' in sender_email else ""
-        if sender_domain == work_origin_domain_lower:
+        # Support comma-separated list of work domains
+        work_domains = [d.strip() for d in work_origin_domain_lower.split(',')]
+        if sender_domain in work_domains:
             logger.info(f"Email classified as WORK via sender domain: {sender_domain}")
             return "work"
     
@@ -127,10 +132,13 @@ def classify_email_domain(
         subject_lower = subject.lower()
         forwarding_indicators = ["[fwd:", "fw:", "[fw:"]
         has_fwd_indicator = any(ind in subject_lower for ind in forwarding_indicators)
-        
-        if has_fwd_indicator and work_origin_domain_lower and work_origin_domain_lower in subject_lower:
-            logger.info(f"Email classified as WORK via forwarding subject: {subject[:50]}")
-            return "work"
+
+        if has_fwd_indicator and work_origin_domain_lower:
+            # Support comma-separated list of work domains
+            work_domains = [d.strip() for d in work_origin_domain_lower.split(',')]
+            if any(domain in subject_lower for domain in work_domains):
+                logger.info(f"Email classified as WORK via forwarding subject: {subject[:50]}")
+                return "work"
     
     # Default: personal
     logger.debug(f"Email classified as PERSONAL (no work signals detected)")
