@@ -51,25 +51,25 @@ CREATE TABLE IF NOT EXISTS tool_audit_log (
 -- =============================================================================
 
 -- Query by user (multi-tenant filtering)
-CREATE INDEX idx_tool_audit_user_id ON tool_audit_log(user_id) WHERE user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tool_audit_user_id ON tool_audit_log(user_id) WHERE user_id IS NOT NULL;
 
 -- Query by task (debugging specific task)
-CREATE INDEX idx_tool_audit_task_id ON tool_audit_log(task_id) WHERE task_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tool_audit_task_id ON tool_audit_log(task_id) WHERE task_id IS NOT NULL;
 
 -- Query by tool name (usage statistics)
-CREATE INDEX idx_tool_audit_tool_name ON tool_audit_log(tool_name);
+CREATE INDEX IF NOT EXISTS idx_tool_audit_tool_name ON tool_audit_log(tool_name);
 
 -- Query by status (find failures)
-CREATE INDEX idx_tool_audit_status ON tool_audit_log(status);
+CREATE INDEX IF NOT EXISTS idx_tool_audit_status ON tool_audit_log(status);
 
 -- Query by target repo (repo-specific audit)
-CREATE INDEX idx_tool_audit_target_repo ON tool_audit_log(target_repo) WHERE target_repo IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tool_audit_target_repo ON tool_audit_log(target_repo) WHERE target_repo IS NOT NULL;
 
 -- Time-based queries (recent activity, time ranges)
-CREATE INDEX idx_tool_audit_created_at ON tool_audit_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tool_audit_created_at ON tool_audit_log(created_at DESC);
 
 -- Compound index for dashboard queries
-CREATE INDEX idx_tool_audit_role_status ON tool_audit_log(agent_role, status);
+CREATE INDEX IF NOT EXISTS idx_tool_audit_role_status ON tool_audit_log(agent_role, status);
 
 -- =============================================================================
 -- ROW LEVEL SECURITY
@@ -78,19 +78,35 @@ CREATE INDEX idx_tool_audit_role_status ON tool_audit_log(agent_role, status);
 ALTER TABLE tool_audit_log ENABLE ROW LEVEL SECURITY;
 
 -- Allow service role full access (for backend operations)
-CREATE POLICY "Service role has full access to tool_audit_log"
-    ON tool_audit_log
-    FOR ALL
-    USING (auth.role() = 'service_role');
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies WHERE policyname = 'Service role has full access to tool_audit_log'
+    ) THEN
+        CREATE POLICY "Service role has full access to tool_audit_log"
+            ON tool_audit_log
+            FOR ALL
+            USING (auth.role() = 'service_role');
+    END IF;
+END;
+$$;
 
 -- Allow authenticated users to read their own audit logs
-CREATE POLICY "Users can view their own tool audit logs"
-    ON tool_audit_log
-    FOR SELECT
-    USING (
-        auth.role() = 'authenticated'
-        AND (user_id = auth.uid() OR user_id IS NULL)
-    );
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies WHERE policyname = 'Users can view their own tool audit logs'
+    ) THEN
+        CREATE POLICY "Users can view their own tool audit logs"
+            ON tool_audit_log
+            FOR SELECT
+            USING (
+                auth.role() = 'authenticated'
+                AND (user_id = auth.uid() OR user_id IS NULL)
+            );
+    END IF;
+END;
+$$;
 
 -- =============================================================================
 -- HELPER FUNCTIONS

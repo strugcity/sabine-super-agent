@@ -1,0 +1,169 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://sabine.ai/schemas/family-entity-graph.json",
+  "title": "Family Entity Graph",
+  "description": "Schema for Sabine's Family Entity Graph - powers calendar inference",
+  "type": "object",
+  "required": ["household", "members"],
+
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference"
+    },
+    "_description": {
+      "type": "string"
+    },
+    "_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "_last_updated": {
+      "type": "string",
+      "format": "date"
+    },
+
+    "household": {
+      "type": "object",
+      "description": "Household-level configuration",
+      "required": ["primary_timezone", "inference_threshold"],
+      "properties": {
+        "primary_timezone": {
+          "type": "string",
+          "description": "IANA timezone identifier",
+          "default": "America/Chicago"
+        },
+        "inference_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.6,
+          "description": "Minimum confidence to auto-assign (below = ask user)"
+        }
+      }
+    },
+
+    "members": {
+      "type": "array",
+      "description": "Family members in the household",
+      "items": {
+        "$ref": "#/definitions/FamilyMemberEntity"
+      },
+      "minItems": 1
+    }
+  },
+
+  "definitions": {
+    "FamilyMemberEntity": {
+      "type": "object",
+      "description": "A family member entity ready for database insertion",
+      "required": ["name", "type", "domain", "status", "attributes"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Family member's name"
+        },
+        "type": {
+          "type": "string",
+          "const": "family_member"
+        },
+        "domain": {
+          "type": "string",
+          "const": "family"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "archived", "deleted"],
+          "default": "active"
+        },
+        "attributes": {
+          "$ref": "#/definitions/FamilyMemberProfile"
+        }
+      }
+    },
+
+    "FamilyMemberProfile": {
+      "type": "object",
+      "description": "Family member profile stored in attributes JSONB",
+      "properties": {
+        "age": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120
+        },
+        "grade": {
+          "type": "string",
+          "description": "School grade (e.g., '9th', 'K')"
+        },
+        "birthday": {
+          "type": "string",
+          "pattern": "^\\d{2}-\\d{2}$",
+          "description": "Birthday in MM-DD format"
+        },
+        "relationship": {
+          "type": "string",
+          "enum": ["child", "parent", "spouse", "sibling", "other"],
+          "default": "child"
+        },
+        "calendar_keywords": {
+          "$ref": "#/definitions/CalendarKeywords"
+        },
+        "schools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Schools attended"
+        },
+        "teams": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Sports teams"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Free-form notes"
+        }
+      }
+    },
+
+    "CalendarKeywords": {
+      "type": "object",
+      "description": "Keyword mappings for calendar inference",
+      "properties": {
+        "sports": { "$ref": "#/definitions/KeywordMapping" },
+        "school": { "$ref": "#/definitions/KeywordMapping" },
+        "activities": { "$ref": "#/definitions/KeywordMapping" },
+        "medical": { "$ref": "#/definitions/KeywordMapping" },
+        "social": { "$ref": "#/definitions/KeywordMapping" }
+      },
+      "additionalProperties": {
+        "$ref": "#/definitions/KeywordMapping"
+      }
+    },
+
+    "KeywordMapping": {
+      "type": "object",
+      "description": "A category of keywords with confidence weight",
+      "required": ["keywords"],
+      "properties": {
+        "keywords": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "Keywords to match (case-insensitive)"
+        },
+        "weight": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2,
+          "default": 1.0,
+          "description": "Confidence weight for this category"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Context (e.g., 'Spring 2026 season')"
+        }
+      }
+    }
+  }
+}

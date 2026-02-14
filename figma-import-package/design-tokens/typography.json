@@ -1,0 +1,189 @@
+{
+  "$schema": "https://schemas.com/design-tokens/v1.0.0",
+  "typography": {
+    "fontFamily": {
+      "base": {
+        "value": "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
+        "type": "fontFamily",
+        "description": "System font stack - uses native fonts for best performance"
+      },
+      "mono": {
+        "value": "'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace",
+        "type": "fontFamily",
+        "description": "Monospace font for code, entity IDs"
+      }
+    },
+    "fontSize": {
+      "xs": {
+        "value": "0.75rem",
+        "comment": "12px",
+        "type": "fontSize",
+        "description": "Labels, captions, small tags"
+      },
+      "sm": {
+        "value": "0.875rem",
+        "comment": "14px",
+        "type": "fontSize",
+        "description": "Body small, secondary text"
+      },
+      "base": {
+        "value": "1rem",
+        "comment": "16px",
+        "type": "fontSize",
+        "description": "Body default, primary text"
+      },
+      "lg": {
+        "value": "1.125rem",
+        "comment": "18px",
+        "type": "fontSize",
+        "description": "Section headings, large body text"
+      },
+      "xl": {
+        "value": "1.25rem",
+        "comment": "20px",
+        "type": "fontSize",
+        "description": "Small headings, card titles"
+      },
+      "2xl": {
+        "value": "1.5rem",
+        "comment": "24px",
+        "type": "fontSize",
+        "description": "Page headings, main titles"
+      },
+      "3xl": {
+        "value": "1.875rem",
+        "comment": "30px",
+        "type": "fontSize",
+        "description": "Large page titles"
+      },
+      "4xl": {
+        "value": "2.25rem",
+        "comment": "36px",
+        "type": "fontSize",
+        "description": "Stats, large numbers"
+      }
+    },
+    "fontWeight": {
+      "normal": {
+        "value": "400",
+        "type": "fontWeight",
+        "description": "Regular body text"
+      },
+      "medium": {
+        "value": "500",
+        "type": "fontWeight",
+        "description": "Labels, navigation items"
+      },
+      "semibold": {
+        "value": "600",
+        "type": "fontWeight",
+        "description": "Headings, buttons, strong text"
+      },
+      "bold": {
+        "value": "700",
+        "type": "fontWeight",
+        "description": "Primary headings, emphasis"
+      }
+    },
+    "lineHeight": {
+      "tight": {
+        "value": "1.25",
+        "type": "lineHeight",
+        "description": "Headings, tight spacing"
+      },
+      "normal": {
+        "value": "1.5",
+        "type": "lineHeight",
+        "description": "Body text, default spacing"
+      },
+      "relaxed": {
+        "value": "1.75",
+        "type": "lineHeight",
+        "description": "Long-form content, improved readability"
+      }
+    },
+    "letterSpacing": {
+      "tight": {
+        "value": "-0.025em",
+        "type": "letterSpacing",
+        "description": "Large headings"
+      },
+      "normal": {
+        "value": "0",
+        "type": "letterSpacing",
+        "description": "Body text"
+      },
+      "wide": {
+        "value": "0.025em",
+        "type": "letterSpacing",
+        "description": "Labels, all-caps text"
+      }
+    },
+    "textStyles": {
+      "heading-1": {
+        "fontSize": "2.25rem",
+        "fontWeight": "700",
+        "lineHeight": "1.25",
+        "letterSpacing": "-0.025em",
+        "description": "Page title (36px bold)"
+      },
+      "heading-2": {
+        "fontSize": "1.5rem",
+        "fontWeight": "700",
+        "lineHeight": "1.25",
+        "letterSpacing": "-0.025em",
+        "description": "Section title (24px bold)"
+      },
+      "heading-3": {
+        "fontSize": "1.25rem",
+        "fontWeight": "600",
+        "lineHeight": "1.25",
+        "description": "Subsection title (20px semibold)"
+      },
+      "heading-4": {
+        "fontSize": "1.125rem",
+        "fontWeight": "600",
+        "lineHeight": "1.25",
+        "description": "Card heading (18px semibold)"
+      },
+      "body-large": {
+        "fontSize": "1rem",
+        "fontWeight": "400",
+        "lineHeight": "1.5",
+        "description": "Large body text (16px)"
+      },
+      "body-default": {
+        "fontSize": "0.875rem",
+        "fontWeight": "400",
+        "lineHeight": "1.5",
+        "description": "Default body text (14px)"
+      },
+      "body-small": {
+        "fontSize": "0.75rem",
+        "fontWeight": "400",
+        "lineHeight": "1.5",
+        "description": "Small text, captions (12px)"
+      },
+      "label": {
+        "fontSize": "0.75rem",
+        "fontWeight": "500",
+        "lineHeight": "1.25",
+        "letterSpacing": "0.025em",
+        "description": "Form labels, tags (12px medium)"
+      },
+      "button": {
+        "fontSize": "0.875rem",
+        "fontWeight": "600",
+        "lineHeight": "1",
+        "description": "Button text (14px semibold)"
+      },
+      "code": {
+        "fontSize": "0.875rem",
+        "fontWeight": "400",
+        "lineHeight": "1.5",
+        "fontFamily": "'SF Mono', monospace",
+        "description": "Code snippets, entity IDs"
+      }
+    }
+  }
+}

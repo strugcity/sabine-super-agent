@@ -135,10 +135,18 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trigger_wal_logs_updated_at
-    BEFORE UPDATE ON wal_logs
-    FOR EACH ROW
-    EXECUTE FUNCTION update_wal_logs_updated_at();
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger WHERE tgname = 'trigger_wal_logs_updated_at'
+    ) THEN
+        CREATE TRIGGER trigger_wal_logs_updated_at
+            BEFORE UPDATE ON wal_logs
+            FOR EACH ROW
+            EXECUTE FUNCTION update_wal_logs_updated_at();
+    END IF;
+END;
+$$;
 
 -- -----------------------------------------------------------------------------
 -- Helper Functions

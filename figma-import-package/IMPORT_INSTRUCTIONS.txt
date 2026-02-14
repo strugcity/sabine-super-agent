@@ -1,0 +1,54 @@
+====================================================================
+  SABINE DASHBOARD - FIGMA IMPORT PACKAGE
+  Quick Import Instructions
+====================================================================
+
+STEP 1: CREATE FIGMA FILE
+--------------------------
+1. Open Figma (desktop app or web: figma.com)
+2. Click "New Design File"
+3. Rename file to: "Sabine Dashboard v1.0"
+
+STEP 2: IMPORT SVG MOCKUPS
+--------------------------
+METHOD A - Drag & Drop (Easiest):
+   1. Open the "svgs/" folder in File Explorer/Finder
+   2. Select mockup-01-overview-desktop.svg
+   3. Drag it into your Figma canvas
+   4. Done! ✓
+
+METHOD B - File Menu:
+   1. In Figma: File → Place Image/Video...
+   2. Navigate to the "svgs/" folder
+   3. Select mockup-01-overview-desktop.svg
+   4. Click anywhere on canvas to place
+   5. Done! ✓
+
+STEP 3: WHAT'S NEXT?
+--------------------
+→ Open README.md for complete setup guide
+→ Follow guides/figma-setup-checklist.md for full design system setup
+→ Import design-tokens/*.json using Figma plugins (optional)
+
+QUICK TIPS
+----------
+• The first SVG (mockup-01) is ready to import
+• Remaining mockups are being created
+• Design tokens are ready in design-tokens/ folder
+• Complete documentation in README.md
+
+TIME ESTIMATES
+--------------
+Import SVG:        5 minutes
+Basic organization: 15 minutes
+Full setup:        2-3 hours
+
+NEED HELP?
+----------
+→ See README.md (Troubleshooting section)
+→ See guides/figma-setup-checklist.md (detailed steps)
+→ Figma Help: https://help.figma.com
+
+====================================================================
+Ready to start? Open Figma and drag mockup-01-overview-desktop.svg!
+====================================================================

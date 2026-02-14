@@ -60,10 +60,18 @@ CREATE INDEX IF NOT EXISTS idx_reminders_metadata
     ON reminders USING gin(metadata);
 
 -- Auto-update updated_at on modification
-CREATE TRIGGER update_reminders_updated_at
-    BEFORE UPDATE ON reminders
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger WHERE tgname = 'update_reminders_updated_at'
+    ) THEN
+        CREATE TRIGGER update_reminders_updated_at
+            BEFORE UPDATE ON reminders
+            FOR EACH ROW
+            EXECUTE FUNCTION update_updated_at_column();
+    END IF;
+END;
+$$;
 
 -- Enable Row Level Security
 ALTER TABLE reminders ENABLE ROW LEVEL SECURITY;

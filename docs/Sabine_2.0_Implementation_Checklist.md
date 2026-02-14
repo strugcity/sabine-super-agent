@@ -1,7 +1,7 @@
 # Sabine 2.0: Implementation Checklist
 
 **Purpose:** Tracking document for PM and Tech Lead
-**Last Updated:** January 30, 2026
+**Last Updated:** February 13, 2026
 
 ---
 
@@ -22,10 +22,10 @@ Each item includes the requirement ID from the PRD for traceability.
 
 | ADR | Decision | Owner | Status |
 |-----|----------|-------|--------|
-| [ ] ADR-001: Graph Storage | pg_graphql vs. Neo4j | Tech Lead | |
-| [ ] ADR-002: Job Queue | Redis vs. in-process APScheduler | Tech Lead | |
-| [ ] ADR-003: Sandbox Provider | E2B vs. Modal | Tech Lead | |
-| [ ] ADR-004: Cold Storage Format | Compressed summary vs. full archive | Tech Lead | |
+| [x] ADR-001: Graph Storage | **pg_graphql** (Postgres recursive CTEs) | Tech Lead | ✅ Accepted 2026-02-13 |
+| [x] ADR-002: Job Queue | **Redis + rq** (separate Railway worker) | Tech Lead | ✅ Accepted 2026-02-13 |
+| [x] ADR-003: Sandbox Provider | **E2B** (existing integration) | Tech Lead | ✅ Accepted 2026-02-13 |
+| [x] ADR-004: Cold Storage Format | **Compressed Summary** (Haiku summaries + S3 backup) | Tech Lead | ✅ Accepted 2026-02-13 |
 
 ---
 

@@ -1,0 +1,228 @@
+/**
+ * Sabine Dashboard Design Tokens
+ * Generated from design-tokens/*.json
+ * Use these CSS custom properties in your stylesheets
+ */
+
+:root {
+  /* ========================================
+     COLORS - Primary
+     ======================================== */
+  --color-primary-50: #DBEAFE;
+  --color-primary-600: #3B82F6;
+  --color-primary-700: #2563EB;
+  --color-primary-900: #1E40AF;
+
+  /* ========================================
+     COLORS - Neutral Gray Scale
+     ======================================== */
+  --color-gray-50: #F9FAFB;
+  --color-gray-100: #F3F4F6;
+  --color-gray-200: #E5E7EB;
+  --color-gray-300: #D1D5DB;
+  --color-gray-400: #9CA3AF;
+  --color-gray-500: #6B7280;
+  --color-gray-600: #4B5563;
+  --color-gray-700: #374151;
+  --color-gray-800: #1F2937;
+  --color-gray-900: #111827;
+
+  /* ========================================
+     COLORS - Semantic
+     ======================================== */
+  --color-success: #10B981;
+  --color-success-light: #D1FAE5;
+  --color-success-dark: #065F46;
+
+  --color-error: #EF4444;
+  --color-error-light: #FEE2E2;
+  --color-error-dark: #991B1B;
+
+  --color-warning: #F59E0B;
+  --color-warning-light: #FEF3C7;
+  --color-warning-dark: #92400E;
+
+  --color-info: #3B82F6;
+  --color-info-light: #DBEAFE;
+
+  /* ========================================
+     COLORS - Domain Specific
+     ======================================== */
+  --color-domain-work: #3B82F6;
+  --color-domain-work-light: #DBEAFE;
+  --color-domain-work-text: #1E40AF;
+
+  --color-domain-family: #EC4899;
+  --color-domain-family-light: #FBCFE8;
+  --color-domain-family-text: #9F1239;
+
+  --color-domain-personal: #8B5CF6;
+  --color-domain-personal-light: #E9D5FF;
+  --color-domain-personal-text: #6B21A8;
+
+  --color-domain-logistics: #10B981;
+  --color-domain-logistics-light: #D1FAE5;
+  --color-domain-logistics-text: #065F46;
+
+  /* ========================================
+     COLORS - Importance Levels
+     ======================================== */
+  --color-importance-high: #FEE2E2;
+  --color-importance-high-text: #991B1B;
+
+  --color-importance-medium: #FED7AA;
+  --color-importance-medium-text: #9A3412;
+
+  --color-importance-low: #FEF3C7;
+  --color-importance-low-text: #92400E;
+
+  /* ========================================
+     TYPOGRAPHY - Font Families
+     ======================================== */
+  --font-family-base: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-family-mono: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+
+  /* ========================================
+     TYPOGRAPHY - Font Sizes
+     ======================================== */
+  --font-size-xs: 0.75rem;    /* 12px */
+  --font-size-sm: 0.875rem;   /* 14px */
+  --font-size-base: 1rem;     /* 16px */
+  --font-size-lg: 1.125rem;   /* 18px */
+  --font-size-xl: 1.25rem;    /* 20px */
+  --font-size-2xl: 1.5rem;    /* 24px */
+  --font-size-3xl: 1.875rem;  /* 30px */
+  --font-size-4xl: 2.25rem;   /* 36px */
+
+  /* ========================================
+     TYPOGRAPHY - Font Weights
+     ======================================== */
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  /* ========================================
+     TYPOGRAPHY - Line Heights
+     ======================================== */
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.75;
+
+  /* ========================================
+     TYPOGRAPHY - Letter Spacing
+     ======================================== */
+  --letter-spacing-tight: -0.025em;
+  --letter-spacing-normal: 0;
+  --letter-spacing-wide: 0.025em;
+
+  /* ========================================
+     SPACING - 8px Grid System
+     ======================================== */
+  --space-0: 0px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+  --space-24: 96px;
+
+  /* ========================================
+     SPACING - Component Specific
+     ======================================== */
+  --button-padding-x: 16px;
+  --button-padding-y: 10px;
+  --button-gap: 8px;
+
+  --input-padding-x: 12px;
+  --input-padding-y: 10px;
+  --input-gap: 8px;
+
+  --card-padding: 20px;
+  --card-gap: 16px;
+  --card-stack-gap: 12px;
+
+  --section-padding-x: 32px;
+  --section-padding-y: 24px;
+  --section-gap: 48px;
+
+  --page-padding: 32px;
+  --page-padding-mobile: 16px;
+
+  /* ========================================
+     BORDER RADIUS
+     ======================================== */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+
+  /* ========================================
+     SHADOWS
+     ======================================== */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+
+  /* ========================================
+     TRANSITIONS
+     ======================================== */
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ========================================
+     Z-INDEX LAYERS
+     ======================================== */
+  --z-base: 0;
+  --z-dropdown: 1000;
+  --z-sticky: 1020;
+  --z-fixed: 1030;
+  --z-modal-backdrop: 1040;
+  --z-modal: 1050;
+  --z-popover: 1060;
+  --z-tooltip: 1070;
+}
+
+/* ========================================
+   UTILITY CLASSES
+   ======================================== */
+
+/* Background Colors */
+.bg-primary { background-color: var(--color-primary-600); }
+.bg-primary-light { background-color: var(--color-primary-50); }
+.bg-gray-50 { background-color: var(--color-gray-50); }
+.bg-white { background-color: white; }
+
+/* Text Colors */
+.text-primary { color: var(--color-primary-600); }
+.text-gray-900 { color: var(--color-gray-900); }
+.text-gray-700 { color: var(--color-gray-700); }
+.text-gray-500 { color: var(--color-gray-500); }
+.text-white { color: white; }
+
+/* Border Colors */
+.border-gray-200 { border-color: var(--color-gray-200); }
+.border-gray-300 { border-color: var(--color-gray-300); }
+.border-primary { border-color: var(--color-primary-600); }
+
+/* Domain Colors */
+.bg-work { background-color: var(--color-domain-work-light); }
+.text-work { color: var(--color-domain-work-text); }
+
+.bg-family { background-color: var(--color-domain-family-light); }
+.text-family { color: var(--color-domain-family-text); }
+
+.bg-personal { background-color: var(--color-domain-personal-light); }
+.text-personal { color: var(--color-domain-personal-text); }
+
+.bg-logistics { background-color: var(--color-domain-logistics-light); }
+.text-logistics { color: var(--color-domain-logistics-text); }
