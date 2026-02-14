@@ -64,10 +64,18 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER task_queue_updated_at
-    BEFORE UPDATE ON task_queue
-    FOR EACH ROW
-    EXECUTE FUNCTION update_task_queue_updated_at();
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger WHERE tgname = 'task_queue_updated_at'
+    ) THEN
+        CREATE TRIGGER task_queue_updated_at
+            BEFORE UPDATE ON task_queue
+            FOR EACH ROW
+            EXECUTE FUNCTION update_task_queue_updated_at();
+    END IF;
+END;
+$$;
 
 -- Function to check if a task's dependencies are all completed
 -- Returns TRUE if task is ready to be dispatched

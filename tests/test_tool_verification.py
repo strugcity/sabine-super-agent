@@ -12,8 +12,8 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import the function we're testing
-# Note: We need to import it after FastAPI app is available
-from lib.agent.server import _task_requires_tool_execution
+# Note: This was moved from lib.agent.server to lib.agent.task_runner in Phase 2 refactoring
+from lib.agent.task_runner import _task_requires_tool_execution
 
 
 def test_implementation_tasks_require_tools():

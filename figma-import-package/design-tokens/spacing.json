@@ -1,0 +1,184 @@
+{
+  "$schema": "https://schemas.com/design-tokens/v1.0.0",
+  "spacing": {
+    "description": "8px grid system for consistent spacing",
+    "base": {
+      "value": "8px",
+      "type": "spacing",
+      "description": "Base unit for spacing system"
+    },
+    "scale": {
+      "0": {
+        "value": "0px",
+        "type": "spacing",
+        "description": "No spacing"
+      },
+      "1": {
+        "value": "4px",
+        "comment": "0.5 × base",
+        "type": "spacing",
+        "description": "Tiny spacing - tight elements"
+      },
+      "2": {
+        "value": "8px",
+        "comment": "1 × base",
+        "type": "spacing",
+        "description": "Extra small - between icons and text"
+      },
+      "3": {
+        "value": "12px",
+        "comment": "1.5 × base",
+        "type": "spacing",
+        "description": "Small - form field spacing"
+      },
+      "4": {
+        "value": "16px",
+        "comment": "2 × base",
+        "type": "spacing",
+        "description": "Default - card padding, button padding"
+      },
+      "5": {
+        "value": "20px",
+        "comment": "2.5 × base",
+        "type": "spacing",
+        "description": "Medium - between form groups"
+      },
+      "6": {
+        "value": "24px",
+        "comment": "3 × base",
+        "type": "spacing",
+        "description": "Large - section padding, card gaps"
+      },
+      "8": {
+        "value": "32px",
+        "comment": "4 × base",
+        "type": "spacing",
+        "description": "Extra large - page padding, major sections"
+      },
+      "10": {
+        "value": "40px",
+        "comment": "5 × base",
+        "type": "spacing",
+        "description": "XXL - large section dividers"
+      },
+      "12": {
+        "value": "48px",
+        "comment": "6 × base",
+        "type": "spacing",
+        "description": "XXXL - major page sections"
+      },
+      "16": {
+        "value": "64px",
+        "comment": "8 × base",
+        "type": "spacing",
+        "description": "Huge - hero sections"
+      },
+      "20": {
+        "value": "80px",
+        "comment": "10 × base",
+        "type": "spacing",
+        "description": "Massive - page headers"
+      },
+      "24": {
+        "value": "96px",
+        "comment": "12 × base",
+        "type": "spacing",
+        "description": "Giant - major layout sections"
+      }
+    },
+    "components": {
+      "button": {
+        "padding-x": {
+          "value": "16px",
+          "description": "Horizontal button padding"
+        },
+        "padding-y": {
+          "value": "10px",
+          "description": "Vertical button padding"
+        },
+        "gap": {
+          "value": "8px",
+          "description": "Space between icon and text in button"
+        }
+      },
+      "input": {
+        "padding-x": {
+          "value": "12px",
+          "description": "Horizontal input padding"
+        },
+        "padding-y": {
+          "value": "10px",
+          "description": "Vertical input padding"
+        },
+        "gap": {
+          "value": "8px",
+          "description": "Space between form fields"
+        }
+      },
+      "card": {
+        "padding": {
+          "value": "20px",
+          "description": "Card internal padding"
+        },
+        "gap": {
+          "value": "16px",
+          "description": "Space between cards in grid"
+        },
+        "stack-gap": {
+          "value": "12px",
+          "description": "Space between elements inside card"
+        }
+      },
+      "section": {
+        "padding-x": {
+          "value": "32px",
+          "description": "Horizontal section padding (desktop)"
+        },
+        "padding-y": {
+          "value": "24px",
+          "description": "Vertical section padding"
+        },
+        "gap": {
+          "value": "48px",
+          "description": "Space between major sections"
+        }
+      },
+      "layout": {
+        "page-padding": {
+          "value": "32px",
+          "description": "Page edge padding (desktop)"
+        },
+        "page-padding-mobile": {
+          "value": "16px",
+          "description": "Page edge padding (mobile)"
+        },
+        "max-width": {
+          "value": "1440px",
+          "description": "Maximum content width"
+        },
+        "content-max-width": {
+          "value": "1200px",
+          "description": "Maximum width for readable content"
+        }
+      }
+    },
+    "usage": {
+      "icon-text-gap": {
+        "value": "8px",
+        "description": "Space between icon and adjacent text"
+      },
+      "label-input-gap": {
+        "value": "8px",
+        "description": "Space between form label and input"
+      },
+      "badge-gap": {
+        "value": "8px",
+        "description": "Space between multiple badges"
+      },
+      "list-item-gap": {
+        "value": "12px",
+        "description": "Space between list items"
+      }
+    }
+  }
+}

@@ -122,6 +122,12 @@ class Memory(BaseModel):
 
     Stores fuzzy, semantic memories that can be retrieved via similarity search.
     Links to entities via UUID array.
+
+    Phase 1 additions:
+    - salience_score: weighted importance for retrieval ranking
+    - last_accessed_at: recency tracking for memory decay/boosting
+    - access_count: frequency counter for popularity-based ranking
+    - is_archived: cold storage flag to exclude from active retrieval
     """
     id: Optional[UUID] = None
     content: str = Field(..., description="Memory content (text)")
@@ -133,6 +139,19 @@ class Memory(BaseModel):
         default_factory=dict, description="Additional context")
     importance_score: float = Field(
         default=0.5, ge=0.0, le=1.0, description="Memory importance (0-1)")
+    # Phase 1: Memory lifecycle fields
+    salience_score: float = Field(
+        default=0.5, ge=0.0, le=1.0,
+        description="Importance weight for retrieval ranking (0.0-1.0)")
+    last_accessed_at: Optional[datetime] = Field(
+        default=None,
+        description="Last time this memory was retrieved")
+    access_count: int = Field(
+        default=0, ge=0,
+        description="Number of times this memory has been retrieved")
+    is_archived: bool = Field(
+        default=False,
+        description="Cold storage flag: archived memories excluded from active retrieval")
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -154,7 +173,10 @@ class Memory(BaseModel):
                     "source": "sms",
                     "timestamp": "2026-01-29T12:00:00Z"
                 },
-                "importance_score": 0.8
+                "importance_score": 0.8,
+                "salience_score": 0.7,
+                "access_count": 3,
+                "is_archived": False
             }
         }
 
@@ -166,6 +188,7 @@ class MemoryCreate(BaseModel):
     entity_links: List[UUID] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
     importance_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    salience_score: float = Field(default=0.5, ge=0.0, le=1.0)
 
     @field_validator('embedding')
     @classmethod
@@ -184,6 +207,10 @@ class MemoryUpdate(BaseModel):
     entity_links: Optional[List[UUID]] = None
     metadata: Optional[Dict[str, Any]] = None
     importance_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    salience_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    last_accessed_at: Optional[datetime] = None
+    access_count: Optional[int] = Field(default=None, ge=0)
+    is_archived: Optional[bool] = None
 
     @field_validator('embedding')
     @classmethod
@@ -263,3 +290,145 @@ class TaskUpdate(BaseModel):
     due_date: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     metadata: Optional[Dict[str, Any]] = None
+
+
+# =============================================================================
+# WAL (Write-Ahead Log) Models
+# =============================================================================
+# Domain-layer Pydantic models for the wal_logs table.
+# These complement the service-layer models in backend/services/wal.py
+# and provide validation for the REST/API boundary in lib/db/.
+
+class WALEntryStatus(str, Enum):
+    """WAL entry lifecycle status."""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class WALEntry(BaseModel):
+    """
+    WAL Entry: A row in the wal_logs table.
+
+    Represents a raw interaction captured by the Fast Path before
+    Slow Path consolidation processes it.
+
+    Maps to the wal_logs table created in 20260130050000_create_wal_table.sql.
+    """
+    id: Optional[UUID] = None
+    raw_payload: Dict[str, Any] = Field(
+        ..., description="Complete raw interaction data (JSONB)")
+    status: WALEntryStatus = Field(
+        default=WALEntryStatus.PENDING,
+        description="Processing lifecycle status")
+    retry_count: int = Field(
+        default=0, ge=0,
+        description="Number of processing attempts")
+    idempotency_key: Optional[str] = Field(
+        default=None,
+        description="MD5 hash for duplicate detection")
+    last_error: Optional[str] = Field(
+        default=None,
+        description="Error message from last failed attempt")
+    worker_id: Optional[str] = Field(
+        default=None,
+        description="ID of worker currently processing this entry")
+    checkpoint_id: Optional[UUID] = Field(
+        default=None,
+        description="Links to checkpoint for resumable processing")
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional metadata for debugging/analytics")
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    processed_at: Optional[datetime] = Field(
+        default=None,
+        description="Timestamp when processing completed")
+
+    class Config:
+        from_attributes = True
+        json_schema_extra = {
+            "example": {
+                "raw_payload": {
+                    "user_id": "550e8400-e29b-41d4-a716-446655440000",
+                    "message": "Schedule team standup for 9 AM",
+                    "source": "sms",
+                    "timestamp": "2026-02-13T10:00:00Z"
+                },
+                "status": "pending",
+                "retry_count": 0,
+                "metadata": {"source_channel": "twilio"}
+            }
+        }
+
+
+class WALEntryCreate(BaseModel):
+    """Schema for creating a new WAL entry via the API layer."""
+    raw_payload: Dict[str, Any] = Field(
+        ..., description="Complete raw interaction data")
+    idempotency_key: Optional[str] = Field(
+        default=None,
+        description="Pre-computed idempotency key (auto-generated if omitted)")
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional metadata for debugging/analytics")
+
+
+# =============================================================================
+# Slow Path Consolidation Models
+# =============================================================================
+
+class ConsolidationResult(BaseModel):
+    """
+    Result of processing a single WAL entry through the Slow Path pipeline.
+
+    Returned by ``consolidate_wal_entry()`` in ``backend/worker/slow_path.py``.
+    """
+    wal_entry_id: str = Field(
+        ..., description="UUID (as string) of the processed WAL entry")
+    status: str = Field(
+        ..., description="Outcome: 'processed', 'skipped', or 'failed'")
+    entities_resolved: int = Field(
+        default=0, ge=0,
+        description="Number of entities created or updated")
+    relationships_extracted: int = Field(
+        default=0, ge=0,
+        description="Number of relationships extracted (stub returns placeholder)")
+    conflicts_resolved: int = Field(
+        default=0, ge=0,
+        description="Number of Fast Path conflict flags resolved")
+    duration_ms: float = Field(
+        default=0.0, ge=0.0,
+        description="Wall-clock time in milliseconds for this entry")
+    error: Optional[str] = Field(
+        default=None,
+        description="Error message if status is 'failed'")
+
+
+class BatchConsolidationResult(BaseModel):
+    """
+    Aggregate result of processing a batch of WAL entries.
+
+    Returned by ``consolidate_wal_batch()`` in ``backend/worker/slow_path.py``.
+    """
+    batch_id: str = Field(
+        ..., description="Unique identifier for this batch run")
+    total: int = Field(
+        default=0, ge=0,
+        description="Total number of WAL entries in the batch")
+    processed: int = Field(
+        default=0, ge=0,
+        description="Number of entries successfully processed")
+    failed: int = Field(
+        default=0, ge=0,
+        description="Number of entries that failed processing")
+    skipped: int = Field(
+        default=0, ge=0,
+        description="Number of entries skipped (not found or already processed)")
+    duration_ms: float = Field(
+        default=0.0, ge=0.0,
+        description="Total wall-clock time in milliseconds for the batch")
+    checkpoint_count: int = Field(
+        default=0, ge=0,
+        description="Number of checkpoints saved during batch processing")

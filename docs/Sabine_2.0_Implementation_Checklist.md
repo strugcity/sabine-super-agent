@@ -1,7 +1,7 @@
 # Sabine 2.0: Implementation Checklist
 
 **Purpose:** Tracking document for PM and Tech Lead
-**Last Updated:** January 30, 2026
+**Last Updated:** February 14, 2026
 
 ---
 
@@ -22,10 +22,10 @@ Each item includes the requirement ID from the PRD for traceability.
 
 | ADR | Decision | Owner | Status |
 |-----|----------|-------|--------|
-| [ ] ADR-001: Graph Storage | pg_graphql vs. Neo4j | Tech Lead | |
-| [ ] ADR-002: Job Queue | Redis vs. in-process APScheduler | Tech Lead | |
-| [ ] ADR-003: Sandbox Provider | E2B vs. Modal | Tech Lead | |
-| [ ] ADR-004: Cold Storage Format | Compressed summary vs. full archive | Tech Lead | |
+| [x] ADR-001: Graph Storage | **pg_graphql** (Postgres recursive CTEs) | Tech Lead | ✅ Accepted 2026-02-13 |
+| [x] ADR-002: Job Queue | **Redis + rq** (separate Railway worker) | Tech Lead | ✅ Accepted 2026-02-13 |
+| [x] ADR-003: Sandbox Provider | **E2B** (existing integration) | Tech Lead | ✅ Accepted 2026-02-13 |
+| [x] ADR-004: Cold Storage Format | **Compressed Summary** (Haiku summaries + S3 backup) | Tech Lead | ✅ Accepted 2026-02-13 |
 
 ---
 
@@ -34,64 +34,68 @@ Each item includes the requirement ID from the PRD for traceability.
 ### Week 1: Infrastructure Setup
 
 #### Schema Migrations
-- [ ] **MEM-001**: Add `salience_score` column to memories table
-- [ ] **MEM-001**: Add `last_accessed_at` column to memories table
-- [ ] **MEM-001**: Add `access_count` column to memories table
-- [ ] **MEM-001**: Add `is_archived` column to memories table
-- [ ] Create `write_ahead_log` table for WAL
-- [ ] Create index on WAL for processing order
+- [x] **MEM-001**: Add `salience_score` column to memories table — `20260213_phase1_schema.sql`
+- [x] **MEM-001**: Add `last_accessed_at` column to memories table — `20260213_phase1_schema.sql`
+- [x] **MEM-001**: Add `access_count` column to memories table — `20260213_phase1_schema.sql`
+- [x] **MEM-001**: Add `is_archived` column to memories table — `20260213_phase1_schema.sql`
+- [x] Create `write_ahead_log` table for WAL — `20260213_phase1_schema.sql`
+- [x] Create index on WAL for processing order — `20260213_phase1_schema.sql`
 
 #### Redis Setup
-- [ ] **INFRA-001**: Provision Railway Redis add-on
-- [ ] Configure connection string in environment
-- [ ] Test connectivity from FastAPI server
+- [x] **INFRA-001**: Provision Railway Redis add-on — deployed, Online
+- [x] Configure connection string in environment — `backend/services/redis_client.py`
+- [x] Test connectivity from FastAPI server — health check in `backend/worker/health.py`
 
 ### Week 2: Background Worker
 
 #### Worker Service
-- [ ] **INFRA-002**: Create new Railway service for worker
-- [ ] Set up worker Dockerfile/Procfile
-- [ ] Implement health check endpoint `/worker/health`
-- [ ] **INFRA-004**: Configure health monitoring
+- [x] **INFRA-002**: Create new Railway service for worker — `worker-service`, Online, same Redis
+- [x] Set up worker Dockerfile/Procfile — `backend/worker/Dockerfile`, `backend/worker/Procfile`
+- [x] Implement health check endpoint `/worker/health` — `backend/worker/health.py`
+- [x] **INFRA-004**: Configure health monitoring — health server on port 8082
 
 #### Queue Integration
-- [ ] Select queue library (rq vs. dramatiq)
-- [ ] Implement job producer in FastAPI
-- [ ] Implement job consumer in worker
-- [ ] Test queue roundtrip
+- [x] Select queue library (rq vs. dramatiq) — **rq** (ADR-002)
+- [x] Implement job producer in FastAPI — `backend/services/queue.py`
+- [x] Implement job consumer in worker — `backend/worker/jobs.py`
+- [x] Test queue roundtrip — unit tests passing
 
 ### Week 3: Dual-Stream Pipeline
 
 #### Fast Path (REQ: FAST-001 through FAST-004)
-- [ ] **FAST-001**: Modify `ingest_user_message()` to write to WAL
-- [ ] **FAST-002**: Ensure no graph mutations on hot path
-- [ ] **FAST-003**: Parallelize entity extraction and embedding
-- [ ] **FAST-004**: Implement read-only conflict detection
+- [x] **FAST-001**: Modify `ingest_user_message()` to write to WAL — `backend/services/fast_path.py`
+- [x] **FAST-002**: Ensure no graph mutations on hot path — WAL decouples writes
+- [x] **FAST-003**: Parallelize entity extraction and embedding — `asyncio.gather()` in fast_path
+- [x] **FAST-004**: Implement read-only conflict detection — `backend/services/fast_path.py`
 
 #### Slow Path (REQ: SLOW-001 through SLOW-005)
-- [ ] **SLOW-001**: WAL processing job in worker
-- [ ] **SLOW-002**: Implement checkpointing (every 100 entries)
-- [ ] **SLOW-003**: Wire Haiku for causal edge extraction
-- [ ] **SLOW-004**: Slack/SMS alert on failure
+- [x] **SLOW-001**: WAL processing job in worker — `backend/worker/slow_path.py`
+- [x] **SLOW-002**: Implement checkpointing (every 100 entries) — `backend/services/checkpoint.py`
+- [x] **SLOW-003**: Wire Haiku for causal edge extraction — Claude Haiku in `slow_path.py`
+- [x] **SLOW-004**: Slack/SMS alert on failure — `backend/worker/alerts.py` (httpx webhook)
 - [ ] **SLOW-005**: Memory profiling, enforce 2GB limit
 
 ### Week 4: Salience & Streaming
 
 #### Salience Calculation (REQ: MEM-001 through MEM-004)
-- [ ] **MEM-001**: Implement salience formula in Slow Path
-- [ ] **MEM-002**: Archive job for S < 0.2 memories
-- [ ] **MEM-003**: Cold storage table + retrieval API
+- [x] **MEM-001**: Implement salience formula in Slow Path — `backend/services/salience.py` (keyword emotional weight + graph centrality)
+- [x] **MEM-002**: Archive job for S < 0.2 memories — `backend/worker/salience_job.py` (flips `is_archived`; full cold-storage move Phase 2)
+- [x] **MEM-003**: Cold storage table + retrieval API — `lib/agent/routers/archive.py` (list/get/restore endpoints)
 - [ ] **MEM-004**: Settings API for weight configuration
 
 #### Streaming Acknowledgment (REQ: META-004 through META-006)
-- [ ] **META-004**: Timer thread in `/invoke` handler
-- [ ] **META-005**: Verify SMS socket behavior
-- [ ] **META-006**: Contextual acknowledgment templates
+- [x] **META-004**: Timer thread in `/invoke` handler — `AcknowledgmentManager` + real Twilio SMS
+- [~] **META-005**: Verify SMS socket behavior — webhook→/invoke→TwiML flow verified via curl simulation; ack timer needs Twilio creds on Railway + real carrier test after campaign approval
+- [x] **META-006**: Contextual acknowledgment templates — topic-aware templates in `streaming_ack.py`
+
+#### Nightly Scheduling
+- [x] Wire `rq` scheduler for nightly salience recalc — `backend/worker/main.py` (`with_scheduler=True`)
+- [x] Wire `rq` scheduler for nightly archive job — `_register_scheduled_jobs()` in worker
 
 ### Phase 1 Exit Criteria
-- [ ] Worker processes WAL entries independently
-- [ ] Salience scores calculated on nightly run
-- [ ] Streaming ack prevents SMS timeout (manual test)
+- [x] Worker processes WAL entries independently — rq worker, separate Dockerfile
+- [x] Salience scores calculated on nightly run — scheduler wired
+- [~] Streaming ack prevents SMS timeout (manual test) — code complete, needs carrier test
 - [ ] No data loss on worker crash (chaos test)
 
 ---
@@ -101,13 +105,13 @@ Each item includes the requirement ID from the PRD for traceability.
 ### Weeks 5-6: MAGMA Graph Architecture
 
 #### Schema (REQ: MAGMA-001 through MAGMA-005)
-- [ ] Create `entity_relationships` table
-- [ ] Add indexes for source, target, type
+- [x] Create `entity_relationships` table — already exists in Supabase schema
+- [x] Add indexes for source, target, type — included in schema
 - [ ] Implement relationship type taxonomy (see PRD 11.2)
 
 #### Relationship Extraction
-- [ ] Design extraction prompt for Haiku
-- [ ] Implement extraction service in Slow Path
+- [x] Design extraction prompt for Haiku — `backend/worker/slow_path.py`
+- [x] Implement extraction service in Slow Path — Claude Haiku with 10s timeout + fallback
 - [ ] Test accuracy on sample memories (target >80%)
 
 #### Graph Queries
@@ -300,6 +304,17 @@ Each item includes the requirement ID from the PRD for traceability.
 | R-003: Graph explosion | Edges per node | > 50 | - | [ ] |
 | R-004: User confusion | Push-back rejection rate | > 50% | - | [ ] |
 | R-005: Extraction accuracy | Relationship accuracy | < 80% | - | [ ] |
+
+---
+
+## Known Issues / Tech Debt
+
+| ID | Issue | Severity | Details | Status |
+|----|-------|----------|---------|--------|
+| DEBT-001 | **Google OAuth refresh token expiry (`invalid_grant`)** | **High** | **Root cause found:** 3 different OAuth client IDs were hardcoded across `reauthorize_google.py`, `exchange_code.py`, and `trigger_oauth.py`. Tokens generated with one client ID fail with `invalid_grant` when refreshed with a different client ID on Railway. **Fixed (2026-02-14):** (a) `reauthorize_google.py` now reads `GOOGLE_CLIENT_ID` from `.env` — no more hardcoded client IDs, (b) `TokenExpiredError` + `invalid_grant` detection in `get_access_token()`, (c) `GET /gmail/token-health` proactive health-check endpoint, (d) email poller back-off after 3 consecutive failures + Slack alert. **After re-auth:** re-run `reauthorize_google.py` for both user + agent accounts using the `.env` client ID, then update Railway env vars. | [~] Needs re-auth |
+| DEBT-002 | **Duplicate reminders in database** | Medium | 9 copies of "Send weekly baseball YouTube video" reminder all firing at once. Needs dedup logic or a unique constraint on (user_id, title, recurrence_pattern). | [ ] Not started |
+| DEBT-003 | **Entity extraction returns prose instead of JSON** | Low | Claude Haiku sometimes returns freeform text instead of JSON for low-signal messages (e.g., "what's the weather?"). The `OutputParserException` is caught gracefully but is noisy. Consider adding a retry with `response_format` or a fallback empty-JSON path. | [ ] Not started |
+| DEBT-004 | **SMS reminder delivery: no phone number configured** | Medium | All SMS reminders fail with "No phone number configured for SMS notification". The `user_config` table has 0 config settings for the test user — phone number needs to be stored there or pulled from `user_identities`. | [ ] Not started |
 
 ---
 

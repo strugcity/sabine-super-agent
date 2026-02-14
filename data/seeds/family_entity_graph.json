@@ -1,0 +1,147 @@
+{
+  "$schema": "./family_entity_graph.schema.json",
+  "_description": "Family Entity Graph seed data for Sabine Calendar Inference",
+  "_version": "1.0.0",
+  "_last_updated": "2026-02-01",
+
+  "household": {
+    "primary_timezone": "America/Chicago",
+    "inference_threshold": 0.6
+  },
+
+  "members": [
+    {
+      "name": "Jack",
+      "type": "family_member",
+      "domain": "family",
+      "status": "active",
+      "attributes": {
+        "age": 14,
+        "grade": "9th",
+        "birthday": "03-15",
+        "relationship": "child",
+
+        "calendar_keywords": {
+          "sports": {
+            "keywords": [
+              "btba",
+              "bandits",
+              "btba bandits",
+              "baseball",
+              "team 104"
+            ],
+            "weight": 1.0,
+            "notes": "BTBA Bandits - Spring 2026 season"
+          },
+          "school": {
+            "keywords": [
+              "jefferson",
+              "jefferson high",
+              "jefferson high school",
+              "jhs"
+            ],
+            "weight": 0.8,
+            "notes": "Started 9th grade Fall 2025"
+          }
+        },
+
+        "schools": ["Jefferson High School"],
+        "teams": ["BTBA Bandits"],
+        "notes": "Plays catcher, practices Tuesday/Thursday evenings"
+      }
+    },
+
+    {
+      "name": "Anna",
+      "type": "family_member",
+      "domain": "family",
+      "status": "active",
+      "attributes": {
+        "age": 12,
+        "grade": "7th",
+        "birthday": "07-22",
+        "relationship": "child",
+
+        "calendar_keywords": {
+          "sports": {
+            "keywords": [
+              "bloomington fastpitch",
+              "fastpitch",
+              "blast",
+              "bloomington blast",
+              "softball",
+              "bfsa"
+            ],
+            "weight": 1.0,
+            "notes": "Bloomington Fastpitch Softball Association"
+          },
+          "school": {
+            "keywords": [
+              "ogms",
+              "oak grove",
+              "oak grove middle",
+              "oak grove middle school"
+            ],
+            "weight": 0.8,
+            "notes": "Oak Grove Middle School - 7th grade"
+          }
+        },
+
+        "schools": ["Oak Grove Middle School"],
+        "teams": ["Bloomington Blast"],
+        "notes": "Pitcher, travel team practices Mon/Wed/Sat"
+      }
+    },
+
+    {
+      "name": "Charlie",
+      "type": "family_member",
+      "domain": "family",
+      "status": "active",
+      "attributes": {
+        "age": 9,
+        "grade": "4th",
+        "birthday": "11-08",
+        "relationship": "child",
+
+        "calendar_keywords": {
+          "sports": {
+            "keywords": [
+              "evaa",
+              "eastview",
+              "eastview athletic",
+              "eastview youth",
+              "youth soccer",
+              "rec league"
+            ],
+            "weight": 1.0,
+            "notes": "Eastview Athletic Association - rec sports"
+          },
+          "school": {
+            "keywords": [
+              "oak ridge",
+              "oak ridge elementary",
+              "ore",
+              "oak ridge elem"
+            ],
+            "weight": 0.8,
+            "notes": "Oak Ridge Elementary - 4th grade"
+          },
+          "activities": {
+            "keywords": [
+              "cub scouts",
+              "scouts",
+              "pack 42"
+            ],
+            "weight": 0.7,
+            "notes": "Cub Scouts Pack 42"
+          }
+        },
+
+        "schools": ["Oak Ridge Elementary"],
+        "teams": ["EVAA Soccer"],
+        "notes": "Also in Cub Scouts, lots of weekend activities"
+      }
+    }
+  ]
+}

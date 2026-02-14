@@ -93,6 +93,11 @@ class InvokeRequest(BaseModel):
         description="Source channel: email-work, email-personal, sms, api. "
                     "Drives domain-aware memory retrieval."
     )
+    phone_number: Optional[str] = Field(
+        None,
+        description="Caller phone number in E.164 format (e.g., +15551234567). "
+                    "Required for SMS acknowledgment delivery."
+    )
 
 
 class InvokeResponse(BaseModel):

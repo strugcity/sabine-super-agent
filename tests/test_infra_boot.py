@@ -35,19 +35,19 @@ class TestInfrastructureBoot:
         """
         try:
             import backend
-            assert hasattr(app, '__file__'), "app package should have __file__ attribute"
+            assert hasattr(backend, '__file__'), "backend package should have __file__ attribute"
         except ModuleNotFoundError as e:
             pytest.fail(f"Cannot import 'backend' package: {e}. Check PYTHONPATH configuration.")
 
     def test_app_services_importable(self):
         """
-        Test that app.services subpackage is importable.
+        Test that backend.services subpackage is importable.
         """
         try:
             import backend.services
-            assert hasattr(app.services, '__file__'), "app.services should have __file__"
+            assert hasattr(backend.services, '__file__'), "backend.services should have __file__"
         except ModuleNotFoundError as e:
-            pytest.fail(f"Cannot import 'app.services': {e}. Check PYTHONPATH configuration.")
+            pytest.fail(f"Cannot import 'backend.services': {e}. Check PYTHONPATH configuration.")
 
     def test_wal_service_importable(self):
         """
@@ -80,7 +80,7 @@ class TestInfrastructureBoot:
         This is the main FastAPI application module.
         """
         try:
-            from lib.agent.server import backend
+            from lib.agent.server import app
             assert app is not None, "FastAPI app should be importable"
         except ModuleNotFoundError as e:
             pytest.fail(f"Cannot import lib.agent.server: {e}")
@@ -134,31 +134,31 @@ class TestPythonPathConfiguration:
         # In Docker, PYTHONPATH=/app ensures this
         assert True, "PYTHONPATH configuration documented"
 
-    def test_app_directory_exists(self):
+    def test_backend_directory_exists(self):
         """
-        Verify the app/ directory exists at project root.
-        """
-        project_root = Path(__file__).parent.parent
-        app_dir = project_root / "app"
-
-        assert app_dir.exists(), f"app/ directory should exist at {app_dir}"
-        assert app_dir.is_dir(), f"{app_dir} should be a directory"
-
-    def test_app_init_exists(self):
-        """
-        Verify app/__init__.py exists (makes it a package).
+        Verify the backend/ directory exists at project root.
         """
         project_root = Path(__file__).parent.parent
-        app_init = project_root / "app" / "__init__.py"
+        backend_dir = project_root / "backend"
 
-        assert app_init.exists(), f"app/__init__.py should exist at {app_init}"
+        assert backend_dir.exists(), f"backend/ directory should exist at {backend_dir}"
+        assert backend_dir.is_dir(), f"{backend_dir} should be a directory"
+
+    def test_backend_init_exists(self):
+        """
+        Verify backend/__init__.py exists (makes it a package).
+        """
+        project_root = Path(__file__).parent.parent
+        backend_init = project_root / "backend" / "__init__.py"
+
+        assert backend_init.exists(), f"backend/__init__.py should exist at {backend_init}"
 
     def test_wal_module_exists(self):
         """
-        Verify app/services/wal.py exists.
+        Verify backend/services/wal.py exists.
         """
         project_root = Path(__file__).parent.parent
-        wal_module = project_root / "app" / "services" / "wal.py"
+        wal_module = project_root / "backend" / "services" / "wal.py"
 
         assert wal_module.exists(), f"WAL module should exist at {wal_module}"
 

@@ -64,7 +64,16 @@ CREATE INDEX IF NOT EXISTS idx_agent_events_slack_thread
 
 -- Enable Supabase Realtime on this table
 -- This allows clients to subscribe to INSERT events
-ALTER PUBLICATION supabase_realtime ADD TABLE agent_events;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_publication_tables
+        WHERE pubname = 'supabase_realtime' AND tablename = 'agent_events'
+    ) THEN
+        ALTER PUBLICATION supabase_realtime ADD TABLE agent_events;
+    END IF;
+END;
+$$;
 
 -- Function to get recent events (for dashboard)
 CREATE OR REPLACE FUNCTION get_recent_events(

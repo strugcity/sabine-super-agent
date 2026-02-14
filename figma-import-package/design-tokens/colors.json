@@ -1,0 +1,230 @@
+{
+  "$schema": "https://schemas.com/design-tokens/v1.0.0",
+  "colors": {
+    "primary": {
+      "blue-50": {
+        "value": "#DBEAFE",
+        "type": "color",
+        "description": "Light blue background for active tabs, badges"
+      },
+      "blue-600": {
+        "value": "#3B82F6",
+        "type": "color",
+        "description": "Primary action color - buttons, links, active states"
+      },
+      "blue-700": {
+        "value": "#2563EB",
+        "type": "color",
+        "description": "Primary hover state"
+      },
+      "blue-900": {
+        "value": "#1E40AF",
+        "type": "color",
+        "description": "Primary text on light blue backgrounds"
+      }
+    },
+    "neutral": {
+      "gray-50": {
+        "value": "#F9FAFB",
+        "type": "color",
+        "description": "Page background"
+      },
+      "gray-100": {
+        "value": "#F3F4F6",
+        "type": "color",
+        "description": "Secondary button background, input backgrounds"
+      },
+      "gray-200": {
+        "value": "#E5E7EB",
+        "type": "color",
+        "description": "Borders, dividers"
+      },
+      "gray-300": {
+        "value": "#D1D5DB",
+        "type": "color",
+        "description": "Input borders, disabled states"
+      },
+      "gray-400": {
+        "value": "#9CA3AF",
+        "type": "color",
+        "description": "Placeholder text, icons"
+      },
+      "gray-500": {
+        "value": "#6B7280",
+        "type": "color",
+        "description": "Secondary text, labels"
+      },
+      "gray-600": {
+        "value": "#4B5563",
+        "type": "color",
+        "description": "Body text (secondary)"
+      },
+      "gray-700": {
+        "value": "#374151",
+        "type": "color",
+        "description": "Headings, strong text"
+      },
+      "gray-800": {
+        "value": "#1F2937",
+        "type": "color",
+        "description": "Primary headings"
+      },
+      "gray-900": {
+        "value": "#111827",
+        "type": "color",
+        "description": "Primary text, main headings"
+      }
+    },
+    "semantic": {
+      "success": {
+        "value": "#10B981",
+        "type": "color",
+        "description": "Success states, positive growth indicators"
+      },
+      "success-light": {
+        "value": "#D1FAE5",
+        "type": "color",
+        "description": "Success background"
+      },
+      "success-dark": {
+        "value": "#065F46",
+        "type": "color",
+        "description": "Success text on light background"
+      },
+      "error": {
+        "value": "#EF4444",
+        "type": "color",
+        "description": "Error states, destructive actions"
+      },
+      "error-light": {
+        "value": "#FEE2E2",
+        "type": "color",
+        "description": "Error background"
+      },
+      "error-dark": {
+        "value": "#991B1B",
+        "type": "color",
+        "description": "Error text on light background"
+      },
+      "warning": {
+        "value": "#F59E0B",
+        "type": "color",
+        "description": "Warning states, attention needed"
+      },
+      "warning-light": {
+        "value": "#FEF3C7",
+        "type": "color",
+        "description": "Warning background"
+      },
+      "warning-dark": {
+        "value": "#92400E",
+        "type": "color",
+        "description": "Warning text on light background"
+      },
+      "info": {
+        "value": "#3B82F6",
+        "type": "color",
+        "description": "Info states, processing"
+      },
+      "info-light": {
+        "value": "#DBEAFE",
+        "type": "color",
+        "description": "Info background"
+      }
+    },
+    "domain": {
+      "work": {
+        "value": "#3B82F6",
+        "type": "color",
+        "description": "Work domain - Blue"
+      },
+      "work-light": {
+        "value": "#DBEAFE",
+        "type": "color",
+        "description": "Work domain background"
+      },
+      "work-text": {
+        "value": "#1E40AF",
+        "type": "color",
+        "description": "Work domain text on light background"
+      },
+      "family": {
+        "value": "#EC4899",
+        "type": "color",
+        "description": "Family domain - Pink"
+      },
+      "family-light": {
+        "value": "#FBCFE8",
+        "type": "color",
+        "description": "Family domain background"
+      },
+      "family-text": {
+        "value": "#9F1239",
+        "type": "color",
+        "description": "Family domain text on light background"
+      },
+      "personal": {
+        "value": "#8B5CF6",
+        "type": "color",
+        "description": "Personal domain - Purple"
+      },
+      "personal-light": {
+        "value": "#E9D5FF",
+        "type": "color",
+        "description": "Personal domain background"
+      },
+      "personal-text": {
+        "value": "#6B21A8",
+        "type": "color",
+        "description": "Personal domain text on light background"
+      },
+      "logistics": {
+        "value": "#10B981",
+        "type": "color",
+        "description": "Logistics domain - Green"
+      },
+      "logistics-light": {
+        "value": "#D1FAE5",
+        "type": "color",
+        "description": "Logistics domain background"
+      },
+      "logistics-text": {
+        "value": "#065F46",
+        "type": "color",
+        "description": "Logistics domain text on light background"
+      }
+    },
+    "importance": {
+      "high": {
+        "value": "#FEE2E2",
+        "type": "color",
+        "description": "High importance (80-100%) - Red background"
+      },
+      "high-text": {
+        "value": "#991B1B",
+        "type": "color",
+        "description": "High importance text"
+      },
+      "medium": {
+        "value": "#FED7AA",
+        "type": "color",
+        "description": "Medium importance (60-79%) - Orange background"
+      },
+      "medium-text": {
+        "value": "#9A3412",
+        "type": "color",
+        "description": "Medium importance text"
+      },
+      "low": {
+        "value": "#FEF3C7",
+        "type": "color",
+        "description": "Low importance (40-59%) - Yellow background"
+      },
+      "low-text": {
+        "value": "#92400E",
+        "type": "color",
+        "description": "Low importance text"
+      }
+    }
+  }
+}
