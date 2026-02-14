@@ -1,37 +1,58 @@
 """
 Setup Gmail Watch - Enable push notifications for sabine@strugcity.com
+
+Uses the AGENT credentials (sabine@strugcity.com) since the watch must be
+set up on the inbox that receives the emails.
+
+Reads GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and AGENT_REFRESH_TOKEN from .env
+so the watch is created with the same OAuth client that Railway uses.
 """
 import json
+import os
+import sys
 from pathlib import Path
+
+from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-# Load credentials from workspace-mcp
-creds_dir = Path.home() / '.google_workspace_mcp' / 'credentials'
-token_file = creds_dir / 'default_user.json'
+# Load environment variables
+load_dotenv()
 
-print(f"Loading credentials from: {token_file}")
+CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+AGENT_REFRESH_TOKEN = os.getenv("AGENT_REFRESH_TOKEN", "")
+PUBSUB_TOPIC = os.getenv("GMAIL_PUBSUB_TOPIC", "projects/sabine-super-agent/topics/gmail-notification")
 
-with open(token_file, 'r') as f:
-    token_data = json.load(f)
+if not CLIENT_ID or not CLIENT_SECRET or not AGENT_REFRESH_TOKEN:
+    print("ERROR: Missing GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, or AGENT_REFRESH_TOKEN in .env")
+    sys.exit(1)
 
-# Create credentials object
+print(f"Using OAuth Client ID: {CLIENT_ID[:30]}...")
+print(f"Using PubSub Topic: {PUBSUB_TOPIC}")
+print(f"Agent refresh token: {AGENT_REFRESH_TOKEN[:30]}...")
+
+# Create credentials object from .env values (sabine@strugcity.com)
 creds = Credentials(
-    token=token_data['token'],
-    refresh_token=token_data.get('refresh_token'),
-    token_uri=token_data.get('token_uri'),
-    client_id=token_data.get('client_id'),
-    client_secret=token_data.get('client_secret'),
-    scopes=token_data.get('scopes'),
+    token=None,  # Will be auto-refreshed
+    refresh_token=AGENT_REFRESH_TOKEN,
+    token_uri="https://oauth2.googleapis.com/token",
+    client_id=CLIENT_ID,
+    client_secret=CLIENT_SECRET,
+    scopes=[
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/gmail.modify",
+    ],
 )
 
 # Build Gmail service
-print("Building Gmail API service...")
+print("\nBuilding Gmail API service for sabine@strugcity.com...")
 service = build('gmail', 'v1', credentials=creds)
 
 # Setup watch request
 watch_request = {
-    'topicName': 'projects/super-agent-485222/topics/gmail-notification',
+    'topicName': PUBSUB_TOPIC,
     'labelIds': ['INBOX']  # Only watch INBOX
 }
 
@@ -42,7 +63,7 @@ print(f"Labels: {watch_request['labelIds']}")
 try:
     result = service.users().watch(userId='me', body=watch_request).execute()
 
-    print("\n✓ Gmail watch enabled successfully!")
+    print("\n[OK] Gmail watch enabled successfully!")
     print(f"\nWatch details:")
     print(f"  History ID: {result['historyId']}")
     print(f"  Expiration: {result['expiration']} (Unix timestamp in milliseconds)")
@@ -53,10 +74,10 @@ try:
     expiration_dt = datetime.datetime.fromtimestamp(expiration_ms / 1000)
     print(f"  Expires on: {expiration_dt.strftime('%Y-%m-%d %H:%M:%S')}")
 
-    print(f"\n✓ Gmail will now send notifications to Pub/Sub when new emails arrive!")
+    print(f"\n[OK] Gmail will now send notifications to Pub/Sub when new emails arrive!")
 
 except Exception as e:
-    print(f"\n✗ Error setting up Gmail watch:")
+    print(f"\n[FAIL] Error setting up Gmail watch:")
     print(f"  {str(e)}")
     print(f"\nMake sure:")
     print(f"  1. Gmail API is enabled")
