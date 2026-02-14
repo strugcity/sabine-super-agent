@@ -5,7 +5,7 @@ Slow Path Consolidation Pipeline for Sabine 2.0
 Processes WAL entries asynchronously in the background worker:
 
 1. Read unprocessed WAL entries from Supabase
-2. Extract relationships using Claude Haiku (stub for now)
+2. Extract relationships using Claude Haiku
 3. Update entity records
 4. Resolve conflicts flagged by Fast Path
 5. Checkpoint progress for crash recovery
@@ -63,7 +63,7 @@ async def _async_consolidate_entry(wal_entry_id: str) -> "ConsolidationResult":
         1. Read WAL entry from Supabase
         2. Parse raw_payload for message content
         3. Extract entities from the message
-        4. Run relationship extraction (stub)
+        4. Run relationship extraction
         5. Resolve entities against existing records
         6. Resolve any conflict flags from Fast Path
         7. Mark WAL entry as completed
@@ -140,8 +140,8 @@ async def _async_consolidate_entry(wal_entry_id: str) -> "ConsolidationResult":
             "entities", []
         )
 
-        # 4. Run relationship extraction (stub) --------------------------------
-        relationships: List[Dict[str, Any]] = extract_relationships_stub(
+        # 4. Run relationship extraction ----------------------------------------
+        relationships: List[Dict[str, Any]] = extract_relationships(
             message=message,
             entities=entities_in_payload,
             source_wal_id=wal_entry_id,
@@ -379,20 +379,55 @@ async def _async_consolidate_batch(
 
 
 # ---------------------------------------------------------------------------
-# Relationship extraction (stub)
+# Relationship extraction
 # ---------------------------------------------------------------------------
 
-def extract_relationships_stub(
+_RELATIONSHIP_EXTRACTION_PROMPT = """\
+You are a relationship extraction engine. Given a message and a list of known \
+entities, extract all meaningful relationships as subject/predicate/object \
+triples.
+
+KNOWN ENTITIES:
+{entity_list}
+
+MESSAGE:
+{message}
+
+Return a JSON array of relationship objects. Each object MUST have exactly \
+these fields:
+- "subject": name of the source entity (must be one of the known entities)
+- "predicate": relationship type as a snake_case verb phrase (e.g. "works_at", \
+"lives_in", "married_to", "manages", "part_of", "knows", "reports_to", \
+"collaborates_with", "founded", "attended", "located_in", "member_of")
+- "object": name of the target entity (must be one of the known entities)
+- "confidence": a float between 0.0 and 1.0 indicating your confidence
+- "graph_layer": one of "semantic", "temporal", "causal", "entity"
+  - "entity" for direct entity-to-entity relations (works_at, lives_in, etc.)
+  - "semantic" for meaning/topic relations (related_to, similar_to, etc.)
+  - "temporal" for time-based relations (preceded_by, happened_during, etc.)
+  - "causal" for cause/effect relations (caused_by, led_to, etc.)
+
+Rules:
+- Both subject and object MUST be from the known entities list.
+- Do NOT invent entities not in the list.
+- Extract only relationships supported by the message text.
+- If no relationships can be extracted, return an empty array: []
+
+Return ONLY the JSON array, no other text or markdown formatting.\
+"""
+
+
+def extract_relationships(
     message: str,
     entities: List[Dict[str, Any]],
     source_wal_id: str = "",
 ) -> List[Dict[str, Any]]:
     """
-    Stub for Claude Haiku relationship extraction.
+    Extract relationships from message text using Claude Haiku.
 
-    Returns placeholder relationships based on the provided entities.
-    Real integration will call Claude Haiku to extract semantic,
-    temporal, causal, and entity relationships from the message text.
+    Calls Claude 3.5 Haiku to identify subject/predicate/object triples
+    between known entities mentioned in the message.  Falls back to a
+    simple heuristic if the API call fails.
 
     Parameters
     ----------
@@ -406,19 +441,167 @@ def extract_relationships_stub(
     Returns
     -------
     list[dict]
-        Placeholder relationship dicts in the ``entity_relationships``
-        schema format (per ADR-001).
-
-    .. todo::
-        Replace this stub with real Claude Haiku integration for
-        relationship extraction.  The prompt should:
-        1. Receive the message text and known entity names.
-        2. Return structured JSON with subject/predicate/object triples.
-        3. Include a confidence score (0.0-1.0).
-        4. Classify each relationship into a MAGMA graph layer
-           (semantic, temporal, causal, entity).
+        Relationship dicts in the ``entity_relationships`` schema format
+        (per ADR-001).
     """
-    # TODO(week4): Replace with real Haiku relationship extraction
+    if not entities or len(entities) < 2:
+        return []
+
+    # Build the entity list string for the prompt
+    entity_names: List[str] = [
+        e.get("name", f"entity_{i}") for i, e in enumerate(entities)
+    ]
+    entity_list_str: str = "\n".join(f"- {name}" for name in entity_names)
+
+    prompt: str = _RELATIONSHIP_EXTRACTION_PROMPT.format(
+        entity_list=entity_list_str,
+        message=message,
+    )
+
+    try:
+        # Lazy imports to avoid circular deps and module-load overhead
+        import json as _json
+        import os as _os
+
+        import anthropic
+
+        api_key: str = _os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            logger.warning(
+                "ANTHROPIC_API_KEY not set; falling back to heuristic "
+                "relationship extraction for WAL %s",
+                source_wal_id,
+            )
+            return _extract_relationships_fallback(
+                message, entities, source_wal_id,
+            )
+
+        client = anthropic.Anthropic(
+            api_key=api_key,
+            timeout=10.0,
+        )
+
+        response = client.messages.create(
+            model="claude-3-5-haiku-20241022",
+            max_tokens=1024,
+            messages=[
+                {"role": "user", "content": prompt},
+            ],
+        )
+
+        # Extract the text content from the response
+        raw_text: str = ""
+        for block in response.content:
+            if hasattr(block, "text"):
+                raw_text += block.text
+
+        raw_text = raw_text.strip()
+
+        # Parse the JSON response
+        parsed: Any = _json.loads(raw_text)
+
+        if not isinstance(parsed, list):
+            logger.warning(
+                "Haiku returned non-list JSON for WAL %s; falling back",
+                source_wal_id,
+            )
+            return _extract_relationships_fallback(
+                message, entities, source_wal_id,
+            )
+
+        # Validate and normalise each relationship
+        valid_layers = {"semantic", "temporal", "causal", "entity"}
+        entity_name_set = set(entity_names)
+        relationships: List[Dict[str, Any]] = []
+
+        for rel in parsed:
+            if not isinstance(rel, dict):
+                continue
+
+            subject: str = rel.get("subject", "")
+            predicate: str = rel.get("predicate", "")
+            obj: str = rel.get("object", "")
+            confidence: float = float(rel.get("confidence", 0.5))
+            graph_layer: str = rel.get("graph_layer", "entity")
+
+            # Skip entries where subject/object aren't known entities
+            if subject not in entity_name_set or obj not in entity_name_set:
+                logger.debug(
+                    "Skipping relationship with unknown entity: "
+                    "%s -> %s -> %s (WAL %s)",
+                    subject, predicate, obj, source_wal_id,
+                )
+                continue
+
+            if not predicate:
+                continue
+
+            # Clamp confidence to [0.0, 1.0]
+            confidence = max(0.0, min(1.0, confidence))
+
+            # Default to "entity" if layer is not recognised
+            if graph_layer not in valid_layers:
+                graph_layer = "entity"
+
+            relationships.append({
+                "subject": subject,
+                "predicate": predicate,
+                "object": obj,
+                "confidence": confidence,
+                "source_wal_id": source_wal_id,
+                "graph_layer": graph_layer,
+                "relationship_type": predicate,
+            })
+
+        logger.info(
+            "Haiku extracted %d relationships from %d entities for WAL %s",
+            len(relationships),
+            len(entities),
+            source_wal_id,
+        )
+
+        return relationships
+
+    except Exception as exc:
+        logger.error(
+            "Haiku relationship extraction failed for WAL %s: %s  "
+            "(falling back to heuristic)",
+            source_wal_id,
+            exc,
+            exc_info=True,
+        )
+        return _extract_relationships_fallback(
+            message, entities, source_wal_id,
+        )
+
+
+def _extract_relationships_fallback(
+    message: str,
+    entities: List[Dict[str, Any]],
+    source_wal_id: str = "",
+) -> List[Dict[str, Any]]:
+    """
+    Heuristic fallback for relationship extraction.
+
+    Produces simple pairwise ``related_to`` relationships between
+    consecutive entities.  Used when the Haiku API call is unavailable
+    or fails.
+
+    Parameters
+    ----------
+    message : str
+        The message text (unused in the heuristic, kept for signature
+        compatibility).
+    entities : list[dict]
+        Entity dicts.
+    source_wal_id : str
+        WAL entry ID for provenance tracking.
+
+    Returns
+    -------
+    list[dict]
+        Placeholder relationship dicts.
+    """
     if not entities or len(entities) < 2:
         return []
 

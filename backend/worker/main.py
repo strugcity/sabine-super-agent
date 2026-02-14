@@ -13,6 +13,10 @@ Environment variables:
     REDIS_URL             -- Redis connection string (default: redis://localhost:6379/0)
     WORKER_HEALTH_PORT    -- Health-check HTTP port (default: 8082)
     LOG_LEVEL             -- Logging verbosity (default: INFO)
+    SALIENCE_CRON_HOUR    -- Hour (UTC) for nightly salience recalc (default: 4)
+    SALIENCE_CRON_MINUTE  -- Minute for nightly salience recalc (default: 0)
+    ARCHIVE_CRON_HOUR     -- Hour (UTC) for nightly archive job (default: 4)
+    ARCHIVE_CRON_MINUTE   -- Minute for nightly archive job (default: 30)
 
 ADR Reference: ADR-002
 """
@@ -22,6 +26,7 @@ import os
 import signal
 import sys
 import types
+from datetime import datetime, timezone
 from typing import Optional
 
 # ---------------------------------------------------------------------------
@@ -54,6 +59,77 @@ def _redis_url_safe(url: str) -> str:
         at_pos = url.index("@")
         return url[:prefix_end] + "*****" + url[at_pos:]
     return url
+
+
+# ---------------------------------------------------------------------------
+# Nightly job scheduling
+# ---------------------------------------------------------------------------
+
+def _register_scheduled_jobs(queue: "Queue", redis_conn: "Redis") -> None:
+    """
+    Register recurring nightly jobs using rq's built-in scheduler.
+
+    Jobs are enqueued via ``queue.enqueue_at()`` with the rq scheduler
+    (enabled by ``worker.work(with_scheduler=True)``).  The scheduler
+    de-duplicates by job description so re-registering on restart is safe.
+
+    Scheduled jobs:
+        1. **Salience recalculation** (default 04:00 UTC) — MEM-001
+        2. **Archive low-salience memories** (default 04:30 UTC) — MEM-002
+    """
+    from datetime import timedelta
+
+    salience_hour: int = int(os.getenv("SALIENCE_CRON_HOUR", "4"))
+    salience_minute: int = int(os.getenv("SALIENCE_CRON_MINUTE", "0"))
+    archive_hour: int = int(os.getenv("ARCHIVE_CRON_HOUR", "4"))
+    archive_minute: int = int(os.getenv("ARCHIVE_CRON_MINUTE", "30"))
+
+    try:
+        # Calculate next run time for salience recalculation
+        now = datetime.now(timezone.utc)
+        salience_time = now.replace(
+            hour=salience_hour, minute=salience_minute, second=0, microsecond=0,
+        )
+        if salience_time <= now:
+            salience_time += timedelta(days=1)
+
+        archive_time = now.replace(
+            hour=archive_hour, minute=archive_minute, second=0, microsecond=0,
+        )
+        if archive_time <= now:
+            archive_time += timedelta(days=1)
+
+        # Schedule salience recalculation (repeats daily via meta key)
+        queue.enqueue_at(
+            salience_time,
+            "backend.worker.jobs.run_salience_recalculation",
+            meta={"repeat": 86400, "description": "nightly-salience-recalc"},
+            job_timeout="30m",
+            description="nightly-salience-recalc",
+        )
+        logger.info(
+            "Scheduled nightly salience recalc at %02d:%02d UTC (next: %s)",
+            salience_hour, salience_minute, salience_time.isoformat(),
+        )
+
+        # Schedule archive job (repeats daily via meta key)
+        queue.enqueue_at(
+            archive_time,
+            "backend.worker.jobs.run_archive_job",
+            meta={"repeat": 86400, "description": "nightly-archive-job"},
+            job_timeout="30m",
+            description="nightly-archive-job",
+        )
+        logger.info(
+            "Scheduled nightly archive job at %02d:%02d UTC (next: %s)",
+            archive_hour, archive_minute, archive_time.isoformat(),
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "Failed to register scheduled jobs (non-fatal): %s", exc,
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +207,9 @@ def run_worker() -> None:
     queue = Queue(QUEUE_NAME, connection=redis_conn)
     logger.info("Listening on queue: %s", QUEUE_NAME)
 
+    # 4b. Register nightly scheduled jobs -----------------------------------
+    _register_scheduled_jobs(queue, redis_conn)
+
     # 5. Graceful shutdown --------------------------------------------------
     worker: Optional["Worker"] = None
 
@@ -158,7 +237,7 @@ def run_worker() -> None:
     )
 
     try:
-        worker.work(with_scheduler=False, logging_level=LOG_LEVEL)
+        worker.work(with_scheduler=True, logging_level=LOG_LEVEL)
     except Exception as exc:
         logger.error("Worker exited with error: %s", exc, exc_info=True)
         sys.exit(1)

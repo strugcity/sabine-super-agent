@@ -123,8 +123,8 @@ def enqueue_wal_processing(
     """
     try:
         result = _enqueue_job(
-            func_path="backend.workers.slow_path_worker.consolidate_wal_batch",
-            kwargs={"entry_ids": [wal_entry_id]},
+            func_path="backend.worker.jobs.process_wal_entry",
+            kwargs={"wal_entry_id": wal_entry_id},
             priority=priority,
         )
         if result.success:
@@ -169,8 +169,8 @@ def enqueue_wal_batch(
 
     try:
         result = _enqueue_job(
-            func_path="backend.workers.slow_path_worker.consolidate_wal_batch",
-            kwargs={"entry_ids": wal_entry_ids},
+            func_path="backend.worker.jobs.process_wal_batch",
+            kwargs={"wal_entry_ids": wal_entry_ids},
             priority=priority,
         )
         if result.success:
@@ -258,7 +258,7 @@ def _enqueue_job(
     ----------
     func_path : str
         Dotted import path to the worker function (e.g.
-        ``"backend.workers.slow_path_worker.consolidate_wal_batch"``).
+        ``"backend.worker.jobs.process_wal_entry"``).
     kwargs : dict
         Keyword arguments forwarded to the worker function.
     priority : str

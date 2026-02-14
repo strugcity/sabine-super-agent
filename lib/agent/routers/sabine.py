@@ -10,11 +10,10 @@ Endpoints:
 import asyncio
 import json
 import logging
-from typing import AsyncGenerator, Optional, List, Dict
+from typing import AsyncGenerator, Dict, Optional
 from datetime import datetime, timezone
-from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -22,8 +21,6 @@ from pydantic import BaseModel, Field
 from lib.agent.shared import verify_api_key, InvokeRequest, InvokeResponse
 from lib.agent.core import run_agent_with_caching
 from lib.agent.sabine_agent import run_sabine_agent
-from lib.agent.memory import ingest_user_message
-from backend.services.wal import WALService
 from backend.services.output_sanitization import (
     sanitize_agent_output,
     sanitize_error_message,
@@ -113,28 +110,33 @@ async def invoke_agent(
         # Generate session ID if not provided
         session_id = request.session_id or f"session-{request.user_id[:8]}"
 
-        # SABINE 2.0: Write-Ahead Log (Fast Path)
-        # Capture the interaction BEFORE processing for durability
-        wal_entry_id = None
+        # SABINE 2.0: Fast Path Pipeline
+        # Runs WAL write, entity extraction (Haiku), embedding generation (OpenAI),
+        # read-only memory retrieval, conflict detection, and Slow Path enqueue —
+        # all before the agent generates a response.
+        # Non-blocking: failures here do NOT prevent the agent from responding.
+        fast_path_result = None
         try:
-            wal_service = WALService()
-            wal_payload = {
-                "user_id": request.user_id,
-                "message": request.message,
-                "source": "api_invoke",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "session_id": session_id,
-                "metadata": {
-                    "use_caching": request.use_caching,
-                    "has_conversation_history": bool(request.conversation_history),
-                }
-            }
-            wal_entry = await wal_service.create_entry(wal_payload)
-            wal_entry_id = wal_entry.id
-            logger.info(f"WAL entry created: {wal_entry_id}")
-        except Exception as wal_error:
-            # WAL failure should not block the request - log and continue
-            logger.warning(f"WAL write failed (non-blocking): {wal_error}")
+            from backend.services.fast_path import process_fast_path
+
+            fast_path_result = await process_fast_path(
+                user_id=request.user_id,
+                message=request.message,
+                session_id=session_id,
+            )
+            logger.info(
+                "Fast Path complete: wal=%s entities=%d conflicts=%d "
+                "memories=%d queue=%s total=%.1fms",
+                fast_path_result.wal_entry_id,
+                len(fast_path_result.extracted_entities),
+                len(fast_path_result.conflicts),
+                len(fast_path_result.retrieved_memories),
+                fast_path_result.queue_job_id,
+                fast_path_result.timings.get("total_ms", 0),
+            )
+        except Exception as fp_error:
+            # Fast Path failure should NOT block the request
+            logger.warning(f"Fast Path failed (non-blocking): {fp_error}")
 
         # Deprecation warnings for removed parameters
         if hasattr(request, 'role') and request.role:
@@ -158,24 +160,31 @@ async def invoke_agent(
         from backend.services.sms_ack import should_send_sms_ack
 
         if should_send_sms_ack(channel):
-            from backend.services.streaming_ack import AcknowledgmentManager, AckConfig
-            from backend.services.sms_ack import handle_sms_ack
+            sms_phone = getattr(request, "phone_number", None)
+            if not sms_phone:
+                logger.warning(
+                    "SMS channel detected but no phone_number in request; "
+                    "skipping SMS ack for user %s", request.user_id,
+                )
+            else:
+                from backend.services.streaming_ack import AcknowledgmentManager, AckConfig
+                from backend.services.sms_ack import handle_sms_ack
 
-            logger.info("SMS channel detected; starting ack timer for user %s", request.user_id)
+                logger.info(
+                    "SMS channel detected; starting ack timer for %s",
+                    sms_phone[:6] + "****",
+                )
 
-            # TODO: Extract phone number from request metadata when Twilio integration is wired
-            sms_phone = request.user_id  # Placeholder until phone mapping exists
+                async def _sms_ack_callback(ack_message: str) -> None:
+                    """Send SMS acknowledgment when the timer fires."""
+                    await handle_sms_ack(to_number=sms_phone, ack_message=ack_message)
 
-            async def _sms_ack_callback(ack_message: str) -> None:
-                """Send SMS acknowledgment when the timer fires."""
-                await handle_sms_ack(to_number=sms_phone, ack_message=ack_message)
-
-            ack_manager = AcknowledgmentManager(
-                config=AckConfig(timeout_seconds=5.0, enabled=True),
-                on_ack=_sms_ack_callback,
-                user_message=request.message,
-            )
-            ack_manager.start()
+                ack_manager = AcknowledgmentManager(
+                    config=AckConfig(timeout_seconds=5.0, enabled=True),
+                    on_ack=_sms_ack_callback,
+                    user_message=request.message,
+                )
+                ack_manager.start()
 
         # Run the Sabine agent (handles context retrieval internally)
         result = await run_sabine_agent(
@@ -192,17 +201,6 @@ async def invoke_agent(
                 logger.info("SMS ack was sent before agent completed")
             else:
                 logger.debug("SMS ack cancelled (agent responded in time)")
-
-        # PHASE 4: Ingest message as background task (after response)
-        if result["success"]:
-            background_tasks.add_task(
-                ingest_user_message,
-                user_id=UUID(request.user_id),
-                content=request.message,
-                source="api",
-                role="assistant"
-            )
-            logger.info("Queued message ingestion as background task")
 
         if result["success"]:
             cache_info = result.get("cache_metrics", {})
@@ -402,14 +400,21 @@ async def invoke_agent_stream(
 
             yield _format_sse(SSEEvent(type="response", data=sanitized_response))
 
-            # Queue background ingestion
-            background_tasks.add_task(
-                ingest_user_message,
-                user_id=UUID(request.user_id),
-                content=request.message,
-                source="api",
-                role="assistant",
-            )
+            # Note: Fast Path (WAL write + entity extraction + enqueue) runs
+            # before the agent is invoked in /invoke. For /invoke/stream,
+            # we run it as a fire-and-forget background task here.
+            try:
+                from backend.services.fast_path import process_fast_path
+
+                background_tasks.add_task(
+                    process_fast_path,
+                    user_id=request.user_id,
+                    message=request.message,
+                    session_id=session_id,
+                )
+                logger.info("Queued Fast Path as background task (stream)")
+            except Exception as fp_err:
+                logger.warning("Failed to queue Fast Path in stream: %s", fp_err)
         elif result is not None:
             error_msg = sanitize_error_message(result.get("error"))
             yield _format_sse(SSEEvent(type="error", data=str(error_msg)))

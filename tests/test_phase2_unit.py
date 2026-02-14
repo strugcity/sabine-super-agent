@@ -582,7 +582,7 @@ class TestAgentFunctionSignatures:
 # =============================================================================
 
 class TestCallerUpdates:
-    """Verify all callers pass role='assistant' to ingest_user_message."""
+    """Verify callers use the correct ingestion path (Fast Path or legacy)."""
 
     def _read_file(self, *path_parts):
         filepath = os.path.join(
@@ -592,9 +592,13 @@ class TestCallerUpdates:
         with open(filepath, "r", encoding="utf-8") as f:
             return f.read()
 
-    def test_sabine_router_passes_role(self):
+    def test_sabine_router_uses_fast_path(self):
+        """sabine.py /invoke should use process_fast_path, not legacy ingest."""
         source = self._read_file("lib", "agent", "routers", "sabine.py")
-        assert 'role="assistant"' in source
+        assert "process_fast_path" in source, \
+            "sabine.py should call process_fast_path for WAL+entity+embedding pipeline"
+        assert "ingest_user_message" not in source, \
+            "sabine.py should NOT use legacy ingest_user_message (replaced by Fast Path)"
 
     def test_memory_router_passes_role(self):
         source = self._read_file("lib", "agent", "routers", "memory.py")

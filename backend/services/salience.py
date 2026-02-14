@@ -218,33 +218,78 @@ def compute_emotional_weight(
     memory_metadata: Optional[dict] = None,
 ) -> float:
     """
-    Compute emotional weight for a memory.
+    Compute emotional weight for a memory using keyword-based heuristic.
 
-    Currently a stub returning 0.5.
+    Uses a fast, lightweight keyword scan on memory content to estimate
+    emotional intensity.  Designed to run in the nightly salience recalc
+    job across thousands of memories without LLM calls.
 
-    .. todo::
-        Phase 2: Integrate sentiment analysis (e.g., Claude Haiku) to
-        extract emotional valence from memory content.  High-emotion
-        memories (grief, joy, anger) should score higher.  Consider
-        using a separate ``emotional_valence`` column on the memories
-        table once the sentiment model is wired.
+    Scoring logic:
+        - If ``emotional_valence`` is already cached in metadata, return it.
+        - No emotion keywords found: 0.3 (neutral baseline)
+        - 1 emotion keyword found: 0.5
+        - 2+ emotion keywords found: 0.7
+        - Any "strong" keyword (death, birth, wedding, divorce): 0.9
 
     Parameters
     ----------
     memory_metadata : dict or None
-        Memory metadata dict (unused in stub).
+        Memory metadata dict.  May contain:
+        - ``"emotional_valence"`` (float): Pre-cached score (returned directly).
+        - ``"content"`` (str): Memory text to scan for emotion keywords.
 
     Returns
     -------
     float
-        Emotional weight in [0.0, 1.0].  Stub returns 0.5.
+        Emotional weight in [0.0, 1.0].
     """
-    # TODO(phase2): Replace stub with real sentiment analysis integration.
-    # Expected flow:
-    #   1. Extract emotion from memory.content via Claude Haiku
-    #   2. Map sentiment polarity + intensity to [0.0, 1.0]
-    #   3. Cache result in memory.metadata["emotional_valence"]
-    return 0.5
+    if memory_metadata is None:
+        return 0.3
+
+    # Cache hit: return pre-computed emotional valence directly
+    cached = memory_metadata.get("emotional_valence")
+    if cached is not None:
+        try:
+            val = float(cached)
+            return round(min(max(val, 0.0), 1.0), 6)
+        except (TypeError, ValueError):
+            pass  # Fall through to keyword analysis
+
+    content = memory_metadata.get("content")
+    if not content or not isinstance(content, str):
+        return 0.3
+
+    content_lower = content.lower()
+
+    # Strong keywords — presence of any one triggers the highest score
+    strong_keywords: set[str] = {
+        "death", "birth", "wedding", "divorce",
+    }
+
+    # General emotion keywords (includes strong ones for counting)
+    emotion_keywords: set[str] = {
+        "grief", "death", "wedding", "birth", "fired", "promoted",
+        "divorce", "accident", "emergency", "love", "hate", "angry",
+        "excited", "thrilled", "devastated", "furious", "heartbroken",
+        "ecstatic", "terrified", "overjoyed", "miserable", "elated",
+        "traumatic", "betrayed", "engaged", "pregnant", "cancer",
+        "diagnosed", "hospitalized", "passed away", "broke up",
+    }
+
+    # Check for strong keywords first (highest priority)
+    for kw in strong_keywords:
+        if kw in content_lower:
+            return 0.9
+
+    # Count general emotion keyword matches
+    match_count = sum(1 for kw in emotion_keywords if kw in content_lower)
+
+    if match_count >= 2:
+        return 0.7
+    elif match_count == 1:
+        return 0.5
+    else:
+        return 0.3
 
 
 def compute_causal_centrality(
@@ -252,35 +297,77 @@ def compute_causal_centrality(
     entity_links: Optional[list] = None,
 ) -> float:
     """
-    Compute causal centrality for a memory.
+    Compute causal centrality for a memory via graph degree centrality.
 
-    Currently a stub returning 0.3.
-
-    .. todo::
-        Phase 2: Compute actual graph degree centrality from
-        ``entity_relationships`` table.  Count the number of
-        relationships (edges) connected to entities linked by this
-        memory, then normalise by the max degree in the graph.
+    Queries the ``entity_relationships`` table in Supabase to count how
+    many relationship edges involve the entities linked to this memory.
+    The total degree (edges where any linked entity appears as source or
+    target) is normalised with a cap of 10 to prevent very connected
+    entities from dominating the score.
 
     Parameters
     ----------
     memory_metadata : dict or None
-        Memory metadata dict (unused in stub).
+        Memory metadata dict (unused — kept for signature compatibility).
     entity_links : list or None
-        List of entity UUIDs linked to this memory (unused in stub).
+        List of entity UUIDs linked to this memory.
 
     Returns
     -------
     float
-        Causal centrality in [0.0, 1.0].  Stub returns 0.3.
+        Causal centrality in [0.0, 1.0].
+        - No links: 0.1 (isolated memory)
+        - Query failure: 0.3 (safe fallback)
+        - Otherwise: degree / max(10, degree)
     """
-    # TODO(phase2): Replace stub with real graph centrality calculation.
-    # Expected flow:
-    #   1. Query entity_relationships for all edges touching memory.entity_links
-    #   2. Count degree (number of distinct relationships) for each entity
-    #   3. Normalise by max_degree across all entities
-    #   4. Return average normalised degree for the memory's linked entities
-    return 0.3
+    if not entity_links:
+        return 0.1
+
+    # Convert all UUIDs to strings for the Supabase filter
+    entity_id_strs: list[str] = [str(eid) for eid in entity_links]
+
+    try:
+        # Lazy import to avoid circular dependencies (per CLAUDE.md)
+        from backend.services.wal import get_supabase_client
+
+        client = get_supabase_client()
+
+        # Count edges where any linked entity is the source
+        source_resp = (
+            client.table("entity_relationships")
+            .select("id", count="exact")
+            .in_("source_entity_id", entity_id_strs)
+            .execute()
+        )
+
+        # Count edges where any linked entity is the target
+        target_resp = (
+            client.table("entity_relationships")
+            .select("id", count="exact")
+            .in_("target_entity_id", entity_id_strs)
+            .execute()
+        )
+
+        source_count: int = source_resp.count if source_resp.count is not None else 0
+        target_count: int = target_resp.count if target_resp.count is not None else 0
+
+        degree: int = source_count + target_count
+
+        if degree == 0:
+            return 0.1
+
+        # Normalise: cap at 10 so very-connected entities don't dominate
+        score = degree / max(10, degree)
+        return round(min(max(score, 0.0), 1.0), 6)
+
+    except Exception:
+        logger.warning(
+            "Failed to compute causal centrality for entities %s; "
+            "returning fallback 0.3",
+            entity_id_strs,
+            exc_info=True,
+        )
+        return 0.3
 
 
 # =============================================================================

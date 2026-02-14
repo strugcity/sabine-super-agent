@@ -14,6 +14,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import twilio from 'twilio';
+import { createClient } from '@supabase/supabase-js';
 
 // =============================================================================
 // Configuration
@@ -24,8 +25,15 @@ const ADMIN_PHONE = process.env.ADMIN_PHONE || '';
 const AGENT_API_KEY = process.env.AGENT_API_KEY || '';
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || '';
 
-// Default user ID (in production, you'd look this up from the phone number)
+// Default user ID — fallback when Supabase lookup fails or returns no match
 const DEFAULT_USER_ID = process.env.DEFAULT_USER_ID || '00000000-0000-0000-0000-000000000000';
+
+// Supabase admin client (service role) for server-side user lookups
+const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const supabase = supabaseUrl && supabaseServiceKey
+  ? createClient(supabaseUrl, supabaseServiceKey)
+  : null;
 
 // =============================================================================
 // Types
@@ -135,25 +143,41 @@ function validateTwilioSignature(
 // =============================================================================
 
 /**
- * Look up user ID from phone number
+ * Look up user ID from phone number via the user_identities table in Supabase.
  *
- * In production, this should query the user_identities table in Supabase
- * to find the user_id associated with this phone number.
+ * Queries where provider = 'twilio' and identifier = phoneNumber.
+ * Falls back to DEFAULT_USER_ID when Supabase is not configured or the lookup
+ * fails / returns no match.
  */
 async function getUserIdFromPhone(phoneNumber: string): Promise<string> {
-  // TODO: Implement Supabase lookup
-  // const supabase = createClient(...)
-  // const { data } = await supabase
-  //   .from('user_identities')
-  //   .select('user_id')
-  //   .eq('provider', 'twilio')
-  //   .eq('identifier', phoneNumber)
-  //   .single()
-  //
-  // return data?.user_id || DEFAULT_USER_ID
+  if (!supabase) {
+    console.warn('⚠️  Supabase client not configured — falling back to DEFAULT_USER_ID');
+    return DEFAULT_USER_ID;
+  }
 
-  // For now, return default user ID
-  return DEFAULT_USER_ID;
+  try {
+    const { data, error } = await supabase
+      .from('user_identities')
+      .select('user_id')
+      .eq('provider', 'twilio')
+      .eq('identifier', phoneNumber)
+      .single();
+
+    if (error) {
+      // PGRST116 = "no rows returned" from .single() — expected for unknown numbers
+      if (error.code === 'PGRST116') {
+        console.log(`ℹ️  No user_identity found for phone ${phoneNumber}`);
+      } else {
+        console.error('❌ Supabase lookup error:', error.message);
+      }
+      return DEFAULT_USER_ID;
+    }
+
+    return data?.user_id || DEFAULT_USER_ID;
+  } catch (err) {
+    console.error('❌ Unexpected error in getUserIdFromPhone:', err);
+    return DEFAULT_USER_ID;
+  }
 }
 
 // =============================================================================
@@ -228,7 +252,9 @@ export async function POST(request: NextRequest) {
         message: message,
         user_id: userId,
         session_id: sessionId,
-        conversation_history: null, // TODO: Load from database if needed
+        conversation_history: null,
+        source_channel: 'sms',
+        phone_number: fromPhone,
       }),
     });
 

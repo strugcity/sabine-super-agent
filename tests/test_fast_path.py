@@ -8,8 +8,8 @@ Comprehensive test suite for the Fast Path pipeline service
 
 Test Categories:
 1. WAL entry creation (every message must produce a WAL entry)
-2. Entity extraction stub (basic NER patterns)
-3. Embedding generation stub (deterministic placeholder)
+2. Entity extraction (basic NER patterns)
+3. Embedding generation (deterministic placeholder)
 4. Parallel execution (entity extraction + embedding via asyncio.gather)
 5. Conflict detection (read-only comparison with existing entities)
 6. No-mutation guarantee (no INSERT/UPDATE to entity tables)
@@ -45,8 +45,8 @@ from backend.services.fast_path import (
     ExtractedEntity,
     ConflictFlag,
     FastPathResult,
-    extract_entities_stub,
-    generate_embedding_stub,
+    extract_entities,
+    generate_embedding,
     detect_conflicts,
     retrieve_memories_readonly,
     process_fast_path,
@@ -223,12 +223,12 @@ class TestWALEntryCreation:
 # =============================================================================
 
 class TestEntityExtraction:
-    """Stub entity extraction must return structured entities."""
+    """Entity extraction must return structured entities."""
 
     @pytest.mark.asyncio
     async def test_extracts_proper_nouns(self) -> None:
         """Proper nouns in mid-sentence positions are extracted."""
-        entities = await extract_entities_stub(
+        entities = await extract_entities(
             "I had lunch with Alice and Bob yesterday"
         )
         names = [e.name for e in entities]
@@ -238,7 +238,7 @@ class TestEntityExtraction:
     @pytest.mark.asyncio
     async def test_extracts_dates(self) -> None:
         """Date patterns are extracted with type=date."""
-        entities = await extract_entities_stub(
+        entities = await extract_entities(
             "The meeting is on January 15, 2026"
         )
         date_entities = [e for e in entities if e.type == "date"]
@@ -247,7 +247,7 @@ class TestEntityExtraction:
     @pytest.mark.asyncio
     async def test_extracts_time_patterns(self) -> None:
         """Time patterns like '3 PM' are extracted."""
-        entities = await extract_entities_stub(
+        entities = await extract_entities(
             "Call me at 3 PM or 9:00 AM"
         )
         time_entities = [e for e in entities if e.type == "date"]
@@ -256,7 +256,7 @@ class TestEntityExtraction:
     @pytest.mark.asyncio
     async def test_entity_has_valid_structure(self) -> None:
         """Each extracted entity has name, type, and confidence."""
-        entities = await extract_entities_stub("Visit Alice in Portland")
+        entities = await extract_entities("Visit Alice in Portland")
         for entity in entities:
             assert entity.name
             assert entity.type in (
@@ -267,7 +267,7 @@ class TestEntityExtraction:
     @pytest.mark.asyncio
     async def test_empty_message_returns_empty(self) -> None:
         """Empty message produces no entities."""
-        entities = await extract_entities_stub("")
+        entities = await extract_entities("")
         assert entities == []
 
 
@@ -276,26 +276,26 @@ class TestEntityExtraction:
 # =============================================================================
 
 class TestEmbeddingGeneration:
-    """Stub embedding must return deterministic 1536-dim vectors."""
+    """Embedding must return deterministic 1536-dim vectors."""
 
     @pytest.mark.asyncio
     async def test_embedding_has_correct_dimensions(self) -> None:
         """Embedding vector must be 1536 dimensions."""
-        emb = await generate_embedding_stub("test message")
+        emb = await generate_embedding("test message")
         assert len(emb) == 1536
 
     @pytest.mark.asyncio
     async def test_embedding_is_deterministic(self) -> None:
         """Same message produces same embedding."""
-        emb1 = await generate_embedding_stub("deterministic test")
-        emb2 = await generate_embedding_stub("deterministic test")
+        emb1 = await generate_embedding("deterministic test")
+        emb2 = await generate_embedding("deterministic test")
         assert emb1 == emb2
 
     @pytest.mark.asyncio
     async def test_different_messages_produce_different_embeddings(self) -> None:
         """Different messages produce different embeddings."""
-        emb1 = await generate_embedding_stub("message one")
-        emb2 = await generate_embedding_stub("message two")
+        emb1 = await generate_embedding("message one")
+        emb2 = await generate_embedding("message two")
         assert emb1 != emb2
 
 
@@ -309,7 +309,7 @@ class TestParallelExecution:
     @pytest.mark.asyncio
     async def test_extraction_and_embedding_run_concurrently(self) -> None:
         """
-        Verify both stubs are called and their results appear in the
+        Verify both functions are called and their results appear in the
         final result, confirming parallel execution path is exercised.
         """
         patches, mock_wal = _wal_and_queue_patches()
@@ -325,13 +325,13 @@ class TestParallelExecution:
             ),
             patch.object(
                 fast_path_mod,
-                "extract_entities_stub",
+                "extract_entities",
                 new_callable=AsyncMock,
                 return_value=[],
             ) as mock_extract,
             patch.object(
                 fast_path_mod,
-                "generate_embedding_stub",
+                "generate_embedding",
                 new_callable=AsyncMock,
                 return_value=[0.1] * 1536,
             ) as mock_embed,
@@ -341,7 +341,7 @@ class TestParallelExecution:
                 message=TEST_MESSAGE,
             )
 
-        # Both stubs were called
+        # Both functions were called
         mock_extract.assert_called_once_with(TEST_MESSAGE)
         mock_embed.assert_called_once_with(TEST_MESSAGE)
 

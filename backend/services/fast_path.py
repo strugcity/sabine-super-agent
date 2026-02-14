@@ -24,7 +24,9 @@ Owner: @backend-architect-sabine
 """
 
 import asyncio
+import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -137,26 +139,47 @@ class FastPathResult(BaseModel):
 
 
 # =============================================================================
-# Entity Extraction Stub
+# Entity Extraction
 # =============================================================================
 
-async def extract_entities_stub(message: str) -> List[ExtractedEntity]:
+# Claude Haiku model for low-latency entity extraction
+_HAIKU_MODEL = "claude-3-5-haiku-20241022"
+
+# Timeout in seconds for the Haiku API call (Fast Path budget)
+_HAIKU_TIMEOUT_SECONDS = 3.0
+
+# System prompt for structured entity extraction
+_ENTITY_EXTRACTION_PROMPT = (
+    "You are a precise entity extraction system. "
+    "Extract named entities from the user message and return ONLY a JSON array. "
+    "Each element must be an object with exactly these fields:\n"
+    '  - "name": the entity text as it appears in the message\n'
+    '  - "type": one of "person", "place", "org", "date", "project", "event", "unknown"\n'
+    '  - "confidence": a float between 0.0 and 1.0 indicating extraction confidence\n'
+    "\n"
+    "Rules:\n"
+    "- Include people, places, organizations, dates/times, projects, and events.\n"
+    "- Do NOT extract common pronouns (I, he, she, they, etc.).\n"
+    "- Do NOT extract generic nouns or adjectives.\n"
+    "- For dates, extract the full date expression (e.g., 'January 15, 2026').\n"
+    "- Return an empty array [] if no entities are found.\n"
+    "- Return ONLY valid JSON. No markdown fences, no explanation."
+)
+
+
+def _extract_entities_regex_fallback(message: str) -> List[ExtractedEntity]:
     """
-    Stub entity extraction from a user message.
+    Regex-based entity extraction fallback.
 
     Performs basic pattern matching to extract proper nouns, dates,
-    and location-like words. This is a placeholder for the full
-    Claude Haiku-powered extraction pipeline in Phase 2.
+    and location-like words. Used as a fallback when the Claude Haiku
+    API call fails or times out.
 
     Args:
         message: Raw user message text.
 
     Returns:
         List of ``ExtractedEntity`` objects with name, type, and confidence.
-
-    .. todo::
-        Phase 2: Replace with Claude Haiku-based NER pipeline for
-        production-grade entity extraction with context awareness.
     """
     entities: List[ExtractedEntity] = []
     seen_names: set[str] = set()
@@ -236,41 +259,237 @@ async def extract_entities_stub(message: str) -> List[ExtractedEntity]:
     return entities
 
 
-# =============================================================================
-# Embedding Generation Stub
-# =============================================================================
-
-async def generate_embedding_stub(message: str) -> List[float]:
+async def extract_entities(message: str) -> List[ExtractedEntity]:
     """
-    Stub embedding generation for a user message.
+    Extract named entities from a user message using Claude Haiku.
 
-    Returns a deterministic placeholder embedding vector of 1536 dimensions.
-    This is a placeholder for the real OpenAI / Voyage embedding call.
+    Calls Claude Haiku (claude-3-5-haiku-20241022) with a structured
+    JSON prompt to extract entities with type classification and
+    confidence scores. Falls back to regex-based extraction if the
+    API call fails or exceeds the 3-second timeout.
 
     Args:
         message: Raw user message text.
 
     Returns:
-        List of 1536 floats representing the placeholder embedding.
-
-    .. todo::
-        Phase 2: Replace with actual embedding API call
-        (OpenAI text-embedding-3-small or Voyage).
+        List of ``ExtractedEntity`` objects with name, type, and confidence.
     """
-    # Deterministic stub: hash-based seed for reproducibility
+    # Short-circuit: skip the API call for very short or empty messages
+    if not message or len(message.strip()) < 3:
+        return _extract_entities_regex_fallback(message)
+
+    try:
+        # Lazy import to avoid circular dependencies
+        from anthropic import AsyncAnthropic
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            logger.warning(
+                "ANTHROPIC_API_KEY not set; falling back to regex entity extraction"
+            )
+            return _extract_entities_regex_fallback(message)
+
+        client = AsyncAnthropic(api_key=api_key)
+
+        # Call Claude Haiku with a timeout enforced by asyncio
+        response = await asyncio.wait_for(
+            client.messages.create(
+                model=_HAIKU_MODEL,
+                max_tokens=1024,
+                system=_ENTITY_EXTRACTION_PROMPT,
+                messages=[{"role": "user", "content": message}],
+            ),
+            timeout=_HAIKU_TIMEOUT_SECONDS,
+        )
+
+        # Extract the text content from the response
+        raw_text = response.content[0].text.strip()
+
+        # Strip markdown code fences if the model wraps output
+        if raw_text.startswith("```"):
+            # Remove opening fence (with optional language tag) and closing fence
+            raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
+            raw_text = re.sub(r"\s*```$", "", raw_text)
+
+        # Parse the JSON array
+        parsed = json.loads(raw_text)
+
+        if not isinstance(parsed, list):
+            logger.warning(
+                "Haiku returned non-list JSON (%s); falling back to regex",
+                type(parsed).__name__,
+            )
+            return _extract_entities_regex_fallback(message)
+
+        # Validate allowed entity types
+        valid_types = {"person", "place", "org", "date", "project", "event", "unknown"}
+        entities: List[ExtractedEntity] = []
+
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+
+            name = item.get("name", "").strip()
+            entity_type = item.get("type", "unknown").lower().strip()
+            confidence = item.get("confidence", 0.9)
+
+            if not name:
+                continue
+
+            # Clamp entity type to valid set
+            if entity_type not in valid_types:
+                entity_type = "unknown"
+
+            # Clamp confidence to [0.0, 1.0]
+            try:
+                confidence = float(confidence)
+                confidence = max(0.0, min(1.0, confidence))
+            except (TypeError, ValueError):
+                confidence = 0.9
+
+            entities.append(
+                ExtractedEntity(
+                    name=name,
+                    type=entity_type,
+                    confidence=confidence,
+                )
+            )
+
+        logger.debug(
+            "Haiku entity extraction returned %d entities", len(entities),
+        )
+        return entities
+
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Haiku entity extraction timed out after %.1fs; "
+            "falling back to regex",
+            _HAIKU_TIMEOUT_SECONDS,
+        )
+        return _extract_entities_regex_fallback(message)
+
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "Haiku returned invalid JSON: %s; falling back to regex",
+            exc,
+        )
+        return _extract_entities_regex_fallback(message)
+
+    except Exception as exc:
+        logger.warning(
+            "Haiku entity extraction failed: %s; falling back to regex",
+            exc,
+        )
+        return _extract_entities_regex_fallback(message)
+
+
+# =============================================================================
+# Embedding Generation
+# =============================================================================
+
+async def _generate_embedding_hash_fallback(text: str) -> List[float]:
+    """
+    Hash-based deterministic embedding fallback.
+
+    Generates a deterministic placeholder embedding vector of 1536 dimensions
+    using SHA-256 hashing. Used as a fallback when the OpenAI embedding API
+    is unavailable, the API key is missing, or the request fails/times out.
+
+    Args:
+        text: Input text to generate a deterministic embedding for.
+
+    Returns:
+        List of 1536 floats representing the fallback embedding.
+    """
     import hashlib
 
-    digest = hashlib.sha256(message.encode()).digest()
+    digest = hashlib.sha256(text.encode()).digest()
     seed_val = int.from_bytes(digest[:4], "big")
 
-    # Generate a simple deterministic vector
     embedding: List[float] = []
     for i in range(1536):
-        # Simple deterministic float in [-1, 1]
         val = ((seed_val + i * 7919) % 10000) / 10000.0 * 2.0 - 1.0
         embedding.append(round(val, 6))
 
     return embedding
+
+
+# OpenAI embedding model configuration
+_EMBEDDING_MODEL = "text-embedding-3-small"
+_EMBEDDING_DIMENSIONS = 1536
+_EMBEDDING_TIMEOUT_SECONDS = 5.0
+
+
+async def generate_embedding(text: str) -> List[float]:
+    """
+    Generate an embedding vector for a text string using OpenAI.
+
+    Calls the OpenAI ``text-embedding-3-small`` model to produce a
+    1536-dimensional embedding vector. Falls back to a deterministic
+    hash-based vector if the API key is missing, the request times out
+    (5 seconds), or any other error occurs.
+
+    Args:
+        text: Input text to embed.
+
+    Returns:
+        List of 1536 floats representing the embedding vector.
+    """
+    api_key: Optional[str] = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        logger.warning(
+            "OPENAI_API_KEY not set; falling back to hash-based embedding"
+        )
+        return await _generate_embedding_hash_fallback(text)
+
+    try:
+        # Lazy import to avoid circular dependencies
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(api_key=api_key)
+
+        response = await asyncio.wait_for(
+            client.embeddings.create(
+                model=_EMBEDDING_MODEL,
+                input=text,
+                dimensions=_EMBEDDING_DIMENSIONS,
+            ),
+            timeout=_EMBEDDING_TIMEOUT_SECONDS,
+        )
+
+        embedding: List[float] = response.data[0].embedding
+
+        if len(embedding) != _EMBEDDING_DIMENSIONS:
+            logger.warning(
+                "OpenAI returned embedding with %d dimensions (expected %d); "
+                "falling back to hash-based embedding",
+                len(embedding),
+                _EMBEDDING_DIMENSIONS,
+            )
+            return await _generate_embedding_hash_fallback(text)
+
+        logger.debug(
+            "OpenAI embedding generated: model=%s dims=%d",
+            _EMBEDDING_MODEL,
+            len(embedding),
+        )
+        return embedding
+
+    except asyncio.TimeoutError:
+        logger.warning(
+            "OpenAI embedding request timed out after %.1fs; "
+            "falling back to hash-based embedding",
+            _EMBEDDING_TIMEOUT_SECONDS,
+        )
+        return await _generate_embedding_hash_fallback(text)
+
+    except Exception as exc:
+        logger.warning(
+            "OpenAI embedding generation failed: %s; "
+            "falling back to hash-based embedding",
+            exc,
+        )
+        return await _generate_embedding_hash_fallback(text)
 
 
 # =============================================================================
@@ -556,8 +775,8 @@ async def process_fast_path(
     parallel_start = time.monotonic()
     try:
         # Use asyncio.gather for parallel execution
-        entity_task = extract_entities_stub(message)
-        embedding_task = generate_embedding_stub(message)
+        entity_task = extract_entities(message)
+        embedding_task = generate_embedding(message)
 
         results = await asyncio.gather(
             entity_task, embedding_task, return_exceptions=True,

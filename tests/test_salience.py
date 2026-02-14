@@ -178,30 +178,45 @@ class TestComputeFrequency:
 # =========================================================================
 
 class TestComputeEmotionalWeight:
-    """Tests for the emotional weight stub."""
+    """Tests for the keyword-based emotional weight scorer."""
 
-    def test_returns_default_stub_value(self) -> None:
-        assert compute_emotional_weight() == 0.5
+    def test_no_metadata_returns_neutral(self) -> None:
+        assert compute_emotional_weight() == 0.3
 
-    def test_ignores_metadata(self) -> None:
-        assert compute_emotional_weight({"sentiment": "very happy"}) == 0.5
+    def test_none_metadata_returns_neutral(self) -> None:
+        assert compute_emotional_weight(None) == 0.3
 
-    def test_none_metadata(self) -> None:
-        assert compute_emotional_weight(None) == 0.5
+    def test_no_content_returns_neutral(self) -> None:
+        assert compute_emotional_weight({"key": "val"}) == 0.3
+
+    def test_cached_emotional_valence_returned(self) -> None:
+        result = compute_emotional_weight({"emotional_valence": 0.82})
+        assert result == 0.82
+
+    def test_single_emotion_keyword(self) -> None:
+        result = compute_emotional_weight({"content": "I am so excited about this"})
+        assert result >= 0.5
+
+    def test_strong_emotion_keyword(self) -> None:
+        result = compute_emotional_weight({"content": "There was a death in the family"})
+        assert result >= 0.7
+
+    def test_no_emotion_keywords(self) -> None:
+        result = compute_emotional_weight({"content": "The meeting is at 3pm"})
+        assert result == 0.3
 
 
 class TestComputeCausalCentrality:
-    """Tests for the causal centrality stub."""
+    """Tests for the graph degree-based causal centrality scorer."""
 
-    def test_returns_default_stub_value(self) -> None:
-        assert compute_causal_centrality() == 0.3
+    def test_no_args_returns_low(self) -> None:
+        assert compute_causal_centrality() == 0.1
 
-    def test_ignores_metadata_and_links(self) -> None:
-        links = [uuid.uuid4(), uuid.uuid4()]
-        assert compute_causal_centrality({"key": "val"}, links) == 0.3
+    def test_none_args_returns_low(self) -> None:
+        assert compute_causal_centrality(None, None) == 0.1
 
-    def test_none_args(self) -> None:
-        assert compute_causal_centrality(None, None) == 0.3
+    def test_empty_entity_links_returns_low(self) -> None:
+        assert compute_causal_centrality(None, []) == 0.1
 
 
 # =========================================================================
@@ -309,17 +324,17 @@ class TestCalculateSalience:
         now = datetime.now(timezone.utc)
         mem = _make_memory(last_accessed_at=now, access_count=10)
         result = calculate_salience(mem, max_access_count=10, now=now)
-        # recency~1.0, frequency~1.0, emotional=0.5, causal=0.3
-        # S = 0.4*1 + 0.2*1 + 0.2*0.5 + 0.2*0.3 = 0.76
-        assert math.isclose(result.score, 0.76, abs_tol=0.02)
+        # recency~1.0, frequency~1.0, emotional=0.3 (no content), causal=0.1 (no links)
+        # S = 0.4*1 + 0.2*1 + 0.2*0.3 + 0.2*0.1 = 0.68
+        assert math.isclose(result.score, 0.68, abs_tol=0.02)
 
     def test_never_accessed_zero_count(self) -> None:
-        """Never accessed + zero count = low salience (only stubs contribute)."""
+        """Never accessed + zero count = low salience (only baseline contributes)."""
         mem = _make_memory(last_accessed_at=None, access_count=0)
         result = calculate_salience(mem)
-        # recency=0, frequency=0, emotional=0.5, causal=0.3
-        # S = 0.4*0 + 0.2*0 + 0.2*0.5 + 0.2*0.3 = 0.16
-        assert math.isclose(result.score, 0.16, abs_tol=0.02)
+        # recency=0, frequency=0, emotional=0.3 (no content), causal=0.1 (no links)
+        # S = 0.4*0 + 0.2*0 + 0.2*0.3 + 0.2*0.1 = 0.08
+        assert math.isclose(result.score, 0.08, abs_tol=0.02)
 
     def test_old_memory_high_frequency(self) -> None:
         """Old but frequently accessed memory."""
@@ -361,8 +376,8 @@ class TestCalculateSalience:
         c = result.components
         assert 0.0 <= c.recency <= 1.0
         assert 0.0 <= c.frequency <= 1.0
-        assert c.emotional_weight == 0.5
-        assert c.causal_centrality == 0.3
+        assert c.emotional_weight == 0.3  # no content in metadata
+        assert c.causal_centrality == 0.1  # no entity_links
 
     def test_weights_echoed_in_result(self) -> None:
         w = SalienceWeights(

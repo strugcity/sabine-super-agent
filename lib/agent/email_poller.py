@@ -67,6 +67,12 @@ class EmailPoller:
         await poller.shutdown()
     """
 
+    # After this many consecutive token failures, stop polling and just alert.
+    MAX_TOKEN_FAILURES_BEFORE_BACKOFF = 3
+
+    # Only re-alert every N failures to avoid spamming Slack.
+    ALERT_EVERY_N_FAILURES = 10
+
     def __init__(self, scheduler: Optional[AsyncIOScheduler] = None):
         """
         Initialize the email poller.
@@ -86,6 +92,8 @@ class EmailPoller:
         self._poll_count = 0
         self._emails_found = 0
         self._last_poll_time: Optional[datetime] = None
+        self._consecutive_token_failures = 0
+        self._token_alert_sent = False
 
         logger.info(
             f"EmailPoller initialized "
@@ -146,30 +154,73 @@ class EmailPoller:
             f"(total polls: {self._poll_count}, emails found: {self._emails_found})"
         )
 
-    async def _poll_for_emails(self):
+    async def _poll_for_emails(self) -> None:
         """
         Poll for unread emails from authorized senders.
 
         This is the main polling job that runs at regular intervals.
         It reuses the gmail_handler infrastructure for consistency.
+
+        Token-expiry awareness:
+            If the handler returns ``"error": "token_expired"``, we increment a
+            consecutive-failure counter.  After ``MAX_TOKEN_FAILURES_BEFORE_BACKOFF``
+            failures we skip actual polling (just log) and fire a Slack alert.
+            The counter resets as soon as a poll succeeds.
         """
         self._poll_count += 1
         self._last_poll_time = datetime.now(timezone.utc)
+
+        # ── Back-off when tokens are known-bad ──
+        if self._consecutive_token_failures >= self.MAX_TOKEN_FAILURES_BEFORE_BACKOFF:
+            logger.warning(
+                "[Email Poll #%d] Skipping — OAuth token expired "
+                "(%d consecutive failures). Waiting for re-auth.",
+                self._poll_count,
+                self._consecutive_token_failures,
+            )
+            # Re-alert periodically so the issue stays visible
+            if self._consecutive_token_failures % self.ALERT_EVERY_N_FAILURES == 0:
+                await self._fire_token_alert("unknown")
+            self._consecutive_token_failures += 1
+            return
 
         logger.info(f"[Email Poll #{self._poll_count}] Checking for unread emails...")
 
         try:
             from lib.agent.gmail_handler import handle_new_email_notification
 
-            # Call the handler with a dummy historyId
-            # The handler will check for ALL unread emails, not just new ones
-            # This catches any emails that were missed by push notifications
             result = await handle_new_email_notification(
                 history_id=f"poll_{self._poll_count}"
             )
 
+            error = result.get("error", "")
             action = result.get("action", "unknown")
             success = result.get("success", False)
+
+            # ── Token-expired handling ──
+            if error == "token_expired":
+                self._consecutive_token_failures += 1
+                token_type = result.get("token_type", "unknown")
+                logger.error(
+                    "[Email Poll #%d] OAuth %s token expired "
+                    "(failure #%d)",
+                    self._poll_count,
+                    token_type,
+                    self._consecutive_token_failures,
+                )
+                if not self._token_alert_sent:
+                    await self._fire_token_alert(token_type)
+                return
+
+            # ── Success — reset failure counter ──
+            if self._consecutive_token_failures > 0:
+                logger.info(
+                    "[Email Poll #%d] Token recovered after %d failures",
+                    self._poll_count,
+                    self._consecutive_token_failures,
+                )
+            self._consecutive_token_failures = 0
+            self._token_alert_sent = False
 
             if action == "replied":
                 self._emails_found += 1
@@ -202,6 +253,22 @@ class EmailPoller:
                 exc_info=True
             )
 
+    async def _fire_token_alert(self, token_type: str) -> None:
+        """Send a Slack/log alert for an expired OAuth token."""
+        try:
+            from backend.worker.alerts import send_token_expired_alert
+
+            await send_token_expired_alert(
+                token_type=token_type,
+                detail="Detected during email polling cycle",
+                consecutive_failures=self._consecutive_token_failures,
+            )
+            self._token_alert_sent = True
+        except Exception as alert_err:
+            logger.warning(
+                "Failed to send token-expired alert: %s", alert_err
+            )
+
     async def poll_now(self) -> Dict[str, Any]:
         """
         Manually trigger an email poll (for testing/debugging).
@@ -228,7 +295,9 @@ class EmailPoller:
             "poll_count": self._poll_count,
             "emails_found": self._emails_found,
             "last_poll_time": self._last_poll_time.isoformat() if self._last_poll_time else None,
-            "next_poll_time": job.next_run_time.isoformat() if job and job.next_run_time else None
+            "next_poll_time": job.next_run_time.isoformat() if job and job.next_run_time else None,
+            "consecutive_token_failures": self._consecutive_token_failures,
+            "token_backed_off": self._consecutive_token_failures >= self.MAX_TOKEN_FAILURES_BEFORE_BACKOFF,
         }
 
     def is_running(self) -> bool:

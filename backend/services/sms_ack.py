@@ -11,7 +11,9 @@ the interface and logging for the ack-over-SMS path.
 Owner: @backend-architect-sabine
 """
 
+import asyncio
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -78,30 +80,90 @@ def should_send_sms_ack(channel: Optional[str]) -> bool:
 
 
 # =============================================================================
-# SMS Sending (Stub)
+# SMS Sending (Twilio)
 # =============================================================================
+
+
+def _send_sms_sync(to_number: str, message: str) -> str:
+    """
+    Blocking helper that sends an SMS via Twilio and returns the message SID.
+
+    Separated so it can be run inside ``asyncio.to_thread`` without leaking
+    async context into the synchronous Twilio client.
+
+    Raises:
+        twilio.base.exceptions.TwilioRestException: on Twilio API errors.
+    """
+    from twilio.rest import Client as TwilioClient  # lazy import
+
+    account_sid: str = os.environ["TWILIO_ACCOUNT_SID"]
+    auth_token: str = os.environ["TWILIO_AUTH_TOKEN"]
+    from_number: str = os.environ["TWILIO_FROM_NUMBER"]
+
+    client = TwilioClient(account_sid, auth_token)
+    sms = client.messages.create(
+        body=message,
+        from_=from_number,
+        to=to_number,
+    )
+    return sms.sid
 
 
 async def send_sms_acknowledgment(to_number: str, message: str) -> bool:
     """
-    Send an SMS acknowledgment message to the user.
+    Send an SMS acknowledgment message to the user via Twilio.
 
-    This is a **stub implementation** that logs the ack message.
-    The real Twilio send is wired in separately.
+    If Twilio credentials are not configured the function logs a warning
+    and returns ``False`` without raising.
 
     Args:
         to_number: The recipient phone number (E.164 format).
         message: The acknowledgment message text.
 
     Returns:
-        True if the "send" was successful (always True in stub mode).
+        True if the SMS was sent successfully, False otherwise.
     """
-    logger.info(
-        "SMS ack stub: to=%s message=%r (Twilio integration pending)",
-        to_number,
-        message,
-    )
-    return True
+    # ---- guard: check env vars before attempting the send ----
+    twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
+    twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
+    twilio_from = os.getenv("TWILIO_FROM_NUMBER")
+
+    if not all([twilio_sid, twilio_token, twilio_from]):
+        logger.warning(
+            "Twilio credentials not configured - skipping SMS ack "
+            "(to=%s message=%r)",
+            to_number,
+            message[:100],
+        )
+        return False
+
+    try:
+        # Twilio's REST client is blocking; offload to a thread so we
+        # don't stall the async event loop.
+        sid = await asyncio.to_thread(_send_sms_sync, to_number, message)
+        logger.info("SMS ack sent successfully: sid=%s to=%s", sid, to_number)
+        return True
+
+    except Exception as exc:
+        # Try to extract Twilio-specific error details first.
+        from twilio.base.exceptions import TwilioRestException  # lazy import
+
+        if isinstance(exc, TwilioRestException):
+            logger.error(
+                "Twilio API error sending SMS ack: code=%s msg=%s to=%s",
+                exc.code,
+                exc.msg,
+                to_number,
+                exc_info=True,
+            )
+        else:
+            logger.error(
+                "Failed to send SMS ack: error=%s to=%s",
+                exc,
+                to_number,
+                exc_info=True,
+            )
+        return False
 
 
 async def handle_sms_ack(

@@ -100,15 +100,16 @@ async def send_recovery_alert(wal_entry_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Slack integration (stub)
+# Slack integration
 # ---------------------------------------------------------------------------
 
 async def _post_to_slack(message: str) -> None:
     """
-    Post a message to the configured Slack webhook.
+    Post a message to the configured Slack incoming webhook.
 
-    This is a stub implementation.  When ``SLACK_ALERT_WEBHOOK_URL`` is
-    not set, the message is logged and silently skipped.
+    When ``SLACK_ALERT_WEBHOOK_URL`` is not set, the message is logged
+    and silently skipped.  Network or HTTP errors are logged as warnings
+    but never raised -- alerting failures must not crash the worker.
 
     Parameters
     ----------
@@ -122,23 +123,60 @@ async def _post_to_slack(message: str) -> None:
         )
         return
 
-    # TODO(week4): Implement real Slack webhook POST
-    # Example implementation:
-    #   import httpx
-    #   async with httpx.AsyncClient() as client:
-    #       resp = await client.post(
-    #           SLACK_WEBHOOK_URL,
-    #           json={"text": message},
-    #           timeout=10.0,
-    #       )
-    #       resp.raise_for_status()
     try:
-        logger.info(
-            "Slack alert would be sent to %s: %s",
-            SLACK_WEBHOOK_URL[:30],
-            message[:200],
-        )
+        import httpx  # lazy import to avoid circular deps
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                SLACK_WEBHOOK_URL,
+                json={"text": message},
+            )
+            resp.raise_for_status()
+            logger.debug("Slack alert sent successfully.")
     except Exception as exc:
         logger.warning(
             "Failed to send Slack alert: %s", exc, exc_info=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# OAuth token-expiry alert
+# ---------------------------------------------------------------------------
+
+async def send_token_expired_alert(
+    token_type: str,
+    detail: str = "",
+    consecutive_failures: int = 0,
+) -> None:
+    """
+    Alert when a Google OAuth refresh token is expired/revoked.
+
+    Parameters
+    ----------
+    token_type : str
+        ``"user"`` or ``"agent"`` — which token failed.
+    detail : str
+        Additional context (e.g., the error message from Google).
+    consecutive_failures : int
+        How many poll cycles in a row have hit this error.
+    """
+    timestamp: str = datetime.now(timezone.utc).isoformat()
+
+    message: str = (
+        f"[OAUTH TOKEN EXPIRED] Google {token_type} refresh token "
+        f"returned invalid_grant.\n"
+        f"Consecutive failures: {consecutive_failures}\n"
+        f"Detail: {detail}\n"
+        f"Action: Re-run reauthorize_google.py or update the refresh "
+        f"token in Railway environment variables.\n"
+        f"Timestamp: {timestamp}"
+    )
+
+    logger.critical(
+        "Google OAuth %s token expired — consecutive_failures=%d detail=%s",
+        token_type,
+        consecutive_failures,
+        detail[:200],
+    )
+
+    await _post_to_slack(message)

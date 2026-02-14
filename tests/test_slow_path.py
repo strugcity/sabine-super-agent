@@ -8,7 +8,7 @@ Tests for the Week 3 Slow Path implementation:
 - Checkpoint recovery (crash simulation)
 - Entity resolution (create vs update)
 - Conflict resolution (newer-wins strategy)
-- Relationship extraction stub
+- Relationship extraction
 - Failure alerting
 - WAL entry status transitions
 - Batch stats accuracy
@@ -153,21 +153,21 @@ class TestPydanticModels:
 
 
 # =============================================================================
-# Test: Relationship Extraction Stub
+# Test: Relationship Extraction
 # =============================================================================
 
-class TestRelationshipExtractionStub:
-    """Tests for extract_relationships_stub."""
+class TestRelationshipExtraction:
+    """Tests for extract_relationships."""
 
-    def test_stub_returns_valid_structure(self) -> None:
-        """Stub should return list of dicts with expected keys."""
-        from backend.worker.slow_path import extract_relationships_stub
+    def test_returns_valid_structure(self) -> None:
+        """Should return list of dicts with expected keys."""
+        from backend.worker.slow_path import extract_relationships
 
         entities = [
             {"name": "John", "type": "person"},
             {"name": "Meeting", "type": "event"},
         ]
-        rels = extract_relationships_stub(
+        rels = extract_relationships(
             message="Schedule a meeting with John",
             entities=entities,
             source_wal_id=TEST_WAL_ID,
@@ -182,28 +182,28 @@ class TestRelationshipExtractionStub:
         assert rel["source_wal_id"] == TEST_WAL_ID
         assert rel["graph_layer"] == "entity"
 
-    def test_stub_returns_empty_for_fewer_than_two_entities(self) -> None:
+    def test_returns_empty_for_fewer_than_two_entities(self) -> None:
         """No relationships can be formed with fewer than 2 entities."""
-        from backend.worker.slow_path import extract_relationships_stub
+        from backend.worker.slow_path import extract_relationships
 
         # Zero entities
-        assert extract_relationships_stub("msg", [], TEST_WAL_ID) == []
+        assert extract_relationships("msg", [], TEST_WAL_ID) == []
 
         # One entity
-        assert extract_relationships_stub(
+        assert extract_relationships(
             "msg", [{"name": "A"}], TEST_WAL_ID
         ) == []
 
-    def test_stub_returns_multiple_relationships(self) -> None:
-        """Stub should create pairwise relationships for 3+ entities."""
-        from backend.worker.slow_path import extract_relationships_stub
+    def test_returns_multiple_relationships(self) -> None:
+        """Should create pairwise relationships for 3+ entities."""
+        from backend.worker.slow_path import extract_relationships
 
         entities = [
             {"name": "A"},
             {"name": "B"},
             {"name": "C"},
         ]
-        rels = extract_relationships_stub("msg", entities, TEST_WAL_ID)
+        rels = extract_relationships("msg", entities, TEST_WAL_ID)
         assert len(rels) == 2  # A->B, B->C
 
 
@@ -366,7 +366,7 @@ class TestConsolidateWALEntry:
         result = consolidate_wal_entry(wal_id)
         assert result.status == "processed"
         assert result.wal_entry_id == wal_id
-        assert result.relationships_extracted == 1  # stub: 2 entities -> 1 rel
+        assert result.relationships_extracted == 1  # fallback: 2 entities -> 1 rel
         assert result.duration_ms >= 0.0
 
     @patch("backend.services.wal.get_supabase_client")

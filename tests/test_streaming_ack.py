@@ -526,23 +526,23 @@ class TestSMSChannelDetection:
 
 
 class TestSMSAckStub:
-    """Tests for the SMS ack stub sender."""
+    """Tests for the SMS ack sender (returns False when Twilio creds missing)."""
 
     @pytest.mark.asyncio
-    async def test_stub_returns_true(self) -> None:
-        """Stub sender always returns True."""
+    async def test_returns_false_without_credentials(self) -> None:
+        """Without Twilio env vars, sender returns False gracefully."""
         result = await send_sms_acknowledgment("+1234567890", "Working on it...")
-        assert result is True
+        assert result is False
 
     @pytest.mark.asyncio
-    async def test_handle_sms_ack_success(self) -> None:
-        """handle_sms_ack returns successful SMSAckResult."""
+    async def test_handle_sms_ack_without_credentials(self) -> None:
+        """handle_sms_ack returns unsuccessful SMSAckResult when creds missing."""
         result = await handle_sms_ack(
             to_number="+1234567890",
             ack_message="Give me a second...",
         )
         assert isinstance(result, SMSAckResult)
-        assert result.sent is True
+        assert result.sent is False
         assert result.message == "Give me a second..."
         assert len(result.timestamp) > 0
 

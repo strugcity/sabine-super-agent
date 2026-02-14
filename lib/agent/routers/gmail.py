@@ -20,7 +20,13 @@ from pydantic import BaseModel, Field
 
 # Import from server.py
 from lib.agent.shared import verify_api_key
-from lib.agent.gmail_handler import handle_new_email_notification, get_config, get_access_token, load_processed_ids
+from lib.agent.gmail_handler import (
+    handle_new_email_notification,
+    get_config,
+    get_access_token,
+    load_processed_ids,
+    TokenExpiredError,
+)
 from lib.agent.mcp_client import MCPClient
 
 logger = logging.getLogger(__name__)
@@ -210,3 +216,70 @@ async def renew_gmail_watch(request: GmailWatchRenewRequest, _: bool = Depends(v
             "success": False,
             "error": str(e)
         }
+
+
+@router.get("/token-health")
+async def gmail_token_health(_: bool = Depends(verify_api_key)):
+    """
+    Proactively test both Google OAuth refresh tokens.
+
+    Returns the health status of each token (user + agent). If a token
+    returns ``invalid_grant``, the response includes ``"expired": true``
+    so monitoring can trigger a re-auth alert before email processing
+    breaks silently.
+    """
+    config = get_config()
+    results: dict = {}
+
+    for token_type in ("user", "agent"):
+        token_key = f"{token_type}_refresh_token"
+        if not config.get(token_key):
+            results[token_type] = {
+                "healthy": False,
+                "expired": False,
+                "error": f"No {token_type} refresh token configured",
+            }
+            continue
+
+        try:
+            async with MCPClient(
+                command="/app/deploy/start-mcp-server.sh",
+                args=[],
+                timeout=15,
+            ) as mcp:
+                access_token = await get_access_token(mcp, config, token_type)
+                results[token_type] = {
+                    "healthy": access_token is not None,
+                    "expired": False,
+                    "has_access_token": access_token is not None,
+                }
+
+        except TokenExpiredError as te:
+            logger.warning("Token health check: %s token expired — %s", token_type, te)
+            results[token_type] = {
+                "healthy": False,
+                "expired": True,
+                "error": str(te),
+            }
+
+        except Exception as e:
+            logger.error("Token health check error for %s: %s", token_type, e)
+            results[token_type] = {
+                "healthy": False,
+                "expired": False,
+                "error": str(e),
+            }
+
+    all_healthy = all(r.get("healthy") for r in results.values())
+    any_expired = any(r.get("expired") for r in results.values())
+
+    return {
+        "healthy": all_healthy,
+        "any_expired": any_expired,
+        "tokens": results,
+        "action_required": (
+            "Re-authorize Google OAuth tokens via reauthorize_google.py"
+            if any_expired
+            else None
+        ),
+    }

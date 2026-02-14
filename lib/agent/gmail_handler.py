@@ -39,6 +39,18 @@ else:
 
 logger = logging.getLogger(__name__)
 
+
+class TokenExpiredError(Exception):
+    """Raised when a Google OAuth refresh token is expired or revoked (invalid_grant)."""
+
+    def __init__(self, token_type: str, detail: str = ""):
+        self.token_type = token_type
+        self.detail = detail
+        super().__init__(
+            f"Google OAuth {token_type} refresh token expired/revoked. "
+            f"Re-authorization required. {detail}"
+        )
+
 # Initialize Supabase client for persistent tracking
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
@@ -655,9 +667,42 @@ async def get_access_token(mcp, config: Dict[str, Any], token_type: str = "user"
             "google_client_secret": config["google_client_secret"],
         })
 
+        # ── Detect invalid_grant before parsing the access token ──
+        # Google returns {"error": "invalid_grant"} when the refresh token
+        # is expired, revoked, or the user has reset their password.
+        result_lower = result.lower() if result else ""
+        if "invalid_grant" in result_lower:
+            logger.error(
+                "CRITICAL: Google OAuth %s token returned invalid_grant. "
+                "Re-authorization required. Raw response: %s",
+                token_type,
+                result[:300],
+            )
+            raise TokenExpiredError(
+                token_type=token_type,
+                detail=f"Response: {result[:200]}",
+            )
+
         # Parse result to get access token
         try:
             data = json.loads(result)
+
+            # Also check for error field in parsed JSON
+            if data.get("error"):
+                error_code = data["error"]
+                if error_code == "invalid_grant":
+                    raise TokenExpiredError(
+                        token_type=token_type,
+                        detail=data.get("error_description", ""),
+                    )
+                logger.error(
+                    "OAuth error refreshing %s token: %s - %s",
+                    token_type,
+                    error_code,
+                    data.get("error_description", ""),
+                )
+                return None
+
             access_token = data.get("access_token")
             if access_token:
                 logger.info(f"Successfully refreshed {token_type} access token")
@@ -672,7 +717,14 @@ async def get_access_token(mcp, config: Dict[str, Any], token_type: str = "user"
         logger.error(f"Could not extract access token from refresh result: {result[:200]}")
         return None
 
+    except TokenExpiredError:
+        raise  # Let callers handle this specifically
     except Exception as e:
+        # Check if the exception message itself contains invalid_grant
+        if "invalid_grant" in str(e).lower():
+            raise TokenExpiredError(
+                token_type=token_type, detail=str(e)
+            ) from e
         logger.error(f"Error refreshing {token_type} token: {e}")
         return None
 
@@ -1241,15 +1293,16 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                     original_subject = "your email"
                 reply_subject = f"Re: {original_subject}" if not original_subject.lower().startswith("re:") else original_subject
 
-                # Ingest email content into memory (before generating AI response)
-                # Skip ingestion for very short emails (likely automated)
+                # SABINE 2.0: Fast Path pipeline — WAL write, entity extraction,
+                # embedding, conflict detection, and Slow Path enqueue.
+                # Replaces the legacy ingest_user_message() call.
+                # Skip for very short emails (likely automated).
                 if len(email_body.strip()) >= 20:
                     try:
                         # Lazy import to avoid circular dependencies
-                        from lib.agent.memory import ingest_user_message
-                        from uuid import UUID
+                        from backend.services.fast_path import process_fast_path
 
-                        # Format email content for entity extraction
+                        # Format email content for Fast Path processing
                         ingestion_content = (
                             f"Email from {sender}"
                             + (f" ({sender_name})" if sender_name else "")
@@ -1258,26 +1311,26 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                             f"{email_body[:2000]}"  # Truncate very long emails
                         )
 
-                        logger.info(f"Ingesting email into memory (domain={email_domain})...")
-                        ingestion_result = await ingest_user_message(
-                            user_id=UUID(config["user_id"]),
-                            content=ingestion_content,
-                            source="email",
-                            role="assistant",
-                            domain_hint=email_domain  # "work" or "personal" from classifier
+                        logger.info(f"Running Fast Path for email (domain={email_domain})...")
+                        fp_result = await process_fast_path(
+                            user_id=config["user_id"],
+                            message=ingestion_content,
+                            session_id=f"email-{email_domain}-{message_id}",
                         )
 
                         logger.info(
-                            f"Email ingested: domain={ingestion_result.get('domain', email_domain)}, "
-                            f"entities_created={ingestion_result.get('entities_created', 0)}, "
-                            f"entities_updated={ingestion_result.get('entities_updated', 0)}, "
-                            f"memory_id={ingestion_result.get('memory_id', 'N/A')}"
+                            f"Fast Path complete: wal_id={fp_result.wal_entry_id}, "
+                            f"entities={len(fp_result.extracted_entities)}, "
+                            f"conflicts={len(fp_result.conflicts)}, "
+                            f"memories={len(fp_result.retrieved_memories)}, "
+                            f"queue_job={fp_result.queue_job_id}, "
+                            f"total={fp_result.timings.get('total_ms', 0):.1f}ms"
                         )
                     except Exception as e:
-                        # Memory ingestion failure should NOT block email response
-                        logger.warning(f"Email memory ingestion failed (non-fatal): {e}", exc_info=True)
+                        # Fast Path failure should NOT block email response
+                        logger.warning(f"Email Fast Path failed (non-fatal): {e}", exc_info=True)
                 else:
-                    logger.info(f"Skipping memory ingestion for very short email ({len(email_body.strip())} chars)")
+                    logger.info(f"Skipping Fast Path for very short email ({len(email_body.strip())} chars)")
 
                 # Generate AI response
                 logger.info(f"Generating AI response for email from {sender}...")
@@ -1353,6 +1406,19 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                 if message_id and message_id in _processing_messages:
                     _processing_messages.discard(message_id)
                     logger.debug(f"Message {message_id} removed from in-flight processing set")
+
+    except TokenExpiredError as token_err:
+        logger.critical(
+            "TOKEN_EXPIRED: %s — email processing halted. "
+            "Run reauthorize_google.py or update the refresh token in Railway env vars.",
+            token_err,
+        )
+        return {
+            "success": False,
+            "error": "token_expired",
+            "token_type": token_err.token_type,
+            "detail": str(token_err),
+        }
 
     except Exception as e:
         logger.error(f"Error handling email notification: {e}", exc_info=True)
