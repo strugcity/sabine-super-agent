@@ -26,6 +26,7 @@ import os
 import signal
 import sys
 import types
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -228,7 +229,7 @@ def run_worker() -> None:
     worker = Worker(
         queues=[queue],
         connection=redis_conn,
-        name=f"sabine-worker-{os.getpid()}",
+        name=f"sabine-worker-{uuid.uuid4().hex[:8]}",
     )
 
     logger.info(
