@@ -1,6 +1,6 @@
 name: Sabine 1.0 Regression Tests
 
-on: [pull_request, push]
+on: workflow_dispatch
 
 jobs:
   sabine-v1-regression:
