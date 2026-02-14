@@ -1,33 +1,46 @@
 """
 Check Gmail Watch Status
+
+Uses AGENT credentials (sabine@strugcity.com) from .env.
 """
-import json
-from pathlib import Path
+import os
+import sys
+
+from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-# Load credentials
-creds_dir = Path.home() / '.google_workspace_mcp' / 'credentials'
-token_file = creds_dir / 'default_user.json'
+# Load environment variables
+load_dotenv()
 
-with open(token_file, 'r') as f:
-    token_data = json.load(f)
+CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+AGENT_REFRESH_TOKEN = os.getenv("AGENT_REFRESH_TOKEN", "")
+PUBSUB_TOPIC = os.getenv("GMAIL_PUBSUB_TOPIC", "projects/sabine-super-agent/topics/gmail-notification")
+
+if not CLIENT_ID or not CLIENT_SECRET or not AGENT_REFRESH_TOKEN:
+    print("ERROR: Missing GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, or AGENT_REFRESH_TOKEN in .env")
+    sys.exit(1)
 
 creds = Credentials(
-    token=token_data['token'],
-    refresh_token=token_data.get('refresh_token'),
-    token_uri=token_data.get('token_uri'),
-    client_id=token_data.get('client_id'),
-    client_secret=token_data.get('client_secret'),
-    scopes=token_data.get('scopes'),
+    token=None,
+    refresh_token=AGENT_REFRESH_TOKEN,
+    token_uri="https://oauth2.googleapis.com/token",
+    client_id=CLIENT_ID,
+    client_secret=CLIENT_SECRET,
+    scopes=[
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/gmail.modify",
+    ],
 )
 
 # Build Gmail service
 service = build('gmail', 'v1', credentials=creds)
 
-# Setup watch
+# Setup watch (this also renews/checks status)
 watch_request = {
-    'topicName': 'projects/super-agent-485222/topics/gmail-notification',
+    'topicName': PUBSUB_TOPIC,
     'labelIds': ['INBOX']
 }
 

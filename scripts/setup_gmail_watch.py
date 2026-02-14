@@ -29,23 +29,47 @@ load_dotenv(project_root / ".env")
 
 
 def get_credentials():
-    """Load Google credentials from workspace-mcp credentials directory."""
+    """Load Google credentials for sabine@strugcity.com (the agent inbox).
+
+    Prefers .env AGENT_REFRESH_TOKEN (matches Railway), falls back to
+    workspace-mcp credential files.
+    """
     from google.oauth2.credentials import Credentials
 
-    creds_dir = Path.home() / ".google_workspace_mcp" / "credentials"
+    client_id = os.getenv("GOOGLE_CLIENT_ID", "")
+    client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "")
+    agent_refresh = os.getenv("AGENT_REFRESH_TOKEN", "")
 
-    # Try user-specific credentials first
-    user_email = os.getenv("USER_GOOGLE_EMAIL", "sabine@strugcity.com")
-    token_file = creds_dir / f"{user_email}.json"
+    # Prefer .env-based credentials (same as Railway)
+    if client_id and client_secret and agent_refresh:
+        print(f"  Using .env credentials (client {client_id[:30]}...)")
+        return Credentials(
+            token=None,
+            refresh_token=agent_refresh,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=[
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/gmail.send",
+                "https://www.googleapis.com/auth/gmail.modify",
+            ],
+        )
+
+    # Fallback: workspace-mcp credential files
+    creds_dir = Path.home() / ".google_workspace_mcp" / "credentials"
+    agent_email = os.getenv("AGENT_EMAIL", "sabine@strugcity.com")
+    token_file = creds_dir / f"{agent_email}.json"
 
     if not token_file.exists():
         token_file = creds_dir / "default_user.json"
 
     if not token_file.exists():
-        print(f"ERROR: No credentials found at {creds_dir}")
-        print("Please run OAuth flow first via workspace-mcp")
+        print(f"ERROR: No credentials found in .env or at {creds_dir}")
+        print("Run reauthorize_google.py first, or set AGENT_REFRESH_TOKEN in .env")
         return None
 
+    print(f"  Fallback: loading from {token_file}")
     with open(token_file, "r") as f:
         token_data = json.load(f)
 
@@ -64,7 +88,7 @@ def setup_gmail_watch(credentials):
     from googleapiclient.discovery import build
 
     topic_name = os.getenv(
-        "GMAIL_PUBSUB_TOPIC", "projects/super-agent-485222/topics/gmail-notification"
+        "GMAIL_PUBSUB_TOPIC", "projects/sabine-super-agent/topics/gmail-notification"
     )
 
     service = build("gmail", "v1", credentials=credentials)
