@@ -115,8 +115,9 @@ async def check_redis_health() -> RedisHealthStatus:
     Probe the Redis connection and return a structured health report.
 
     This function is *async* so it can be called directly from FastAPI
-    endpoint handlers.  The underlying ``redis-py`` call is synchronous but
-    very fast (<1 ms on a local or managed instance).
+    endpoint handlers.  The underlying ``redis-py`` calls are synchronous,
+    so they are wrapped with ``asyncio.to_thread()`` to avoid blocking the
+    event loop.
 
     Returns
     -------
@@ -124,11 +125,13 @@ async def check_redis_health() -> RedisHealthStatus:
         ``connected=True`` with timing info on success, or
         ``connected=False`` with the error string on failure.
     """
+    import asyncio
+
     try:
         client = get_redis_client()
 
         start = time.monotonic()
-        pong: bool = client.ping()
+        pong: bool = await asyncio.to_thread(client.ping)
         elapsed_ms = (time.monotonic() - start) * 1000.0
 
         if not pong:
@@ -139,7 +142,9 @@ async def check_redis_health() -> RedisHealthStatus:
             )
 
         # Gather a small subset of server info for diagnostics.
-        raw_info: Dict[str, Any] = client.info(section="server")
+        raw_info: Dict[str, Any] = await asyncio.to_thread(
+            client.info, section="server"
+        )
         info_subset: Dict[str, Any] = {
             "redis_version": raw_info.get("redis_version", "unknown"),
             "uptime_in_seconds": raw_info.get("uptime_in_seconds", -1),

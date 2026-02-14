@@ -259,8 +259,11 @@ async def invoke_agent(
         if ack_manager is not None:
             try:
                 await ack_manager.cancel()
-            except Exception:
-                pass
+            except Exception as ack_cancel_err:
+                logger.warning(
+                    "Failed to cancel ack manager during error cleanup: %s",
+                    ack_cancel_err,
+                )
 
         sanitized_error = sanitize_error_message(e)
         logger.error(f"Exception in invoke endpoint: {sanitize_for_logging(str(e))}", exc_info=True)

@@ -131,8 +131,11 @@ class EmailPoller:
 
         try:
             self.scheduler.remove_job("email_poll")
-        except Exception:
-            pass
+        except Exception as remove_err:
+            logger.warning(
+                "Failed to remove email_poll job during shutdown: %s",
+                remove_err,
+            )
 
         if self._owns_scheduler:
             self.scheduler.shutdown(wait=True)

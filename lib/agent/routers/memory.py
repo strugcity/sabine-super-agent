@@ -318,8 +318,12 @@ async def memory_upload_endpoint(
                                 "status": "failed",
                                 "error_message": str(ingest_error)
                             }).eq("file_path", storage_path).execute()
-                    except Exception:
-                        pass
+                    except Exception as db_status_err:
+                        logger.error(
+                            "Failed to update knowledge_files status to 'failed': %s",
+                            db_status_err,
+                            exc_info=True,
+                        )
 
         background_tasks.add_task(ingest_file_content)
         logger.info("✓ Queued file content for background ingestion")

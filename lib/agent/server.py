@@ -180,17 +180,11 @@ async def startup_event():
     env_path = project_root / ".env"
     load_dotenv(dotenv_path=env_path, override=True)
 
-    # Check required environment variables
-    required_vars = ["ANTHROPIC_API_KEY",
-                     "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]
-    missing_vars = [var for var in required_vars if not os.getenv(var)]
-
-    if missing_vars:
-        logger.warning(
-            f"Missing environment variables: {', '.join(missing_vars)}")
-        logger.warning("Some functionality may be limited")
-    else:
-        logger.info("✓ All required environment variables present")
+    # Preflight checks — validates all required env vars and exits on
+    # critical failures (e.g. missing ANTHROPIC_API_KEY / SUPABASE creds).
+    from lib.agent.preflight import run_preflight_checks, check_redis_reachable
+    run_preflight_checks(fail_on_critical=True)
+    check_redis_reachable()
 
     # Preload tools
     try:
