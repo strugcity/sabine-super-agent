@@ -28,6 +28,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
+from backend.magma.taxonomy import is_valid_predicate, infer_layer, GraphLayer
+
 logger = logging.getLogger(__name__)
 
 
@@ -551,7 +553,6 @@ def extract_relationships(
             )
 
         # Validate and normalise each relationship
-        valid_layers = {"semantic", "temporal", "causal", "entity"}
         entity_name_set = set(entity_names)
         relationships: List[Dict[str, Any]] = []
 
@@ -560,10 +561,10 @@ def extract_relationships(
                 continue
 
             subject: str = rel.get("subject", "")
-            predicate: str = rel.get("predicate", "")
+            predicate: str = rel.get("predicate", "").lower().replace(" ", "_")
             obj: str = rel.get("object", "")
             confidence: float = float(rel.get("confidence", 0.5))
-            graph_layer: str = rel.get("graph_layer", "entity")
+            graph_layer: str = rel.get("graph_layer", "").lower()
 
             # Skip entries where subject/object aren't known entities
             if subject not in entity_name_set or obj not in entity_name_set:
@@ -580,9 +581,19 @@ def extract_relationships(
             # Clamp confidence to [0.0, 1.0]
             confidence = max(0.0, min(1.0, confidence))
 
-            # Default to "entity" if layer is not recognised
-            if graph_layer not in valid_layers:
-                graph_layer = "entity"
+            # Validate predicate against canonical taxonomy
+            if not is_valid_predicate(predicate):
+                logger.warning("Non-canonical predicate '%s', falling back to 'related_to'", predicate)
+                predicate = "related_to"
+
+            # Infer correct layer from predicate (overrides Haiku's guess)
+            inferred = infer_layer(predicate)
+            if graph_layer and graph_layer != inferred.value:
+                logger.debug(
+                    "Correcting graph_layer: Haiku said '%s', taxonomy says '%s' for predicate '%s'",
+                    graph_layer, inferred.value, predicate
+                )
+            graph_layer = inferred.value
 
             relationships.append({
                 "subject": subject,
