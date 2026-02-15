@@ -155,6 +155,7 @@ from lib.agent.routers import (
     archive_router,
     user_config_router,
     graph_router,
+    skills_router,
 )
 
 # Mount all routers
@@ -168,6 +169,7 @@ app.include_router(salience_settings_router)
 app.include_router(archive_router)
 app.include_router(user_config_router)
 app.include_router(graph_router)
+app.include_router(skills_router)
 
 
 # =============================================================================
