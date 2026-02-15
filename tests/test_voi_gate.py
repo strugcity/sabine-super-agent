@@ -128,14 +128,12 @@ class TestVoIGatedInvoke:
                 user_id="user-123",
                 query="test",
             )
+            await asyncio.sleep(0)  # drain fire-and-forget task while mock is active
 
         # Assert: returns tool result
         assert result == "tool result"
         # Assert: original tool was called with correct args
         original_coro.assert_called_once_with(query="test")
-        # Assert: log was called (fire-and-forget, so we check it was created)
-        # Note: The actual call happens in a background task, so we just verify
-        # the task was created by checking the mock was set up
 
     @pytest.mark.asyncio
     async def test_empty_user_id_bypasses_voi(self) -> None:
