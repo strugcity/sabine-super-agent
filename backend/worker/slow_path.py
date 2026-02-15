@@ -149,12 +149,14 @@ async def _async_consolidate_entry(wal_entry_id: str) -> "ConsolidationResult":
 
         # 5. Resolve entities --------------------------------------------------
         entities_resolved: int = 0
+        resolve_results: List[Dict[str, Any]] = []
         for entity_data in entities_in_payload:
             try:
                 resolve_result = await _async_resolve_entity(
                     entity_data=entity_data,
                     user_id=user_id,
                 )
+                resolve_results.append(resolve_result)
                 if resolve_result.get("action") in ("created", "updated"):
                     entities_resolved += 1
             except Exception as entity_exc:
@@ -164,25 +166,63 @@ async def _async_consolidate_entry(wal_entry_id: str) -> "ConsolidationResult":
                     wal_entry_id,
                     entity_exc,
                 )
+                resolve_results.append({"action": "failed", "entity_id": None})
 
-        # 6. Resolve conflicts -------------------------------------------------
+        # 6. Persist extracted relationships -----------------------------------
+        relationships_stored: int = 0
+        if relationships and entities_in_payload:
+            try:
+                # Lazy import to avoid circular deps
+                from backend.magma.store import (
+                    build_entity_name_to_id,
+                    store_relationships,
+                )
+
+                entity_name_to_id: Dict[str, str] = build_entity_name_to_id(
+                    entities=entities_in_payload,
+                    resolve_results=resolve_results,
+                )
+
+                store_result: Dict[str, Any] = await store_relationships(
+                    relationships=relationships,
+                    entity_name_to_id=entity_name_to_id,
+                    source_wal_id=wal_entry_id,
+                )
+                relationships_stored = store_result.get("stored", 0)
+
+                if store_result.get("errors"):
+                    logger.warning(
+                        "Relationship storage had %d errors for WAL %s",
+                        len(store_result["errors"]),
+                        wal_entry_id,
+                    )
+            except Exception as rel_exc:
+                logger.error(
+                    "Relationship storage failed for WAL %s: %s",
+                    wal_entry_id,
+                    rel_exc,
+                    exc_info=True,
+                )
+
+        # 7. Resolve conflicts -------------------------------------------------
         conflicts: List[Dict[str, Any]] = raw_payload.get("conflicts", [])
         conflict_results: List[Dict[str, Any]] = resolve_conflicts(
             conflicts=conflicts,
             wal_entry_id=wal_entry_id,
         )
 
-        # 7. Mark WAL entry as completed ---------------------------------------
+        # 8. Mark WAL entry as completed ---------------------------------------
         await wal_service.mark_completed(entry.id)
 
         elapsed_ms = (time.monotonic() - start) * 1000.0
 
         logger.info(
-            "Consolidated WAL entry %s: entities=%d  relationships=%d  "
-            "conflicts=%d  elapsed=%.0fms",
+            "Consolidated WAL entry %s: entities=%d  relationships=%d "
+            "(stored=%d)  conflicts=%d  elapsed=%.0fms",
             wal_entry_id,
             entities_resolved,
             len(relationships),
+            relationships_stored,
             len(conflict_results),
             elapsed_ms,
         )
@@ -192,6 +232,7 @@ async def _async_consolidate_entry(wal_entry_id: str) -> "ConsolidationResult":
             status="processed",
             entities_resolved=entities_resolved,
             relationships_extracted=len(relationships),
+            relationships_stored=relationships_stored,
             conflicts_resolved=len(conflict_results),
             duration_ms=round(elapsed_ms, 1),
         )

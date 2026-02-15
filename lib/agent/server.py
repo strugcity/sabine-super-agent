@@ -152,6 +152,9 @@ from lib.agent.routers import (
     observability_router,
     queue_router,
     salience_settings_router,
+    archive_router,
+    user_config_router,
+    graph_router,
 )
 
 # Mount all routers
@@ -162,6 +165,9 @@ app.include_router(dream_team_router)
 app.include_router(observability_router)
 app.include_router(queue_router)
 app.include_router(salience_settings_router)
+app.include_router(archive_router)
+app.include_router(user_config_router)
+app.include_router(graph_router)
 
 
 # =============================================================================

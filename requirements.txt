@@ -62,3 +62,6 @@ aiohttp>=3.9.0
 # Job Queue - Slow Path processing (ADR-002)
 redis>=5.0.0
 rq>=1.16.0
+
+# Worker memory profiling (SLOW-005)
+psutil>=5.9.0

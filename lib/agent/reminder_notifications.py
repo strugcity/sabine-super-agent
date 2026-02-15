@@ -213,6 +213,50 @@ def format_reminder_email_html(reminder: Dict[str, Any]) -> str:
 # SMS Notification (Twilio)
 # =============================================================================
 
+async def _resolve_phone_number(
+    phone_number: Optional[str],
+    reminder: Dict[str, Any],
+) -> tuple[Optional[str], str]:
+    """
+    DEBT-004: Three-tier phone number resolution chain.
+
+    Priority order:
+    1. Explicit phone_number parameter (per-request override)
+    2. user_config table lookup (persistent user setting)
+    3. USER_PHONE environment variable (global fallback)
+
+    Args:
+        phone_number: Per-request override, or None.
+        reminder: Reminder dict (used to extract user_id for config lookup).
+
+    Returns:
+        Tuple of (resolved_phone, source_label) where source_label indicates
+        which tier provided the number.
+    """
+    # Tier 1: Per-request override
+    if phone_number:
+        return phone_number, "request_param"
+
+    # Tier 2: user_config table
+    user_id = reminder.get("user_id")
+    if user_id:
+        try:
+            # Lazy import to avoid circular dependencies
+            from lib.db.user_config import get_user_config
+
+            config_phone = await get_user_config(str(user_id), "phone_number")
+            if config_phone:
+                return config_phone, "user_config"
+        except Exception as e:
+            logger.warning("DEBT-004 user_config phone lookup failed: %s", e)
+
+    # Tier 3: Environment variable fallback
+    if USER_PHONE:
+        return USER_PHONE, "env_var"
+
+    return None, "none"
+
+
 async def send_sms_notification(
     reminder: Dict[str, Any],
     phone_number: Optional[str] = None
@@ -220,19 +264,25 @@ async def send_sms_notification(
     """
     Send SMS notification for a reminder via Twilio.
 
+    DEBT-004: Uses a three-tier phone number resolution chain:
+    1. phone_number parameter (per-request override)
+    2. user_config table lookup
+    3. USER_PHONE environment variable
+
     Note: SMS delivery may be limited pending A2P 10DLC campaign registration.
 
     Args:
         reminder: Reminder dictionary from database
-        phone_number: Override phone number (defaults to USER_PHONE)
+        phone_number: Override phone number (defaults to user_config then USER_PHONE)
 
     Returns:
         Dict with success status and details
     """
-    phone = phone_number or USER_PHONE
+    phone, phone_source = await _resolve_phone_number(phone_number, reminder)
+    logger.info("DEBT-004 phone resolution: source=%s, found=%s", phone_source, bool(phone))
 
     if not phone:
-        logger.warning("No phone number configured for SMS notification")
+        logger.warning("No phone number configured for SMS notification (all 3 tiers empty)")
         return {
             "success": False,
             "channel": "sms",

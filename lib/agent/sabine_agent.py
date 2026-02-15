@@ -111,7 +111,8 @@ async def run_sabine_agent(
                 user_id=UUID(user_id),
                 query=user_message,
                 role_filter="assistant",  # Only retrieve Sabine memories, not Dream Team task content
-                domain_filter=domain_filter
+                domain_filter=domain_filter,
+                include_graph=True,  # Include MAGMA entity relationships
             )
             logger.info(f"Retrieved context from memory ({len(retrieved_context)} chars)")
             

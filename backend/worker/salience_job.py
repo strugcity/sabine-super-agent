@@ -236,11 +236,15 @@ def archive_low_salience_memories(
     """
     Archive memories with low salience scores.
 
+    Loads archive configuration from Redis (falling back to module-level
+    defaults) so that per-user overrides set via the Settings API are
+    respected at runtime.
+
     Criteria for archival (all must be met, per ADR-004):
         1. ``salience_score < threshold`` (default 0.2)
         2. ``is_archived = false`` (not already archived)
-        3. ``access_count <= 2`` (rarely accessed)
-        4. Memory is older than 90 days (``created_at < now - 90 days``)
+        3. ``access_count <= max_access_count`` (rarely accessed)
+        4. Memory is older than ``min_age_days`` days
 
     Sets ``is_archived = true`` on matching memories.
 
@@ -252,6 +256,8 @@ def archive_low_salience_memories(
     ----------
     threshold : float
         Salience score threshold for archival.  Default: 0.2.
+        This parameter is used as an override; if not explicitly
+        provided, the Redis-stored config value is preferred.
 
     Returns
     -------
@@ -259,9 +265,18 @@ def archive_low_salience_memories(
         Summary with keys: archived_count, threshold, duration_ms.
     """
     start = time.monotonic()
+
+    # ------------------------------------------------------------------
+    # 0. Load archive config from Redis (or fall back to defaults)
+    # ------------------------------------------------------------------
+    archive_config = _load_archive_config_from_redis()
+    effective_threshold: float = threshold if threshold != DEFAULT_ARCHIVE_THRESHOLD else archive_config["threshold"]
+    effective_min_age: int = archive_config["min_age_days"]
+    effective_max_access: int = archive_config["max_access_count"]
+
     logger.info(
         "archive_low_salience START  threshold=%.2f  max_access=%d  min_age_days=%d",
-        threshold, MAX_ARCHIVE_ACCESS_COUNT, MIN_ARCHIVE_AGE_DAYS,
+        effective_threshold, effective_max_access, effective_min_age,
     )
 
     try:
@@ -271,7 +286,7 @@ def archive_low_salience_memories(
         return _error_result(start, str(exc))
 
     # Calculate the age cutoff date
-    age_cutoff = datetime.now(timezone.utc) - timedelta(days=MIN_ARCHIVE_AGE_DAYS)
+    age_cutoff = datetime.now(timezone.utc) - timedelta(days=effective_min_age)
     age_cutoff_str = age_cutoff.isoformat()
 
     # ------------------------------------------------------------------
@@ -282,8 +297,8 @@ def archive_low_salience_memories(
             client.table("memories")
             .select("id, salience_score, access_count, created_at")
             .eq("is_archived", False)
-            .lt("salience_score", threshold)
-            .lte("access_count", MAX_ARCHIVE_ACCESS_COUNT)
+            .lt("salience_score", effective_threshold)
+            .lte("access_count", effective_max_access)
             .lt("created_at", age_cutoff_str)
             .execute()
         )
@@ -335,13 +350,13 @@ def archive_low_salience_memories(
 
     logger.info(
         "archive_low_salience DONE: archived=%d  threshold=%.2f  elapsed=%.0fms",
-        archived_count, threshold, elapsed_ms,
+        archived_count, effective_threshold, elapsed_ms,
     )
 
     return {
         "status": "completed",
         "archived_count": archived_count,
-        "threshold": threshold,
+        "threshold": effective_threshold,
         "duration_ms": round(elapsed_ms, 1),
     }
 
@@ -386,6 +401,45 @@ def _load_weights_from_redis() -> "SalienceWeights":
         )
 
     return SalienceWeights()
+
+
+def _load_archive_config_from_redis() -> Dict[str, Any]:
+    """
+    Load archive configuration from Redis, falling back to defaults.
+
+    Checks the global key ``sabine:archive_config:global`` for settings
+    persisted via the Archive Configuration API.
+
+    Returns
+    -------
+    dict
+        Archive config with keys: threshold, min_age_days, max_access_count.
+    """
+    try:
+        import json
+        from backend.services.redis_client import get_redis_client
+
+        redis_client = get_redis_client()
+        raw = redis_client.get("sabine:archive_config:global")
+        if raw:
+            data = json.loads(raw)
+            logger.debug("Loaded archive config from Redis: %s", data)
+            return {
+                "threshold": data.get("threshold", DEFAULT_ARCHIVE_THRESHOLD),
+                "min_age_days": data.get("min_age_days", MIN_ARCHIVE_AGE_DAYS),
+                "max_access_count": data.get("max_access_count", MAX_ARCHIVE_ACCESS_COUNT),
+            }
+    except Exception as exc:
+        logger.debug(
+            "Could not load archive config from Redis (using defaults): %s",
+            exc,
+        )
+
+    return {
+        "threshold": DEFAULT_ARCHIVE_THRESHOLD,
+        "min_age_days": MIN_ARCHIVE_AGE_DAYS,
+        "max_access_count": MAX_ARCHIVE_ACCESS_COUNT,
+    }
 
 
 def _dict_to_memory(data: Dict[str, Any]) -> Any:

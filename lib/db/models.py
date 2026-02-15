@@ -394,7 +394,10 @@ class ConsolidationResult(BaseModel):
         description="Number of entities created or updated")
     relationships_extracted: int = Field(
         default=0, ge=0,
-        description="Number of relationships extracted (stub returns placeholder)")
+        description="Number of relationships extracted from message text")
+    relationships_stored: int = Field(
+        default=0, ge=0,
+        description="Number of relationships persisted to entity_relationships table")
     conflicts_resolved: int = Field(
         default=0, ge=0,
         description="Number of Fast Path conflict flags resolved")

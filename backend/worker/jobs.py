@@ -15,6 +15,7 @@ Job catalog:
     - ``process_wal_batch``       — Batch WAL consolidation with checkpoints
     - ``run_salience_recalculation`` — Nightly salience score recalculation (MEM-001)
     - ``run_archive_job``         — Archive low-salience memories (MEM-002)
+    - ``run_backfill_job``        — Backfill entity relationships from existing memories
 
 ADR Reference: ADR-002
 """
@@ -25,6 +26,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
+from backend.worker.memory_guard import memory_profiled_job
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,6 +35,7 @@ logger = logging.getLogger(__name__)
 # Single-entry processor
 # ---------------------------------------------------------------------------
 
+@memory_profiled_job()
 def process_wal_entry(wal_entry_id: str) -> Dict[str, Any]:
     """
     Process a single WAL entry through the Slow Path consolidation
@@ -112,6 +116,7 @@ def process_wal_entry(wal_entry_id: str) -> Dict[str, Any]:
 # Batch processor
 # ---------------------------------------------------------------------------
 
+@memory_profiled_job()
 def process_wal_batch(
     wal_entry_ids: List[str],
     checkpoint_interval: int = 100,
@@ -197,6 +202,7 @@ def process_wal_batch(
 # Salience recalculation job (MEM-001)
 # ---------------------------------------------------------------------------
 
+@memory_profiled_job()
 def run_salience_recalculation() -> Dict[str, Any]:
     """
     Recalculate salience scores for all active memories.
@@ -251,6 +257,7 @@ def run_salience_recalculation() -> Dict[str, Any]:
 # Archive low-salience memories job (MEM-002)
 # ---------------------------------------------------------------------------
 
+@memory_profiled_job()
 def run_archive_job(threshold: float = 0.2) -> Dict[str, Any]:
     """
     Archive memories whose salience has dropped below threshold.
@@ -297,6 +304,87 @@ def run_archive_job(threshold: float = 0.2) -> Dict[str, Any]:
         logger.error(
             "run_archive_job FAILED  elapsed=%.0fms  error=%s",
             elapsed_ms, exc, exc_info=True,
+        )
+        return {
+            "status": "failed",
+            "error": str(exc),
+            "elapsed_ms": round(elapsed_ms, 1),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Entity relationship backfill job
+# ---------------------------------------------------------------------------
+
+@memory_profiled_job()
+def run_backfill_job(
+    batch_size: int = 500,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """
+    Backfill entity relationships from existing memories.
+
+    Scans memories that have ``entity_links`` with 2+ entities, extracts
+    relationships via Claude Haiku, and stores them in the
+    ``entity_relationships`` table.
+
+    This job is idempotent: the UNIQUE constraint on the
+    ``entity_relationships`` table handles deduplication on re-runs.
+
+    Parameters
+    ----------
+    batch_size : int
+        Maximum number of memories to process in this run (default: 500).
+    dry_run : bool
+        If True, log what would be done without actually storing (default: False).
+
+    Returns
+    -------
+    dict
+        Summary with keys: total_memories, processed, relationships_stored,
+        errors, estimated_cost, elapsed_ms.
+    """
+    logger.info(
+        "run_backfill_job START  batch_size=%d  dry_run=%s",
+        batch_size,
+        dry_run,
+    )
+    start = time.monotonic()
+
+    try:
+        # Lazy import to avoid circular dependencies
+        from backend.worker.backfill_relationships import (
+            backfill_entity_relationships,
+        )
+
+        result = backfill_entity_relationships(
+            batch_size=batch_size,
+            dry_run=dry_run,
+        )
+        elapsed_ms = (time.monotonic() - start) * 1000.0
+
+        _record_health()
+
+        result["elapsed_ms"] = round(elapsed_ms, 1)
+
+        logger.info(
+            "run_backfill_job DONE  total=%d  processed=%d  "
+            "relationships=%d  elapsed=%.0fms",
+            result.get("total_memories", 0),
+            result.get("processed", 0),
+            result.get("relationships_stored", 0),
+            elapsed_ms,
+        )
+
+        return result
+
+    except Exception as exc:
+        elapsed_ms = (time.monotonic() - start) * 1000.0
+        logger.error(
+            "run_backfill_job FAILED  elapsed=%.0fms  error=%s",
+            elapsed_ms,
+            exc,
+            exc_info=True,
         )
         return {
             "status": "failed",

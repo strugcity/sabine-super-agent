@@ -231,6 +231,26 @@ class ReminderService:
                 )
             )
 
+        # DEBT-002: Application-level dedup check.
+        # If an active reminder with the same title already exists for this user,
+        # return the existing reminder instead of creating a duplicate.
+        existing = await self._find_duplicate_reminder(
+            user_id=user_id,
+            title=title.strip(),
+            repeat_pattern=repeat_pattern,
+        )
+        if existing is not None:
+            logger.info(
+                "DEBT-002 dedup: found existing active reminder %s for title '%s', "
+                "returning it instead of creating duplicate",
+                existing["id"], title,
+            )
+            return OperationResult.ok({
+                "reminder_id": existing["id"],
+                "reminder": existing,
+                "deduplicated": True,
+            })
+
         reminder_data = {
             "user_id": str(user_id),
             "title": title.strip(),
@@ -804,6 +824,63 @@ class ReminderService:
                     original_error=e,
                 )
             )
+
+
+    # =========================================================================
+    # Deduplication Helpers (DEBT-002)
+    # =========================================================================
+
+    async def _find_duplicate_reminder(
+        self,
+        user_id: UUID,
+        title: str,
+        repeat_pattern: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Check for an existing active reminder with the same title and repeat pattern.
+
+        DEBT-002: Application-level dedup guard. Works alongside the SQL partial
+        unique index ``idx_reminders_dedup`` as a belt-and-suspenders approach.
+
+        Args:
+            user_id: Owner user UUID.
+            title: Reminder title (case-insensitive match).
+            repeat_pattern: Recurrence pattern or None for one-time.
+
+        Returns:
+            The existing reminder dict if a duplicate is found, otherwise None.
+        """
+        if not self.client:
+            return None
+
+        try:
+            query = (
+                self.client.table(REMINDERS_TABLE)
+                .select("*")
+                .eq("user_id", str(user_id))
+                .ilike("title", title)
+                .eq("is_active", True)
+                .eq("is_completed", False)
+            )
+
+            if repeat_pattern is not None:
+                query = query.eq("repeat_pattern", repeat_pattern)
+            else:
+                query = query.is_("repeat_pattern", "null")
+
+            response = query.limit(1).execute()
+
+            if response.data and len(response.data) > 0:
+                return response.data[0]
+            return None
+
+        except Exception as e:
+            logger.warning(
+                "DEBT-002 dedup check failed (non-blocking): %s", e,
+            )
+            # Non-blocking: if dedup check fails, allow creation to proceed.
+            # The SQL unique index will catch true duplicates.
+            return None
 
 
 # =============================================================================

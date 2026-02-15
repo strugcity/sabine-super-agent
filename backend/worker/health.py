@@ -16,8 +16,18 @@ Response example::
         "queue_depth": 5,
         "workers_active": 1,
         "last_job_processed": "2026-02-13T10:30:00+00:00",
-        "uptime_seconds": 3600
+        "uptime_seconds": 3600,
+        "memory_rss_mb": 512.3,
+        "memory_vms_mb": 1024.5,
+        "memory_percent": 25.1,
+        "memory_limit_mb": 2048,
+        "memory_status": "healthy"
     }
+
+Memory status thresholds:
+    - ``healthy``  : RSS < 1536 MB
+    - ``warning``  : 1536 MB <= RSS < 2048 MB
+    - ``critical`` : RSS >= 2048 MB
 """
 
 import json
@@ -110,6 +120,36 @@ def _collect_health() -> Dict[str, Any]:
     except Exception as exc:
         logger.warning("Health: queue stats failed: %s", exc)
 
+    # --- Memory metrics (SLOW-005) ---
+    try:
+        from backend.worker.memory_guard import (
+            get_memory_snapshot,
+            get_memory_status,
+            DEFAULT_HARD_LIMIT_MB,
+        )
+
+        snap = get_memory_snapshot()
+        mem_status = get_memory_status(snap.rss_mb)
+
+        health["memory_rss_mb"] = snap.rss_mb
+        health["memory_vms_mb"] = snap.vms_mb
+        health["memory_percent"] = snap.percent
+        health["memory_limit_mb"] = DEFAULT_HARD_LIMIT_MB
+        health["memory_status"] = mem_status
+
+        # Escalate overall status if memory is concerning
+        if mem_status == "critical":
+            health["status"] = "critical"
+        elif mem_status == "warning" and health["status"] == "healthy":
+            health["status"] = "warning"
+    except Exception as exc:
+        logger.warning("Health: memory metrics failed: %s", exc)
+        health["memory_rss_mb"] = None
+        health["memory_vms_mb"] = None
+        health["memory_percent"] = None
+        health["memory_limit_mb"] = None
+        health["memory_status"] = "unknown"
+
     # If Redis is down, mark as unhealthy
     if not health["redis_connected"]:
         health["status"] = "unhealthy"
@@ -129,7 +169,9 @@ class _HealthHandler(BaseHTTPRequestHandler):
         if self.path.rstrip("/") == "/health":
             payload = _collect_health()
             body = json.dumps(payload, indent=2).encode("utf-8")
-            self.send_response(200 if payload["status"] == "healthy" else 503)
+            # Return 200 for healthy/warning, 503 for degraded/unhealthy/critical
+            status_ok = payload["status"] in ("healthy", "warning")
+            self.send_response(200 if status_ok else 503)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()

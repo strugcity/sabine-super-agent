@@ -330,17 +330,44 @@ def format_entity_for_context(entity: Entity) -> str:
     return ''.join(parts)
 
 
+def format_relationship_for_context(relationship: Dict[str, Any]) -> str:
+    """
+    Format a single entity relationship for LLM context.
+
+    Args:
+        relationship: Relationship dict with source_name, target_name,
+                      relationship_type, confidence keys.
+
+    Returns:
+        Formatted string line, e.g.:
+        ``"- Alice -> works_at -> Acme Corp (confidence: 0.92)"``
+    """
+    source: str = relationship.get("source_name", "unknown")
+    target: str = relationship.get("target_name", "unknown")
+    rel_type: str = relationship.get("relationship_type", "related_to")
+    confidence: float = float(relationship.get("confidence", 0.0))
+
+    return f"- {source} -> {rel_type} -> {target} (confidence: {confidence:.2f})"
+
+
+# Maximum relationships to include in blended context to avoid bloating
+_MAX_GRAPH_RELATIONSHIPS: int = 10
+
+
 def blend_context(
     memories: List[Dict[str, Any]],
     entities: List[Entity],
     query: str,
-    domain_filter: Optional[str] = None
+    domain_filter: Optional[str] = None,
+    relationships: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
-    Blend memories and entities into a clean, hierarchical context string.
+    Blend memories, entities, and relationships into a clean, hierarchical
+    context string.
 
     This is "The Blender" - it combines fuzzy vector memories with structured
-    entity data into a format optimized for LLM consumption.
+    entity data and graph relationships into a format optimized for LLM
+    consumption.
 
     Args:
         memories: List of similar memory dictionaries
@@ -348,24 +375,30 @@ def blend_context(
         query: Original user query (for context)
         domain_filter: Optional domain filter for labeling
                        If provided, adds domain labels to section headers.
+        relationships: Optional list of relationship dicts from MAGMA graph.
+                       Each dict should have source_name, target_name,
+                       relationship_type, confidence keys.
 
     Returns:
         Formatted context string ready for LLM system prompt
 
     Example:
-        >>> context = blend_context(memories, entities, "What's up with Jenny?")
+        >>> context = blend_context(memories, entities, "What's up with Jenny?",
+        ...     relationships=[{"source_name": "Jenny", "target_name": "Acme",
+        ...                     "relationship_type": "works_at", "confidence": 0.92}])
         >>> print(context)
         [CONTEXT FOR: "What's up with Jenny?"]
 
         [RELEVANT MEMORIES]
         - Meeting with Jenny about PriceSpider (Jan 29, 85% match)
-        - Discussed contract terms (Jan 28)
 
         [RELATED ENTITIES]
         - Jenny (Person, Work): Partner at PriceSpider
-        - PriceSpider Contract (Document, Work): Due Feb 15
+
+        [ENTITY RELATIONSHIPS]
+        - Jenny -> works_at -> Acme (confidence: 0.92)
     """
-    lines = []
+    lines: List[str] = []
 
     # Generate domain labels if filtering is active
     domain_label = f" ({domain_filter.upper()} DOMAIN)" if domain_filter else ""
@@ -397,6 +430,14 @@ def blend_context(
         lines.append(entity_header)
         lines.append("- No related entities found")
 
+    # Relationships section (from MAGMA graph)
+    if relationships:
+        lines.append("")
+        lines.append("[ENTITY RELATIONSHIPS]")
+        # Cap to _MAX_GRAPH_RELATIONSHIPS to avoid bloating context window
+        for rel in relationships[:_MAX_GRAPH_RELATIONSHIPS]:
+            lines.append(format_relationship_for_context(rel))
+
     return '\n'.join(lines)
 
 
@@ -411,17 +452,20 @@ async def retrieve_context(
     memory_limit: int = DEFAULT_MEMORY_COUNT,
     entity_limit: int = DEFAULT_ENTITY_LIMIT,
     role_filter: str = "assistant",
-    domain_filter: Optional[str] = None
+    domain_filter: Optional[str] = None,
+    include_graph: bool = True,
 ) -> str:
     """
-    Retrieve relevant context for a user query by blending vector memories
-    and entity graph data.
+    Retrieve relevant context for a user query by blending vector memories,
+    entity graph data, and optionally entity relationships from the MAGMA
+    graph.
 
     This is the main entry point for Phase 3 retrieval. It orchestrates:
     1. Query embedding generation
     2. Vector similarity search for memories
     3. Entity keyword extraction and search
-    4. Context blending and formatting
+    4. (Optional) Graph relationship lookup for found entities
+    5. Context blending and formatting
 
     Args:
         user_id: UUID of the user making the query
@@ -435,6 +479,10 @@ async def retrieve_context(
         domain_filter: Optional domain filter (e.g., "work", "personal", "family", "logistics").
                        If provided, only returns memories and entities from this domain.
                        If None, returns all domains (backward compatible).
+        include_graph: If True, fetch entity relationships from the MAGMA graph
+                       for each found entity and include them in the blended context.
+                       Defaults to True for conversational agents, should be False for
+                       coding/task agents that do not need relationship context.
 
     Returns:
         Formatted context string ready for LLM system prompt
@@ -443,7 +491,8 @@ async def retrieve_context(
         >>> context = await retrieve_context(
         ...     user_id=UUID("..."),
         ...     query="What's happening with the PriceSpider contract?",
-        ...     role_filter="assistant"
+        ...     role_filter="assistant",
+        ...     include_graph=True,
         ... )
         >>> print(context)
         [CONTEXT FOR: "What's happening with the PriceSpider contract?"]
@@ -454,8 +503,13 @@ async def retrieve_context(
         [RELATED ENTITIES]
         - PriceSpider Contract (Document, Work): Due Feb 15
         - Jenny (Person, Work): Partner at company
+
+        [ENTITY RELATIONSHIPS]
+        - Jenny -> works_at -> PriceSpider (confidence: 0.92)
     """
-    logger.info(f"🔍 Retrieving context for query: {query}")
+    logger.info(
+        "Retrieving context for query: %s (include_graph=%s)", query, include_graph,
+    )
     start_time = datetime.utcnow()
 
     try:
@@ -488,22 +542,42 @@ async def retrieve_context(
             domain_filter=domain_filter
         )
 
-        # STEP 4: Blend into formatted context
-        logger.info("Step 4: Blending context...")
+        # STEP 4: (Optional) Fetch graph relationships for found entities
+        graph_relationships: Optional[List[Dict[str, Any]]] = None
+
+        if include_graph and entities:
+            logger.info("Step 4: Fetching graph relationships for %d entities...", len(entities))
+            try:
+                graph_relationships = await _fetch_entity_relationships(entities)
+                logger.info(
+                    "Found %d graph relationships",
+                    len(graph_relationships) if graph_relationships else 0,
+                )
+            except Exception as graph_exc:
+                logger.warning(
+                    "Graph relationship fetch failed (non-fatal): %s", graph_exc,
+                )
+                graph_relationships = None
+
+        # STEP 5: Blend into formatted context
+        logger.info("Step 5: Blending context...")
         context = blend_context(
             memories=memories,
             entities=entities,
             query=query,
-            domain_filter=domain_filter
+            domain_filter=domain_filter,
+            relationships=graph_relationships,
         )
 
         # Calculate timing
         end_time = datetime.utcnow()
         elapsed_ms = int((end_time - start_time).total_seconds() * 1000)
 
+        rels_count = len(graph_relationships) if graph_relationships else 0
         logger.info(
-            f"✓ Context retrieval complete in {elapsed_ms}ms - "
-            f"{len(memories)} memories, {len(entities)} entities"
+            "Context retrieval complete in %dms - "
+            "%d memories, %d entities, %d relationships",
+            elapsed_ms, len(memories), len(entities), rels_count,
         )
 
         return context
@@ -512,6 +586,62 @@ async def retrieve_context(
         logger.error(f"Context retrieval failed: {e}", exc_info=True)
         # Return graceful fallback
         return f'[CONTEXT FOR: "{query}"]\n\n[ERROR]\n- Unable to retrieve context: {str(e)}'
+
+
+async def _fetch_entity_relationships(
+    entities: List[Entity],
+    per_entity_limit: int = 5,
+) -> List[Dict[str, Any]]:
+    """
+    Fetch graph relationships for a list of entities from the MAGMA layer.
+
+    Deduplicates relationships across entities to avoid redundant entries
+    in the blended context.
+
+    Args:
+        entities: List of Entity objects to query relationships for.
+        per_entity_limit: Max relationships to fetch per entity.
+
+    Returns:
+        Deduplicated list of relationship dicts.
+    """
+    # Lazy import to avoid circular deps
+    from backend.magma.query import get_entity_relationships
+
+    all_relationships: List[Dict[str, Any]] = []
+    seen_keys: set = set()
+
+    for entity in entities:
+        if entity.id is None:
+            continue
+
+        try:
+            rels = await get_entity_relationships(
+                entity_id=entity.id,
+                direction="both",
+                limit=per_entity_limit,
+            )
+
+            for rel in rels:
+                # Deduplicate by (source_entity_id, target_entity_id, relationship_type)
+                dedup_key = (
+                    rel.get("source_entity_id", ""),
+                    rel.get("target_entity_id", ""),
+                    rel.get("relationship_type", ""),
+                )
+                if dedup_key not in seen_keys:
+                    seen_keys.add(dedup_key)
+                    all_relationships.append(rel)
+
+        except Exception as exc:
+            logger.debug(
+                "Failed to fetch relationships for entity %s (%s): %s",
+                entity.name,
+                entity.id,
+                exc,
+            )
+
+    return all_relationships
 
 
 # =============================================================================

@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from langchain_anthropic import ChatAnthropic
+from langchain_core.exceptions import OutputParserException
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import OpenAIEmbeddings
@@ -215,6 +216,44 @@ Output:
         logger.info(
             f"✓ Extracted {len(result.extracted_entities)} entities from text")
         return result
+    except OutputParserException as e:
+        # DEBT-003: Retry with a stronger JSON-only instruction before
+        # falling back to empty. Claude Haiku sometimes returns prose
+        # instead of JSON for low-signal messages.
+        logger.debug(
+            f"First extraction attempt returned non-JSON (common for low-signal messages): {e}"
+        )
+
+        retry_prompt = ChatPromptTemplate.from_messages([
+            ("system",
+             "Return ONLY valid JSON matching the schema below. "
+             "No prose, no explanation, no markdown fences.\n\n"
+             "{format_instructions}"),
+            ("human", "{text}")
+        ])
+
+        try:
+            retry_response = await llm.ainvoke(
+                retry_prompt.format_messages(
+                    text=text,
+                    format_instructions=parser.get_format_instructions(),
+                )
+            )
+            result = parser.parse(retry_response.content)
+            logger.info(
+                f"Retry extraction succeeded: {len(result.extracted_entities)} entities"
+            )
+            return result
+        except Exception as retry_err:
+            logger.warning(
+                "Retry extraction also failed, returning empty context: %s",
+                retry_err,
+            )
+            return ExtractedContext(
+                extracted_entities=[],
+                core_memory=text[:500],
+                domain=DomainEnum.PERSONAL,
+            )
     except Exception as e:
         logger.error(f"Entity extraction failed: {e}", exc_info=True)
         # Fallback: Return generic memory with no entities
