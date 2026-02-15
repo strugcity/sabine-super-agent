@@ -16,6 +16,8 @@ Job catalog:
     - ``run_salience_recalculation`` — Nightly salience score recalculation (MEM-001)
     - ``run_archive_job``         — Archive low-salience memories (MEM-002)
     - ``run_backfill_job``        — Backfill entity relationships from existing memories
+    - ``run_gap_detection``       — Weekly skill gap detection (SKILL-001, SKILL-002)
+    - ``run_weekly_digest``       — Weekly skill acquisition digest (Slack)
 
 ADR Reference: ADR-002
 """
@@ -385,6 +387,111 @@ def run_backfill_job(
             elapsed_ms,
             exc,
             exc_info=True,
+        )
+        return {
+            "status": "failed",
+            "error": str(exc),
+            "elapsed_ms": round(elapsed_ms, 1),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Weekly gap detection job (SKILL-001, SKILL-002)
+# ---------------------------------------------------------------------------
+
+@memory_profiled_job()
+def run_gap_detection() -> Dict[str, Any]:
+    """
+    Detect skill gaps from tool audit log failures.
+
+    Designed to run as a weekly scheduled job. Analyzes the last
+    7 days of tool failures and creates/updates skill_gaps records.
+
+    Returns
+    -------
+    dict
+        Summary with keys: gaps_detected, gaps_updated, elapsed_ms.
+    """
+    logger.info("run_gap_detection START")
+    start = time.monotonic()
+
+    try:
+        # Lazy import to avoid circular dependencies
+        from backend.services.gap_detection import detect_gaps
+
+        gaps = asyncio.run(detect_gaps())
+        elapsed_ms = (time.monotonic() - start) * 1000.0
+
+        _record_health()
+
+        result = {
+            "status": "success",
+            "gaps_detected": len(gaps),
+            "elapsed_ms": round(elapsed_ms, 1),
+        }
+
+        logger.info(
+            "run_gap_detection DONE  gaps=%d  elapsed=%.0fms",
+            len(gaps), elapsed_ms,
+        )
+
+        return result
+
+    except Exception as exc:
+        elapsed_ms = (time.monotonic() - start) * 1000.0
+        logger.error(
+            "run_gap_detection FAILED  elapsed=%.0fms  error=%s",
+            elapsed_ms, exc, exc_info=True,
+        )
+        return {
+            "status": "failed",
+            "error": str(exc),
+            "elapsed_ms": round(elapsed_ms, 1),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Weekly skill digest job
+# ---------------------------------------------------------------------------
+
+@memory_profiled_job()
+def run_weekly_digest() -> Dict[str, Any]:
+    """
+    Generate and send the weekly skill acquisition digest.
+
+    Summarises gaps detected, proposals pending, and skills
+    promoted/disabled over the past 7 days.  Sends via Slack webhook.
+
+    Returns
+    -------
+    dict
+        Summary with keys: status, gaps_opened, proposals_pending, etc.
+    """
+    logger.info("run_weekly_digest START")
+    start = time.monotonic()
+
+    try:
+        from backend.services.skill_digest import send_weekly_digest
+
+        result = asyncio.run(send_weekly_digest())
+        elapsed_ms = (time.monotonic() - start) * 1000.0
+
+        _record_health()
+
+        result["elapsed_ms"] = round(elapsed_ms, 1)
+
+        logger.info(
+            "run_weekly_digest DONE  status=%s  elapsed=%.0fms",
+            result.get("status", "unknown"), elapsed_ms,
+        )
+
+        return result
+
+    except Exception as exc:
+        elapsed_ms = (time.monotonic() - start) * 1000.0
+        logger.error(
+            "run_weekly_digest FAILED  elapsed=%.0fms  error=%s",
+            elapsed_ms, exc, exc_info=True,
         )
         return {
             "status": "failed",

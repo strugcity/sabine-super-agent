@@ -12,6 +12,7 @@ This package contains modular routers for different API domains:
 - archive: Archive configuration and trigger endpoints (MEM-004)
 - user_config: Per-user configuration management (DEBT-004)
 - graph: MAGMA entity relationship graph endpoints
+- skills: Autonomous skill acquisition management endpoints
 """
 
 from .sabine import router as sabine_router
@@ -24,6 +25,7 @@ from .salience_settings import router as salience_settings_router
 from .archive import router as archive_router
 from .user_config import router as user_config_router
 from .graph import router as graph_router
+from .skills import router as skills_router
 
 __all__ = [
     "sabine_router",
@@ -36,4 +38,5 @@ __all__ = [
     "archive_router",
     "user_config_router",
     "graph_router",
+    "skills_router",
 ]

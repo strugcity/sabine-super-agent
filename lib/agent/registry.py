@@ -141,6 +141,83 @@ def load_local_skills() -> List[LoadedSkill]:
     return skills
 
 
+async def load_db_skills(user_id: Optional[str] = None) -> List[LoadedSkill]:
+    """
+    Load promoted skills from the skill_versions database table.
+
+    These are skills that were generated, tested in E2B sandbox,
+    and approved by the user. They are stored as code in the DB
+    and dynamically compiled at load time.
+
+    Parameters
+    ----------
+    user_id : str, optional
+        If provided, only load skills for this user.
+
+    Returns
+    -------
+    list[LoadedSkill]
+        Loaded skills from database.
+    """
+    if not user_id:
+        return []
+
+    try:
+        import os
+        from supabase import create_client
+
+        url = os.getenv("SUPABASE_URL", "")
+        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+        if not url or not key:
+            logger.debug("Supabase not configured — skipping DB skills")
+            return []
+
+        client = create_client(url, key)
+
+        result = client.table("skill_versions")\
+            .select("*")\
+            .eq("user_id", user_id)\
+            .eq("is_active", True)\
+            .execute()
+
+        if not result.data:
+            return []
+
+        skills: List[LoadedSkill] = []
+        for row in result.data:
+            try:
+                manifest = SkillManifest(**row["manifest_json"])
+
+                # Dynamically compile the handler code
+                handler_globals: Dict[str, Any] = {}
+                exec(row["handler_code"], handler_globals)  # noqa: S102
+
+                if "execute" not in handler_globals:
+                    logger.warning(
+                        "DB skill %s has no execute() function — skipping",
+                        row["skill_name"],
+                    )
+                    continue
+
+                skill = LoadedSkill(
+                    name=manifest.name,
+                    description=manifest.description,
+                    handler=handler_globals["execute"],
+                    manifest=manifest,
+                )
+                skills.append(skill)
+                logger.info("Loaded DB skill: %s v%s", row["skill_name"], row["version"])
+
+            except Exception as e:
+                logger.error("Failed to load DB skill %s: %s", row["skill_name"], e)
+
+        return skills
+
+    except Exception as e:
+        logger.error("Failed to load DB skills: %s", e)
+        return []
+
+
 def create_args_schema_from_manifest(skill: LoadedSkill) -> Optional[type]:
     """
     Dynamically create a Pydantic model from the skill manifest's parameters schema.
@@ -333,22 +410,24 @@ async def get_mcp_diagnostics() -> Dict[str, Any]:
 # Unified Tool Registry
 # =============================================================================
 
-async def get_all_tools() -> List[StructuredTool]:
+async def get_all_tools(user_id: Optional[str] = None) -> List[StructuredTool]:
     """
-    Get all available tools from both local skills and MCP servers.
+    Get all available tools from local skills, MCP servers, and DB skills.
 
     This is the main entry point for the agent. It merges:
     - Local Python skills from /lib/skills
     - Remote tools from MCP servers
+    - User-specific DB skills from skill_versions table
 
-    Returns:
-        Unified list of LangChain StructuredTool objects
+    Parameters
+    ----------
+    user_id : str, optional
+        If provided, also load user's promoted DB skills.
 
-    Example:
-        >>> tools = await get_all_tools()
-        >>> print(f"Loaded {len(tools)} tools total")
-        >>> for tool in tools:
-        >>>     print(f"  - {tool.name}: {tool.description}")
+    Returns
+    -------
+    list[StructuredTool]
+        Unified list of LangChain StructuredTool objects.
     """
     all_tools: List[StructuredTool] = []
 
@@ -358,39 +437,93 @@ async def get_all_tools() -> List[StructuredTool]:
     for skill in local_skills:
         tool = convert_local_skill_to_tool(skill)
         all_tools.append(tool)
-
     logger.info(f"Loaded {len(local_skills)} local skills")
 
     # Load MCP tools
     logger.info("Loading MCP tools...")
     mcp_tools = await load_mcp_tools()
     all_tools.extend(mcp_tools)
-
     logger.info(f"Loaded {len(mcp_tools)} MCP tools")
 
+    # Load DB skills (user-specific promoted skills)
+    db_skill_count = 0
+    if user_id:
+        logger.info("Loading DB skills for user %s...", user_id)
+        db_skills = await load_db_skills(user_id)
+        for skill in db_skills:
+            tool = convert_local_skill_to_tool(skill)
+            all_tools.append(tool)
+        db_skill_count = len(db_skills)
+        logger.info(f"Loaded {db_skill_count} DB skills")
+
     # Log summary
-    logger.info(f"=" * 60)
+    logger.info("=" * 60)
     logger.info(f"TOTAL TOOLS LOADED: {len(all_tools)}")
     logger.info(f"  - Local Skills: {len(local_skills)}")
     logger.info(f"  - MCP Tools: {len(mcp_tools)}")
-    logger.info(f"=" * 60)
+    if user_id:
+        logger.info(f"  - DB Skills: {db_skill_count}")
+    logger.info("=" * 60)
 
     if all_tools:
         logger.info("Available tools:")
         for tool in all_tools:
-            logger.info(f"  ✓ {tool.name}: {tool.description[:60]}...")
+            logger.info(f"  - {tool.name}: {tool.description[:60]}...")
 
     return all_tools
 
 
-def get_all_tools_sync() -> List[StructuredTool]:
+def get_all_tools_sync(user_id: Optional[str] = None) -> List[StructuredTool]:
     """
     Synchronous wrapper for get_all_tools().
 
-    Returns:
-        Unified list of LangChain StructuredTool objects
+    Parameters
+    ----------
+    user_id : str, optional
+        If provided, also load user's promoted DB skills.
+
+    Returns
+    -------
+    list[StructuredTool]
+        Unified list of LangChain StructuredTool objects.
     """
-    return asyncio.run(get_all_tools())
+    return asyncio.run(get_all_tools(user_id=user_id))
+
+
+# In-memory cache for hot-reload
+_tool_cache: Dict[str, List[StructuredTool]] = {}
+
+
+async def refresh_skill_registry(user_id: str) -> int:
+    """
+    Force-refresh the tool registry for a specific user.
+
+    Clears any cached tools and reloads everything including
+    newly promoted DB skills. Call this after skill promotion
+    or disable.
+
+    Parameters
+    ----------
+    user_id : str
+        The user whose registry should be refreshed.
+
+    Returns
+    -------
+    int
+        Total number of tools after refresh.
+    """
+    # Clear cache for this user
+    _tool_cache.pop(user_id, None)
+
+    # Reload all tools
+    tools = await get_all_tools(user_id=user_id)
+    _tool_cache[user_id] = tools
+
+    logger.info(
+        "Registry refreshed for user %s: %d tools available",
+        user_id, len(tools),
+    )
+    return len(tools)
 
 
 async def get_scoped_tools(role: "AgentRole") -> List[StructuredTool]:

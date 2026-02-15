@@ -17,6 +17,8 @@ Environment variables:
     SALIENCE_CRON_MINUTE  -- Minute for nightly salience recalc (default: 0)
     ARCHIVE_CRON_HOUR     -- Hour (UTC) for nightly archive job (default: 4)
     ARCHIVE_CRON_MINUTE   -- Minute for nightly archive job (default: 30)
+    GAP_DETECTION_CRON_HOUR  -- Hour (UTC) for weekly gap detection (default: 3)
+    GAP_DETECTION_CRON_MINUTE -- Minute for weekly gap detection (default: 0)
 
 ADR Reference: ADR-002
 """
@@ -77,6 +79,8 @@ def _register_scheduled_jobs(queue: "Queue", redis_conn: "Redis") -> None:
     Scheduled jobs:
         1. **Salience recalculation** (default 04:00 UTC) — MEM-001
         2. **Archive low-salience memories** (default 04:30 UTC) — MEM-002
+        3. **Gap detection** (default 03:00 UTC Sunday) — SKILL-001, SKILL-002
+        4. **Skill digest** (default 03:30 UTC Sunday) — weekly summary via Slack
     """
     from datetime import timedelta
 
@@ -124,6 +128,45 @@ def _register_scheduled_jobs(queue: "Queue", redis_conn: "Redis") -> None:
         logger.info(
             "Scheduled nightly archive job at %02d:%02d UTC (next: %s)",
             archive_hour, archive_minute, archive_time.isoformat(),
+        )
+
+        # Schedule weekly gap detection (repeats every 7 days)
+        gap_hour: int = int(os.getenv("GAP_DETECTION_CRON_HOUR", "3"))
+        gap_minute: int = int(os.getenv("GAP_DETECTION_CRON_MINUTE", "0"))
+        # Find next Sunday
+        gap_time = now.replace(
+            hour=gap_hour, minute=gap_minute, second=0, microsecond=0,
+        )
+        # Move to next Sunday (weekday 6)
+        days_until_sunday = (6 - now.weekday()) % 7
+        if days_until_sunday == 0 and gap_time <= now:
+            days_until_sunday = 7
+        gap_time += timedelta(days=days_until_sunday)
+
+        queue.enqueue_at(
+            gap_time,
+            "backend.worker.jobs.run_gap_detection",
+            meta={"repeat": 604800, "description": "weekly-gap-detection"},  # 604800 = 7 days
+            job_timeout="15m",
+            description="weekly-gap-detection",
+        )
+        logger.info(
+            "Scheduled weekly gap detection at %02d:%02d UTC Sunday (next: %s)",
+            gap_hour, gap_minute, gap_time.isoformat(),
+        )
+
+        # Schedule weekly skill digest (Sunday 03:30 UTC, after gap detection)
+        digest_time = gap_time.replace(minute=30)
+        queue.enqueue_at(
+            digest_time,
+            "backend.worker.jobs.run_weekly_digest",
+            meta={"repeat": 604800, "description": "weekly-skill-digest"},
+            job_timeout="5m",
+            description="weekly-skill-digest",
+        )
+        logger.info(
+            "Scheduled weekly skill digest at %02d:30 UTC Sunday (next: %s)",
+            gap_hour, digest_time.isoformat(),
         )
 
     except Exception as exc:
