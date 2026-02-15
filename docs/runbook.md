@@ -134,7 +134,7 @@ Stuck WAL entries will auto-retry according to exponential backoff (30s, 5m, 15m
 **Prevention:**
 - Configure process supervisor with automatic restart (systemd `Restart=always`, Docker `restart: unless-stopped`)
 - Set memory limits in Docker to prevent OOM kills (`--memory=2g`)
-- Monitor worker health endpoint with alerting on downtime &gt; 1 minute
+- Monitor worker health endpoint with alerting on downtime > 1 minute
 
 ---
 
@@ -183,7 +183,7 @@ Pending WAL entries will be re-queued automatically on next worker cycle once Re
 - Enable Redis persistence (AOF or RDB) to prevent data loss
 - Set up monitoring alert on Redis health check failure
 - Configure Redis with automatic restart policy
-- Monitor Redis memory usage (alert at &gt; 80% capacity)
+- Monitor Redis memory usage (alert at > 80% capacity)
 
 ---
 
