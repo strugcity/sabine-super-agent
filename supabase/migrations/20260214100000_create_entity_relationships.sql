@@ -22,7 +22,7 @@
 -- -----------------------------------------------------------------------------
 
 CREATE TABLE entity_relationships (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     -- ON DELETE SET NULL: if an entity is removed, relationships are preserved
     -- with a NULL reference rather than silently cascade-deleted.
     -- Application code handles cleanup via the entity status column.
