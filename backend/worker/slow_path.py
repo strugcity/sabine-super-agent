@@ -566,16 +566,16 @@ def extract_relationships(
             obj: str = rel.get("object") or ""
             graph_layer_raw = rel.get("graph_layer") or ""
             
-            # Normalize predicate (handle None before calling .lower())
-            predicate: str = str(predicate_raw).lower().replace(" ", "_") if predicate_raw else ""
-            graph_layer: str = str(graph_layer_raw).lower() if graph_layer_raw else ""
+            # Normalize predicate (None already converted to empty string above)
+            predicate: str = predicate_raw.lower().replace(" ", "_")
+            graph_layer: str = graph_layer_raw.lower()
             
             # Safely parse confidence with fallback for invalid types
-            confidence: float = 0.5
             try:
                 confidence_val = rel.get("confidence", 0.5)
-                confidence = float(confidence_val) if confidence_val is not None else 0.5
+                confidence: float = float(confidence_val) if confidence_val is not None else 0.5
             except (ValueError, TypeError):
+                confidence = 0.5
                 logger.warning(
                     "Invalid confidence value '%s' for relationship %s -> %s, using default 0.5",
                     rel.get("confidence"), subject, obj
