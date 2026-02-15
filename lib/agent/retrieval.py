@@ -591,6 +591,8 @@ async def retrieve_context(
 async def _fetch_entity_relationships(
     entities: List[Entity],
     per_entity_limit: int = 5,
+    enable_multi_hop: bool = True,
+    max_causal_depth: int = 3,
 ) -> List[Dict[str, Any]]:
     """
     Fetch graph relationships for a list of entities from the MAGMA layer.
@@ -601,16 +603,19 @@ async def _fetch_entity_relationships(
     Args:
         entities: List of Entity objects to query relationships for.
         per_entity_limit: Max relationships to fetch per entity.
+        enable_multi_hop: If True, enriches with multi-hop causal and network queries.
+        max_causal_depth: Maximum depth for causal trace queries (default: 3).
 
     Returns:
         Deduplicated list of relationship dicts.
     """
     # Lazy import to avoid circular deps
-    from backend.magma.query import get_entity_relationships
+    from backend.magma.query import get_entity_relationships, causal_trace, entity_network
 
     all_relationships: List[Dict[str, Any]] = []
     seen_keys: set = set()
 
+    # 1-hop direct lookups (existing behavior)
     for entity in entities:
         if entity.id is None:
             continue
@@ -638,6 +643,102 @@ async def _fetch_entity_relationships(
                 "Failed to fetch relationships for entity %s (%s): %s",
                 entity.name,
                 entity.id,
+                exc,
+            )
+
+    if not enable_multi_hop:
+        return all_relationships
+
+    # Multi-hop enrichment for top entities (limit to avoid latency)
+    # Only process first 3 entities to avoid excessive queries
+    for entity in entities[:3]:
+        if entity.id is None:
+            continue
+
+        entity_id_str = str(entity.id)
+
+        # Causal chains — follow cause/effect for deeper reasoning
+        try:
+            causal_result = await causal_trace(
+                entity_id=entity_id_str,
+                max_depth=max_causal_depth,
+                min_confidence=0.3,
+            )
+
+            # Convert causal chain items to relationship format
+            for item in causal_result.get("chain", []):
+                dedup_key = (
+                    item.get("from_id", ""),
+                    item.get("to_id", ""),
+                    item.get("type", ""),
+                )
+                if dedup_key not in seen_keys and dedup_key[0] and dedup_key[1]:
+                    seen_keys.add(dedup_key)
+                    all_relationships.append({
+                        "source_entity_id": item.get("from_id", ""),
+                        "target_entity_id": item.get("to_id", ""),
+                        "source_name": item.get("from", "unknown"),
+                        "target_name": item.get("to", "unknown"),
+                        "relationship_type": item.get("type", "related_to"),
+                        "confidence": item.get("confidence", 0.0),
+                        "_source": "causal_trace",
+                        "_hop": item.get("hop", 0),
+                    })
+
+        except Exception as exc:
+            logger.debug(
+                "causal_trace failed for entity %s (%s): %s",
+                entity.name,
+                entity_id_str,
+                exc,
+            )
+
+        # Entity network — broader context across all layers
+        try:
+            network_result = await entity_network(
+                entity_id=entity_id_str,
+                layers=["entity", "semantic", "temporal", "causal"],
+                max_depth=2,
+                min_confidence=0.3,
+            )
+
+            # Convert network edges to relationship format
+            for edge in network_result.get("edges", []):
+                source_id = edge.get("source", "")
+                target_id = edge.get("target", "")
+                rel_type = edge.get("type", "")
+
+                dedup_key = (source_id, target_id, rel_type)
+                if dedup_key not in seen_keys and source_id and target_id:
+                    seen_keys.add(dedup_key)
+
+                    # Find node names from nodes list
+                    nodes = network_result.get("nodes", [])
+                    source_name = "unknown"
+                    target_name = "unknown"
+                    for node in nodes:
+                        if node.get("id") == source_id:
+                            source_name = node.get("name", "unknown")
+                        if node.get("id") == target_id:
+                            target_name = node.get("name", "unknown")
+
+                    all_relationships.append({
+                        "source_entity_id": source_id,
+                        "target_entity_id": target_id,
+                        "source_name": source_name,
+                        "target_name": target_name,
+                        "relationship_type": rel_type,
+                        "confidence": edge.get("confidence", 0.0),
+                        "_source": "entity_network",
+                        "_layer": edge.get("layer", ""),
+                        "_hop": edge.get("hop", 0),
+                    })
+
+        except Exception as exc:
+            logger.debug(
+                "entity_network failed for entity %s (%s): %s",
+                entity.name,
+                entity_id_str,
                 exc,
             )
 
