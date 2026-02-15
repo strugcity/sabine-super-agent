@@ -74,19 +74,19 @@ CREATE INDEX IF NOT EXISTS idx_user_identities_user_id
 CREATE TABLE IF NOT EXISTS user_config (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    key TEXT NOT NULL,
-    value TEXT NOT NULL,
+    config_key TEXT NOT NULL,
+    config_value TEXT NOT NULL,
     description TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     -- One setting per user per key
-    CONSTRAINT unique_user_config_key UNIQUE (user_id, key)
+    CONSTRAINT unique_user_config_key UNIQUE (user_id, config_key)
 );
 
 COMMENT ON TABLE user_config IS 'User settings and preferences (calendar_id, briefing_time, etc.)';
-COMMENT ON COLUMN user_config.key IS 'Setting key (e.g., calendar_id, briefing_time, preferred_voice)';
-COMMENT ON COLUMN user_config.value IS 'Setting value (stored as text, parse as needed)';
+COMMENT ON COLUMN user_config.config_key IS 'Setting key (e.g., calendar_id, briefing_time, preferred_voice)';
+COMMENT ON COLUMN user_config.config_value IS 'Setting value (stored as text, parse as needed)';
 
 -- Index for fast config lookups
 CREATE INDEX IF NOT EXISTS idx_user_config_user_id
