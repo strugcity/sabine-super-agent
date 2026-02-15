@@ -14,8 +14,9 @@ The push-back rate should be 5-15% of interactions. If higher, C_int
 should be increased; if lower, C_int should be decreased.
 """
 
+import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -180,45 +181,26 @@ async def gather_evidence(
         )
         return evidence
 
-    try:
-        from backend.magma.query import get_entity_relationships
-
-        # Get direct relationships (signature: entity_id, direction, ...)
-        rels = await get_entity_relationships(
-            entity_id=entity_id,
-            limit=max_items,
-        )
-
-        for rel in rels:
-            evidence.append(
-                EvidenceItem(
-                    memory_id=rel.get("id"),
-                    entity_name=rel.get("target_name") or rel.get("source_name"),
-                    relationship=rel.get("relationship_type", "related_to"),
-                    summary=(
-                        f"{rel.get('source_name', '?')} "
-                        f"{rel.get('relationship_type', 'related_to')} "
-                        f"{rel.get('target_name', '?')}"
-                    ),
-                    confidence=rel.get("confidence", 0.5),
-                )
-            )
-
-    except Exception as exc:
-        logger.warning(
-            "Evidence gathering failed for entity=%s user=%s: %s",
-            entity_name, user_id[:8], exc,
-        )
-
-    try:
-        from backend.magma.query import causal_trace
-        import asyncio
-
-        # Follow causal chains for deeper evidence
-        # causal_trace signature: entity_id, max_depth, min_confidence
-        # Add timeout to prevent blocking the request path
+    # Define async functions for parallel execution
+    async def fetch_relationships() -> List[Dict[str, Any]]:
         try:
-            causal_result = await asyncio.wait_for(
+            from backend.magma.query import get_entity_relationships
+            return await get_entity_relationships(
+                entity_id=entity_id,
+                limit=max_items,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Evidence gathering failed for entity=%s user=%s: %s",
+                entity_name, user_id[:8], exc,
+            )
+            return []
+
+    async def fetch_causal_trace() -> Dict[str, Any]:
+        try:
+            from backend.magma.query import causal_trace
+            # Add timeout to prevent blocking the request path (PR #71)
+            return await asyncio.wait_for(
                 causal_trace(
                     entity_id=entity_id,
                     max_depth=3,
@@ -231,28 +213,51 @@ async def gather_evidence(
                 entity_name,
                 CAUSAL_TRACE_TIMEOUT_SECONDS * 1000,
             )
-            return evidence[:max_items]
-
-        causal_chain: List[Dict[str, Any]] = causal_result.get("chain", [])
-        for link in causal_chain[:max_items - len(evidence)]:
-            evidence.append(
-                EvidenceItem(
-                    memory_id=link.get("from_id") or link.get("to_id"),
-                    entity_name=link.get("to") or link.get("from"),
-                    relationship=link.get("type", "caused_by"),
-                    summary=(
-                        f"Causal chain: {link.get('from', '?')} "
-                        f"{link.get('type', '->')} "
-                        f"{link.get('to', '?')}"
-                    ),
-                    confidence=link.get("confidence", 0.5),
-                )
+            return {}
+        except Exception as exc:
+            logger.debug(
+                "Causal trace failed for entity=%s: %s (non-critical)",
+                entity_name, exc,
             )
+            return {}
 
-    except Exception as exc:
-        logger.debug(
-            "Causal trace failed for entity=%s: %s (non-critical)",
-            entity_name, exc,
+    # Run both queries in parallel
+    rels, causal_result = await asyncio.gather(
+        fetch_relationships(),
+        fetch_causal_trace(),
+    )
+
+    # Process direct relationships
+    for rel in rels:
+        evidence.append(
+            EvidenceItem(
+                memory_id=rel.get("id"),
+                entity_name=rel.get("target_name") or rel.get("source_name"),
+                relationship=rel.get("relationship_type", "related_to"),
+                summary=(
+                    f"{rel.get('source_name', '?')} "
+                    f"{rel.get('relationship_type', 'related_to')} "
+                    f"{rel.get('target_name', '?')}"
+                ),
+                confidence=rel.get("confidence", 0.5),
+            )
+        )
+
+    # Process causal chains
+    causal_chain: List[Dict[str, Any]] = causal_result.get("chain", [])
+    for link in causal_chain[:max_items - len(evidence)]:
+        evidence.append(
+            EvidenceItem(
+                memory_id=link.get("from_id") or link.get("to_id"),
+                entity_name=link.get("to") or link.get("from"),
+                relationship=link.get("type", "caused_by"),
+                summary=(
+                    f"Causal chain: {link.get('from', '?')} "
+                    f"{link.get('type', '->')} "
+                    f"{link.get('to', '?')}"
+                ),
+                confidence=link.get("confidence", 0.5),
+            )
         )
 
     return evidence[:max_items]
@@ -593,7 +598,7 @@ async def handle_user_override(
             lambda: client.table("push_back_log").update({
                 "user_accepted": accepted,
                 "user_chose_alternative": chosen_alternative,
-            }).eq("id", log_entry_id).execute()
+            }).eq("id", log_entry_id).eq("user_id", user_id).execute()
         )
 
         # If user overrode, adjust lambda_alpha downward (PUSH-003)
@@ -617,7 +622,7 @@ async def handle_user_override(
                         lambda: client.table("push_back_log").update({
                             "lambda_alpha_before": current_la,
                             "lambda_alpha_after": new_la,
-                        }).eq("id", log_entry_id).execute()
+                        }).eq("id", log_entry_id).eq("user_id", user_id).execute()
                     )
 
             except Exception as exc:
@@ -649,16 +654,19 @@ async def get_push_back_rate(user_id: str, days: int = 30) -> float:
         Push-back rate (0.0-1.0).
     """
     try:
-        import asyncio
-
         from backend.services.wal import get_supabase_client
         client = get_supabase_client()
+
+        # Calculate cutoff date
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        cutoff_iso = cutoff.isoformat()
 
         # Count total VoI evaluations
         total_response = await asyncio.to_thread(
             lambda: client.table("push_back_log")
             .select("id", count="exact")
             .eq("user_id", user_id)
+            .gte("created_at", cutoff_iso)
             .execute()
         )
         total_count = total_response.count or 0
@@ -672,6 +680,7 @@ async def get_push_back_rate(user_id: str, days: int = 30) -> float:
             .select("id", count="exact")
             .eq("user_id", user_id)
             .eq("push_back_triggered", True)
+            .gte("created_at", cutoff_iso)
             .execute()
         )
         triggered_count = triggered_response.count or 0
