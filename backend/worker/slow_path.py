@@ -208,9 +208,10 @@ async def _async_consolidate_entry(wal_entry_id: str) -> "ConsolidationResult":
 
         # 7. Resolve conflicts -------------------------------------------------
         conflicts: List[Dict[str, Any]] = raw_payload.get("conflicts", [])
-        conflict_results: List[Dict[str, Any]] = resolve_conflicts(
+        conflict_results: List[Dict[str, Any]] = await resolve_conflicts(
             conflicts=conflicts,
             wal_entry_id=wal_entry_id,
+            user_id=user_id,
         )
 
         # 8. Mark WAL entry as completed ---------------------------------------
@@ -843,25 +844,30 @@ async def _async_resolve_entity(
 # Conflict resolution
 # ---------------------------------------------------------------------------
 
-def resolve_conflicts(
+async def resolve_conflicts(
     conflicts: List[Dict[str, Any]],
     wal_entry_id: str,
+    user_id: str,
 ) -> List[Dict[str, Any]]:
     """
     Resolve conflict flags from the Fast Path.
 
-    Strategy: **newer data wins**.  The most recent WAL entry takes
-    precedence over older data.  Each resolution decision is logged
-    for auditability.
+    Strategy: attempt **belief revision** first using the revision formula
+    from ``backend/belief/revision.py``.  Falls back to **newer data wins**
+    when confidence values are not available or belief revision raises an
+    error.
 
     Parameters
     ----------
     conflicts : list[dict]
         Conflict flag dicts from ``raw_payload["conflicts"]``.
         Each dict should have ``field``, ``old_value``, ``new_value``,
-        and optionally ``entity_id``.
+        and optionally ``entity_id``, ``old_confidence``,
+        ``new_confidence``, ``belief_version``, and ``domain``.
     wal_entry_id : str
         The WAL entry that contains the newer data.
+    user_id : str
+        User UUID for lambda_alpha lookup in belief revision.
 
     Returns
     -------
@@ -880,8 +886,57 @@ def resolve_conflicts(
         new_value: Any = conflict.get("new_value")
         entity_id: Optional[str] = conflict.get("entity_id")
 
-        # Newer data wins
-        resolution: Dict[str, Any] = {
+        # Try belief revision if confidence values are available
+        old_confidence = conflict.get("old_confidence")
+        new_confidence = conflict.get("new_confidence")
+        current_version: int = conflict.get("belief_version", 1)
+        domain: Optional[str] = conflict.get("domain")
+
+        if old_confidence is not None and new_confidence is not None and user_id:
+            try:
+                from backend.belief.revision import resolve_conflict_with_revision
+
+                revision_result, la_used = await resolve_conflict_with_revision(
+                    existing_confidence=float(old_confidence),
+                    new_evidence_confidence=float(new_confidence),
+                    user_id=user_id,
+                    domain=domain,
+                    current_version=current_version,
+                )
+
+                resolution: Dict[str, Any] = {
+                    "conflict": conflict,
+                    "resolution": "belief_revision",
+                    "winner": "revised",
+                    "resolved_value": new_value,  # Keep the new data
+                    "revised_confidence": revision_result.new_confidence,
+                    "belief_version": revision_result.new_version,
+                    "lambda_alpha_used": la_used,
+                    "argument_force": revision_result.argument_force,
+                    "wal_entry_id": wal_entry_id,
+                    "resolved_at": datetime.now(timezone.utc).isoformat(),
+                }
+
+                logger.info(
+                    "Conflict resolved via belief revision: field=%s  entity=%s  "
+                    "confidence=%.2f->%.2f  lambda_alpha=%.2f  wal=%s",
+                    field, entity_id,
+                    float(old_confidence), revision_result.new_confidence,
+                    la_used, wal_entry_id,
+                )
+
+                results.append(resolution)
+                continue  # Skip the newer_wins fallback
+
+            except Exception as rev_exc:
+                logger.warning(
+                    "Belief revision failed for conflict field=%s, "
+                    "falling back to newer_wins: %s",
+                    field, rev_exc,
+                )
+
+        # Fallback: newer data wins (original behavior)
+        resolution = {
             "conflict": conflict,
             "resolution": "newer_wins",
             "winner": "new",

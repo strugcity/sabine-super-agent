@@ -84,6 +84,13 @@ async def run_sabine_agent(
         logger.info(f"Loaded {len(tools)} Sabine tools")
         tool_names = [t.name for t in tools]
         logger.debug(f"Sabine tool names: {tool_names}")
+
+        # === STEP 1b: Apply VoI gate (Active Inference) ===
+        # Wraps each tool with a Value-of-Information check.
+        # If VoI > 0 for a tool invocation, the agent returns a push-back
+        # message instead of executing the tool (Phase 2D).
+        from .voi_gate import wrap_tools_with_voi_gate
+        tools = wrap_tools_with_voi_gate(tools, user_id=user_id)
         
         # === STEP 2: Load deep context ===
         deep_context = await load_deep_context(user_id)

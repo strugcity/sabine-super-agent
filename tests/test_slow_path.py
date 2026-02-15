@@ -214,7 +214,8 @@ class TestRelationshipExtraction:
 class TestConflictResolution:
     """Tests for resolve_conflicts."""
 
-    def test_newer_data_wins(self) -> None:
+    @pytest.mark.asyncio
+    async def test_newer_data_wins(self) -> None:
         """Conflicts should be resolved with newer data taking precedence."""
         from backend.worker.slow_path import resolve_conflicts
 
@@ -227,8 +228,8 @@ class TestConflictResolution:
             },
         ]
 
-        results = resolve_conflicts(
-            conflicts=conflicts, wal_entry_id=TEST_WAL_ID,
+        results = await resolve_conflicts(
+            conflicts=conflicts, wal_entry_id=TEST_WAL_ID, user_id="test-user-id",
         )
         assert len(results) == 1
         assert results[0]["resolution"] == "newer_wins"
@@ -236,13 +237,15 @@ class TestConflictResolution:
         assert results[0]["resolved_value"] == "555-1111"
         assert results[0]["wal_entry_id"] == TEST_WAL_ID
 
-    def test_empty_conflicts(self) -> None:
+    @pytest.mark.asyncio
+    async def test_empty_conflicts(self) -> None:
         """Empty conflict list should return empty results."""
         from backend.worker.slow_path import resolve_conflicts
 
-        assert resolve_conflicts([], TEST_WAL_ID) == []
+        assert await resolve_conflicts([], TEST_WAL_ID, user_id="test-user-id") == []
 
-    def test_multiple_conflicts(self) -> None:
+    @pytest.mark.asyncio
+    async def test_multiple_conflicts(self) -> None:
         """Multiple conflicts should all be resolved."""
         from backend.worker.slow_path import resolve_conflicts
 
@@ -250,7 +253,7 @@ class TestConflictResolution:
             {"field": "email", "old_value": "a@b.com", "new_value": "c@d.com"},
             {"field": "name", "old_value": "Alice", "new_value": "Alicia"},
         ]
-        results = resolve_conflicts(conflicts, TEST_WAL_ID)
+        results = await resolve_conflicts(conflicts, TEST_WAL_ID, user_id="test-user-id")
         assert len(results) == 2
         for r in results:
             assert r["resolution"] == "newer_wins"
