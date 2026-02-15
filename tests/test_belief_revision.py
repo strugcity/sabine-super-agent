@@ -724,7 +724,7 @@ class TestDetectBeliefConflicts:
         cls = detector_module["ConflictClassification"]
 
         with patch(
-            "backend.belief.conflict_detector.get_entity_relationships",
+            "backend.magma.query.get_entity_relationships",
             new_callable=AsyncMock,
             return_value=[],
         ):
@@ -749,7 +749,7 @@ class TestDetectBeliefConflicts:
         ]
 
         with patch(
-            "backend.belief.conflict_detector.get_entity_relationships",
+            "backend.magma.query.get_entity_relationships",
             new_callable=AsyncMock,
             return_value=[],
         ):
@@ -771,7 +771,7 @@ class TestDetectBeliefConflicts:
         ]
 
         with patch(
-            "backend.belief.conflict_detector.get_entity_relationships",
+            "backend.magma.query.get_entity_relationships",
             new_callable=AsyncMock,
             side_effect=RuntimeError("Graph unavailable"),
         ):
@@ -789,7 +789,7 @@ class TestDetectBeliefConflicts:
     async def test_uses_default_confidence_when_no_memories(self, detector_module):
         """With no existing memories, default avg_existing=0.5 is used."""
         with patch(
-            "backend.belief.conflict_detector.get_entity_relationships",
+            "backend.magma.query.get_entity_relationships",
             new_callable=AsyncMock,
             return_value=[],
         ):
@@ -818,7 +818,7 @@ class TestDetectBeliefConflicts:
         ]
 
         with patch(
-            "backend.belief.conflict_detector.get_entity_relationships",
+            "backend.magma.query.get_entity_relationships",
             new_callable=AsyncMock,
             return_value=fake_rels,
         ):
