@@ -258,6 +258,84 @@ class TestConflictResolution:
         for r in results:
             assert r["resolution"] == "newer_wins"
 
+    @pytest.mark.asyncio
+    async def test_belief_revision_happy_path(self) -> None:
+        """When confidence values are present, resolve_conflicts should use belief revision."""
+        from backend.worker.slow_path import resolve_conflicts
+        from backend.belief.revision import RevisionResult
+
+        mock_revision_result = RevisionResult(
+            original_confidence=0.6,
+            new_confidence=0.82,
+            argument_force=0.75,
+            lambda_alpha=0.3,
+            delta=0.22,
+            new_version=2,
+        )
+
+        conflicts = [
+            {
+                "field": "phone",
+                "old_value": "555-0000",
+                "new_value": "555-1111",
+                "entity_id": "ent-123",
+                "old_confidence": 0.6,
+                "new_confidence": 0.8,
+                "belief_version": 1,
+                "domain": "contact_info",
+            },
+        ]
+
+        with patch(
+            "backend.belief.revision.resolve_conflict_with_revision",
+            new_callable=AsyncMock,
+            return_value=(mock_revision_result, 0.3),
+        ):
+            results = await resolve_conflicts(
+                conflicts=conflicts,
+                wal_entry_id=TEST_WAL_ID,
+                user_id="test-user-id",
+            )
+
+        assert len(results) == 1
+        r = results[0]
+        assert r["resolution"] == "belief_revision"
+        assert r["winner"] == "revised"
+        assert r["resolved_value"] == "555-1111"
+        assert r["revised_confidence"] == 0.82
+        assert r["belief_version"] == 2
+        assert r["lambda_alpha_used"] == 0.3
+        assert r["argument_force"] == 0.75
+
+    @pytest.mark.asyncio
+    async def test_belief_revision_fallback_on_error(self) -> None:
+        """When belief revision raises, should fall back to newer_wins."""
+        from backend.worker.slow_path import resolve_conflicts
+
+        conflicts = [
+            {
+                "field": "email",
+                "old_value": "a@b.com",
+                "new_value": "c@d.com",
+                "old_confidence": 0.5,
+                "new_confidence": 0.7,
+            },
+        ]
+
+        with patch(
+            "backend.belief.revision.resolve_conflict_with_revision",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("DB unavailable"),
+        ):
+            results = await resolve_conflicts(
+                conflicts=conflicts,
+                wal_entry_id=TEST_WAL_ID,
+                user_id="test-user-id",
+            )
+
+        assert len(results) == 1
+        assert results[0]["resolution"] == "newer_wins"
+
 
 # =============================================================================
 # Test: Single WAL Entry Consolidation
