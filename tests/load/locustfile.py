@@ -198,7 +198,7 @@ class SabineUser(HttpUser):
             "/api/skills/gaps",
             headers=headers,
             catch_response=True,
-            name="/skills/gaps"
+            name="/api/skills/gaps"
         ) as response:
             if response.status_code == 200:
                 response.success()

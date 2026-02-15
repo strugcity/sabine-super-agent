@@ -4,19 +4,19 @@ This directory contains Locust-based load tests for validating the Sabine Super 
 
 ## PRD Exit Criteria
 
-The load test suite validates: **&quot;Load test confirms 10-15s latency at P95.&quot;**
+The load test suite validates: **"Load test confirms 10-15s latency at P95."**
 
 ### Target Metrics
 
 | Endpoint | P95 Target | Description |
 |----------|------------|-------------|
-| `/invoke` | &lt; 15,000ms | Full agent invocation with LLM reasoning |
-| `/invoke/cached` | &lt; 10,000ms | Cached agent invocation (faster) |
-| `/health` | &lt; 500ms | Health check endpoint |
-| `/tools` | &lt; 1,000ms | List available tools |
-| `/wal/stats` | &lt; 1,000ms | WAL statistics |
-| `/metrics/prometheus` | &lt; 500ms | Prometheus metrics |
-| `/api/skills/gaps` | &lt; 1,000ms | Skill gaps listing |
+| `/invoke` | < 15,000ms | Full agent invocation with LLM reasoning |
+| `/invoke/cached` | < 10,000ms | Cached agent invocation (faster) |
+| `/health` | < 500ms | Health check endpoint |
+| `/tools` | < 1,000ms | List available tools |
+| `/wal/stats` | < 1,000ms | WAL statistics |
+| `/metrics/prometheus` | < 500ms | Prometheus metrics |
+| `/api/skills/gaps` | < 1,000ms | Skill gaps listing |
 
 ## Prerequisites
 
@@ -156,7 +156,7 @@ pip install locust
 
 ### Issue: High latency on `/invoke`
 
-**Expected:** `/invoke` is an expensive operation (LLM reasoning). P95 &lt; 15s is acceptable.  
+**Expected:** `/invoke` is an expensive operation (LLM reasoning). P95 < 15s is acceptable.  
 **Action:** Monitor token usage and consider caching strategies.
 
 ## Integration with CI/CD
