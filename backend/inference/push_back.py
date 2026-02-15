@@ -90,6 +90,9 @@ async def _resolve_entity_id(entity_name: str) -> Optional[str]:
     """
     Look up an entity UUID by name from the entities table.
 
+    Sanitizes input to prevent SQL wildcard DoS attacks and uses efficient
+    exact-match first, falling back to trigram search.
+
     Parameters
     ----------
     entity_name : str
@@ -104,11 +107,17 @@ async def _resolve_entity_id(entity_name: str) -> Optional[str]:
         from backend.services.wal import get_supabase_client
         import asyncio
 
+        # Sanitize input: escape SQL wildcards to prevent DoS attacks
+        # Users shouldn't be searching with wildcards in entity names
+        sanitized_name = entity_name.replace("%", r"\%").replace("_", r"\_")
+
         client = get_supabase_client()
+        
+        # Try exact match first (case-insensitive, uses B-tree index)
         response = await asyncio.to_thread(
             lambda: client.table("entities")
             .select("id")
-            .ilike("name", entity_name)
+            .ilike("name", sanitized_name)
             .limit(1)
             .execute()
         )
@@ -192,13 +201,25 @@ async def gather_evidence(
 
     try:
         from backend.magma.query import causal_trace
+        import asyncio
 
         # Follow causal chains for deeper evidence
         # causal_trace signature: entity_id, max_depth, min_confidence
-        causal_result = await causal_trace(
-            entity_id=entity_id,
-            max_depth=3,
-        )
+        # Add 200ms timeout to prevent blocking the request path
+        try:
+            causal_result = await asyncio.wait_for(
+                causal_trace(
+                    entity_id=entity_id,
+                    max_depth=3,
+                ),
+                timeout=0.2,  # 200ms max
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Causal trace timed out for entity=%s (>200ms), proceeding without causal evidence",
+                entity_name,
+            )
+            return evidence[:max_items]
 
         causal_chain: List[Dict[str, Any]] = causal_result.get("chain", [])
         for link in causal_chain[:max_items - len(evidence)]:
@@ -460,6 +481,23 @@ async def log_push_back_event(entry: PushBackLogEntry) -> bool:
         from backend.services.wal import get_supabase_client
         client = get_supabase_client()
 
+        # Serialize alternatives safely, handling Pydantic models and datetime objects
+        def serialize_alternative(alt: Any) -> Dict[str, Any]:
+            """Convert alternative to JSON-compliant dict."""
+            if hasattr(alt, "model_dump"):
+                dumped = alt.model_dump()
+            elif isinstance(alt, dict):
+                dumped = alt
+            else:
+                dumped = {}
+            
+            # Convert any datetime objects to ISO strings
+            for key, value in dumped.items():
+                if isinstance(value, datetime):
+                    dumped[key] = value.isoformat()
+            
+            return dumped
+
         data = {
             "user_id": entry.user_id,
             "session_id": entry.session_id,
@@ -473,7 +511,7 @@ async def log_push_back_event(entry: PushBackLogEntry) -> bool:
             "push_back_triggered": entry.push_back_triggered,
             "evidence_memory_ids": entry.evidence_memory_ids,
             "alternatives_offered": [
-                alt.model_dump() if hasattr(alt, "model_dump") else alt
+                serialize_alternative(alt)
                 for alt in entry.alternatives_offered
             ],
             "user_accepted": entry.user_accepted,
