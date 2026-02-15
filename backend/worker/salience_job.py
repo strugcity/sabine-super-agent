@@ -161,9 +161,13 @@ def recalculate_all_salience_scores() -> Dict[str, Any]:
             memory_obj = _dict_to_memory(mem_data)
 
             # Load weights for this user (with caching)
-            user_id = str(mem_data.get("user_id", ""))
+            # Use a sentinel value for missing user_id to track separately
+            user_id_raw = mem_data.get("user_id")
+            user_id = str(user_id_raw) if user_id_raw is not None else "__no_user__"
             if user_id not in weights_cache:
-                weights_cache[user_id] = _load_weights_for_user(user_id)
+                # For memories without user_id, use empty string to trigger global fallback
+                lookup_id = "" if user_id == "__no_user__" else user_id
+                weights_cache[user_id] = _load_weights_for_user(lookup_id)
             weights = weights_cache[user_id]
 
             result = calculate_salience(
@@ -437,8 +441,10 @@ def _load_weights_from_redis() -> "SalienceWeights":
     """
     Load global salience weights from Redis (legacy function).
 
-    This function is kept for backward compatibility but is deprecated.
-    New code should use ``_load_weights_for_user(user_id)`` instead.
+    .. deprecated:: MEM-004
+        Use ``_load_weights_for_user(user_id)`` instead for per-user weights.
+        This function will be removed in a future version once all callers
+        have been migrated to the per-user approach.
 
     Falls back to default weights if Redis is unavailable or no
     custom weights are stored.
@@ -447,7 +453,14 @@ def _load_weights_from_redis() -> "SalienceWeights":
     -------
     SalienceWeights
     """
+    import warnings
     from backend.services.salience import SalienceWeights
+
+    warnings.warn(
+        "_load_weights_from_redis() is deprecated. Use _load_weights_for_user(user_id) instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
 
     try:
         import json
