@@ -665,7 +665,7 @@ def _extract_relationships_fallback(
             "object": entities[i + 1].get("name", f"entity_{i + 1}"),
             "confidence": 0.8,
             "source_wal_id": source_wal_id,
-            "graph_layer": "entity",
+            "graph_layer": infer_layer("related_to").value,
             "relationship_type": "related_to",
         })
 
