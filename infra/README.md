@@ -56,15 +56,15 @@ The **Sabine Agent Overview** dashboard includes 8 panels in a 2x4 grid:
 
 ### Row 1: Queue Health
 - **Queue Depth**: Time series showing queued and in-progress tasks
-- **Blocked Tasks**: Current count of tasks blocked by failed dependencies (red if &gt; 0)
-- **Stuck Tasks**: Tasks that have exceeded timeout (red if &gt; 0)
+- **Blocked Tasks**: Current count of tasks blocked by failed dependencies (red if > 0)
+- **Stuck Tasks**: Tasks that have exceeded timeout (red if > 0)
 - **Stale Tasks**: Bar gauge showing tasks queued too long (1h and 24h thresholds)
 
 ### Row 2: Performance
 - **Success Rate (1h)**: Gauge showing task success rate 0-100% (green/yellow/red zones)
 - **Completed vs Failed**: Time series comparing completed and failed tasks
 - **Task Duration**: Time series showing average and P95 task duration in milliseconds
-- **Pending Retries**: Count of failed tasks pending retry (yellow &gt; 0, red &gt; 5)
+- **Pending Retries**: Count of failed tasks pending retry (yellow > 0, red > 5)
 
 ## Metrics Available
 
