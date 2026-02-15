@@ -86,9 +86,9 @@ def recalculate_all_salience_scores() -> Dict[str, Any]:
         return _error_result(start, str(exc))
 
     # ------------------------------------------------------------------
-    # 1. Load salience weights from Redis (or use defaults)
+    # 1. Weights will be loaded per-user in the recalculation loop
     # ------------------------------------------------------------------
-    weights = _load_weights_from_redis()
+    # (Weights loading moved inside the per-memory loop below)
 
     # ------------------------------------------------------------------
     # 2. Query all non-archived memories
@@ -96,7 +96,7 @@ def recalculate_all_salience_scores() -> Dict[str, Any]:
     try:
         response = (
             client.table("memories")
-            .select("id, last_accessed_at, access_count, metadata, entity_links, salience_score, content, importance_score, is_archived, created_at, updated_at")
+            .select("id, user_id, last_accessed_at, access_count, metadata, entity_links, salience_score, content, importance_score, is_archived, created_at, updated_at")
             .eq("is_archived", False)
             .execute()
         )
@@ -151,12 +151,24 @@ def recalculate_all_salience_scores() -> Dict[str, Any]:
     # 5. Calculate salience and batch-update
     # ------------------------------------------------------------------
     pending_updates: List[Dict[str, Any]] = []
+    # Cache weights per user to avoid redundant Redis calls
+    weights_cache: Dict[str, "SalienceWeights"] = {}
 
     for i in range(resume_index, total):
         mem_data = memories_data[i]
         try:
             # Build a lightweight Memory-like object for the calculator
             memory_obj = _dict_to_memory(mem_data)
+
+            # Load weights for this user (with caching)
+            # Use a sentinel value for missing user_id to track separately
+            user_id_raw = mem_data.get("user_id")
+            user_id = str(user_id_raw) if user_id_raw is not None else "__no_user__"
+            if user_id not in weights_cache:
+                # For memories without user_id, use empty string to trigger global fallback
+                lookup_id = "" if user_id == "__no_user__" else user_id
+                weights_cache[user_id] = _load_weights_for_user(lookup_id)
+            weights = weights_cache[user_id]
 
             result = calculate_salience(
                 memory=memory_obj,
@@ -371,9 +383,68 @@ def _get_supabase_client() -> Any:
     return get_supabase_client()
 
 
+def _load_weights_for_user(user_id: str) -> "SalienceWeights":
+    """
+    Load salience weights for a specific user with fallback chain.
+
+    Fallback order:
+        1. Per-user weights: ``sabine:salience_weights:{user_id}``
+        2. Global weights: ``sabine:salience_weights:global``
+        3. Default weights: ``SalienceWeights()`` (0.4/0.2/0.2/0.2)
+
+    Parameters
+    ----------
+    user_id : str
+        User UUID as string.
+
+    Returns
+    -------
+    SalienceWeights
+        Weights for this user (custom or defaults).
+    """
+    from backend.services.salience import SalienceWeights
+
+    try:
+        import json
+        from backend.services.redis_client import get_redis_client
+
+        redis_client = get_redis_client()
+        
+        # Try per-user weights first
+        per_user_key = f"sabine:salience_weights:{user_id}"
+        raw = redis_client.get(per_user_key)
+        if raw:
+            data = json.loads(raw)
+            logger.debug("Loaded per-user weights for user %s: %s", user_id, data)
+            return SalienceWeights(**data)
+        
+        # Try global weights as fallback
+        global_key = "sabine:salience_weights:global"
+        raw = redis_client.get(global_key)
+        if raw:
+            data = json.loads(raw)
+            logger.debug("Loaded global weights for user %s: %s", user_id, data)
+            return SalienceWeights(**data)
+        
+        logger.debug("No custom weights found for user %s; using defaults", user_id)
+        
+    except Exception as exc:
+        logger.debug(
+            "Could not load salience weights from Redis for user %s (using defaults): %s",
+            user_id, exc,
+        )
+
+    return SalienceWeights()
+
+
 def _load_weights_from_redis() -> "SalienceWeights":
     """
-    Load salience weights from Redis (user-level or global).
+    Load global salience weights from Redis (legacy function).
+
+    .. deprecated:: MEM-004
+        Use ``_load_weights_for_user(user_id)`` instead for per-user weights.
+        This function will be removed in a future version once all callers
+        have been migrated to the per-user approach.
 
     Falls back to default weights if Redis is unavailable or no
     custom weights are stored.
@@ -382,7 +453,14 @@ def _load_weights_from_redis() -> "SalienceWeights":
     -------
     SalienceWeights
     """
+    import warnings
     from backend.services.salience import SalienceWeights
+
+    warnings.warn(
+        "_load_weights_from_redis() is deprecated. Use _load_weights_for_user(user_id) instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
 
     try:
         import json
