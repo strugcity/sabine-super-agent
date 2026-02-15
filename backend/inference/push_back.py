@@ -14,8 +14,9 @@ The push-back rate should be 5-15% of interactions. If higher, C_int
 should be increased; if lower, C_int should be decreased.
 """
 
+import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -169,7 +170,6 @@ async def gather_evidence(
     -------
     list[EvidenceItem]
     """
-    import asyncio
     evidence: List[EvidenceItem] = []
 
     # Resolve entity name to ID (MAGMA query functions use entity_id)
@@ -654,9 +654,6 @@ async def get_push_back_rate(user_id: str, days: int = 30) -> float:
         Push-back rate (0.0-1.0).
     """
     try:
-        import asyncio
-        from datetime import timedelta
-
         from backend.services.wal import get_supabase_client
         client = get_supabase_client()
 
