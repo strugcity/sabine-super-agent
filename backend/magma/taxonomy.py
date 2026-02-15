@@ -5,10 +5,12 @@ MAGMA Graph Relationship Type Taxonomy (PRD 11.2)
 Defines the canonical relationship types for each of the four graph layers
 in the MAGMA (Multi-layered Adaptive Graph Memory Architecture):
 
-  - **entity**:   Direct entity-to-entity structural relations
-  - **semantic**: Meaning/topic relationships
-  - **temporal**: Time-based sequential relations
-  - **causal**:   Cause-effect reasoning chains
+  - **entity**   (18 predicates): Direct entity-to-entity structural relations
+  - **semantic**  (5 predicates): Meaning/topic relationships
+  - **temporal**  (5 predicates): Time-based sequential relations
+  - **causal**    (4 predicates): Cause-effect reasoning chains
+
+Total canonical predicates: 32
 
 Usage:
     from backend.magma.taxonomy import GraphLayer, infer_layer, is_valid_predicate
@@ -17,8 +19,11 @@ Usage:
     valid = is_valid_predicate("knows") # -> True
 """
 
+import logging
 from enum import Enum
 from typing import Dict, FrozenSet
+
+logger = logging.getLogger(__name__)
 
 
 class GraphLayer(str, Enum):
@@ -46,21 +51,35 @@ ENTITY_PREDICATES: FrozenSet[str] = frozenset({
     "attended",
     "located_in",
     "member_of",
+    "owns",
+    "parent_of",
+    "child_of",
+    "sibling_of",
+    "prefers",
+    "assigned_to",
 })
 
 SEMANTIC_PREDICATES: FrozenSet[str] = frozenset({
     "related_to",
     "similar_to",
+    "contradicts",
+    "supports",
+    "instance_of",
 })
 
 TEMPORAL_PREDICATES: FrozenSet[str] = frozenset({
     "preceded_by",
     "happened_during",
+    "scheduled_for",
+    "started_at",
+    "deadline_for",
 })
 
 CAUSAL_PREDICATES: FrozenSet[str] = frozenset({
     "caused_by",
     "led_to",
+    "depends_on",
+    "blocked_by",
 })
 
 ALL_PREDICATES: FrozenSet[str] = (
@@ -100,6 +119,10 @@ def infer_layer(predicate: str) -> GraphLayer:
     for layer, predicates in LAYER_PREDICATES.items():
         if predicate in predicates:
             return layer
+    logger.warning(
+        "Predicate %r not in canonical taxonomy; defaulting to GraphLayer.ENTITY",
+        predicate,
+    )
     return GraphLayer.ENTITY  # Default fallback
 
 

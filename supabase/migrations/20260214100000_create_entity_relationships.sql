@@ -23,8 +23,11 @@
 
 CREATE TABLE entity_relationships (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    source_entity_id UUID NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
-    target_entity_id UUID NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    -- ON DELETE SET NULL: if an entity is removed, relationships are preserved
+    -- with a NULL reference rather than silently cascade-deleted.
+    -- Application code handles cleanup via the entity status column.
+    source_entity_id UUID REFERENCES entities(id) ON DELETE SET NULL,
+    target_entity_id UUID REFERENCES entities(id) ON DELETE SET NULL,
     relationship_type TEXT NOT NULL,              -- snake_case predicate
     graph_layer TEXT NOT NULL DEFAULT 'entity',   -- entity|semantic|temporal|causal
     confidence FLOAT NOT NULL DEFAULT 0.5
@@ -74,26 +77,35 @@ ALTER TABLE entity_relationships
 
 
 -- -----------------------------------------------------------------------------
--- 4. ROW LEVEL SECURITY (matching existing pattern)
+-- 4. ROW LEVEL SECURITY
 -- -----------------------------------------------------------------------------
+-- Service role has full access; no public access to relationship data.
 
 ALTER TABLE entity_relationships ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Allow public read access on entity_relationships"
-    ON entity_relationships FOR SELECT
-    USING (true);
+-- Drop legacy permissive policies if they exist
+DROP POLICY IF EXISTS "Allow public read access on entity_relationships" ON entity_relationships;
+DROP POLICY IF EXISTS "Allow public insert access on entity_relationships" ON entity_relationships;
+DROP POLICY IF EXISTS "Allow public update access on entity_relationships" ON entity_relationships;
+DROP POLICY IF EXISTS "Allow public delete access on entity_relationships" ON entity_relationships;
 
-CREATE POLICY "Allow public insert access on entity_relationships"
-    ON entity_relationships FOR INSERT
-    WITH CHECK (true);
-
-CREATE POLICY "Allow public update access on entity_relationships"
-    ON entity_relationships FOR UPDATE
-    USING (true);
-
-CREATE POLICY "Allow public delete access on entity_relationships"
-    ON entity_relationships FOR DELETE
-    USING (true);
+-- Service role: full CRUD access
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+        WHERE tablename = 'entity_relationships'
+          AND policyname = 'er_service_role_all'
+    ) THEN
+        CREATE POLICY er_service_role_all
+            ON entity_relationships
+            FOR ALL
+            TO service_role
+            USING (true)
+            WITH CHECK (true);
+    END IF;
+END;
+$$;
 
 
 -- -----------------------------------------------------------------------------

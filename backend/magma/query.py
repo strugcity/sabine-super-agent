@@ -128,13 +128,7 @@ async def causal_trace(
             exc,
             exc_info=True,
         )
-        return {
-            "root_entity": {"id": entity_id, "name": "unknown"},
-            "chain": [],
-            "total_hops": 0,
-            "max_confidence": 0.0,
-            "min_confidence": 0.0,
-        }
+        raise
 
 
 # =============================================================================
@@ -309,17 +303,7 @@ async def entity_network(
             exc,
             exc_info=True,
         )
-        return {
-            "root_entity": {"id": entity_id, "name": "unknown", "type": "", "domain": ""},
-            "nodes": [],
-            "edges": [],
-            "statistics": {
-                "total_nodes": 0,
-                "total_edges": 0,
-                "max_hop": 0,
-                "layers_found": [],
-            },
-        }
+        raise
 
 
 # =============================================================================
@@ -433,4 +417,4 @@ async def get_entity_relationships(
             exc,
             exc_info=True,
         )
-        return []
+        raise

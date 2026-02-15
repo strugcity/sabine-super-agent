@@ -5,7 +5,6 @@ Provides endpoints for managing and querying the entity relationship graph.
 
 Endpoints:
 - POST /api/graph/backfill  - Trigger relationship backfill from existing memories
-- GET  /api/graph/entity/{entity_id}/relationships - Get relationships for an entity
 - GET  /api/graph/traverse/{entity_id}  - Multi-hop graph traversal via RPC
 - GET  /api/graph/causal-trace/{entity_id} - Trace causal chains
 - GET  /api/graph/network/{entity_id} - Entity network for visualization
@@ -13,12 +12,20 @@ Endpoints:
 """
 
 import logging
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from lib.agent.shared import verify_api_key
+
+
+class Direction(str, Enum):
+    """Valid directions for relationship queries."""
+    OUTGOING = "outgoing"
+    INCOMING = "incoming"
+    BOTH = "both"
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +80,7 @@ class RelationshipItem(BaseModel):
 
 
 class EntityRelationshipsResponse(BaseModel):
-    """Response model for GET /api/graph/entity/{entity_id}/relationships."""
+    """Response model for GET /api/graph/relationships/{entity_id}."""
 
     entity_id: str = Field(..., description="The queried entity ID")
     relationships: List[RelationshipItem] = Field(
@@ -263,81 +270,6 @@ async def trigger_backfill(
         raise HTTPException(
             status_code=503,
             detail=f"Failed to enqueue backfill job: {exc}",
-        )
-
-
-@router.get(
-    "/entity/{entity_id}/relationships",
-    response_model=EntityRelationshipsResponse,
-)
-async def get_entity_relationships_endpoint(
-    entity_id: str,
-    direction: str = Query(
-        default="both",
-        description="Relationship direction: outgoing, incoming, or both",
-    ),
-    limit: int = Query(
-        default=10,
-        ge=1,
-        le=100,
-        description="Maximum relationships to return",
-    ),
-    min_confidence: float = Query(
-        default=0.0,
-        ge=0.0,
-        le=1.0,
-        description="Minimum confidence threshold",
-    ),
-    _: bool = Depends(verify_api_key),
-) -> EntityRelationshipsResponse:
-    """
-    Get relationships for a specific entity.
-
-    Returns both incoming and outgoing relationships by default,
-    with optional confidence filtering.
-    """
-    try:
-        from uuid import UUID as _UUID
-
-        # Validate entity_id
-        try:
-            validated_id = _UUID(entity_id)
-        except ValueError:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Invalid entity_id: {entity_id}",
-            )
-
-        # Lazy import to avoid circular deps
-        from backend.magma.query import get_entity_relationships
-
-        relationships = await get_entity_relationships(
-            entity_id=validated_id,
-            direction=direction,
-            limit=limit,
-            min_confidence=min_confidence,
-        )
-
-        items = [RelationshipItem(**rel) for rel in relationships]
-
-        return EntityRelationshipsResponse(
-            entity_id=entity_id,
-            relationships=items,
-            count=len(items),
-        )
-
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error(
-            "Failed to get relationships for entity %s: %s",
-            entity_id,
-            exc,
-            exc_info=True,
-        )
-        return EntityRelationshipsResponse(
-            entity_id=entity_id,
-            error=str(exc),
         )
 
 
@@ -639,8 +571,8 @@ async def entity_network_endpoint(
 )
 async def get_relationships_endpoint(
     entity_id: str,
-    direction: str = Query(
-        default="both",
+    direction: Direction = Query(
+        default=Direction.BOTH,
         description="Relationship direction: outgoing, incoming, or both",
     ),
     relationship_type: Optional[str] = Query(
