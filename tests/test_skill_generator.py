@@ -9,15 +9,10 @@ Run with: pytest tests/test_skill_generator.py -v
 """
 
 import json
-import os
-import sys
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-# Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.services.skill_generator import (
     _indent,

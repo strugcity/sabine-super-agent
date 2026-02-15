@@ -35,7 +35,7 @@ Or add to your `requirements.txt` if not already present.
 For CI/CD pipelines or automated testing:
 
 ```bash
-BASE_URL=http://localhost:8000 API_KEY=your-api-key locust -f tests/load/locustfile.py --headless -u 5 -r 1 --run-time 60s
+BASE_URL=http://localhost:8001 API_KEY=your-api-key locust -f tests/load/locustfile.py --headless -u 5 -r 1 --run-time 60s
 ```
 
 **Parameters:**
@@ -48,7 +48,7 @@ BASE_URL=http://localhost:8000 API_KEY=your-api-key locust -f tests/load/locustf
 For interactive testing and real-time monitoring:
 
 ```bash
-BASE_URL=http://localhost:8000 API_KEY=your-api-key locust -f tests/load/locustfile.py
+BASE_URL=http://localhost:8001 API_KEY=your-api-key locust -f tests/load/locustfile.py
 ```
 
 Then open http://localhost:8089 in your browser to:
@@ -63,7 +63,7 @@ Then open http://localhost:8089 in your browser to:
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `BASE_URL` | API server base URL | `http://localhost:8000` | No |
+| `BASE_URL` | API server base URL | `http://localhost:8001` | No |
 | `API_KEY` | API key for authenticated endpoints | None | Yes (for protected endpoints) |
 
 ### Task Distribution
@@ -135,7 +135,7 @@ Start with 1-5 users for realistic load testing.
 ```bash
 python lib/agent/server.py
 # Or:
-uvicorn lib.agent.server:app --host 0.0.0.0 --port 8000
+uvicorn lib.agent.server:app --host 0.0.0.0 --port 8001
 ```
 
 ### Issue: 401 Unauthorized
@@ -166,7 +166,7 @@ Example GitHub Actions workflow snippet:
 ```yaml
 - name: Run Load Tests
   run: |
-    BASE_URL=http://localhost:8000 API_KEY=${{ secrets.API_KEY }} \
+    BASE_URL=http://localhost:8001 API_KEY=${{ secrets.API_KEY }} \
     locust -f tests/load/locustfile.py --headless -u 5 -r 1 --run-time 60s
   env:
     API_KEY: ${{ secrets.SABINE_API_KEY }}

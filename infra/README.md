@@ -11,20 +11,20 @@ The monitoring stack consists of:
 ## Prerequisites
 
 - Docker and Docker Compose installed
-- Sabine Agent API running on port 8000 (localhost)
+- Sabine Agent API running on port 8001 (localhost)
 
 ## Setup Instructions
 
 ### 1. Start the Sabine API
 
-Make sure the Sabine Agent API is running on port 8000:
+Make sure the Sabine Agent API is running on port 8001:
 
 ```bash
 # From the project root
 python run_server.py
 ```
 
-The API exposes metrics at `http://localhost:8000/metrics/prometheus`.
+The API exposes metrics at `http://localhost:8001/metrics/prometheus`.
 
 ### 2. Start the Monitoring Stack
 
@@ -113,7 +113,7 @@ These volumes persist across container restarts. To clear all data, use the `-v`
 
 ### Prometheus Not Scraping
 
-1. Check that the Sabine API is running: `curl http://localhost:8000/metrics/prometheus`
+1. Check that the Sabine API is running: `curl http://localhost:8001/metrics/prometheus`
 2. Check Prometheus targets: http://localhost:9090/targets
 3. Verify Docker can reach the host: `host.docker.internal` should resolve to your host machine
 

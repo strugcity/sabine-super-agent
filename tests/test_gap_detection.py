@@ -8,16 +8,11 @@ Tests all functions with full mocking of Supabase client.
 Run with: pytest tests/test_gap_detection.py -v
 """
 
-import os
-import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-# Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.services.gap_detection import (
     detect_gaps,

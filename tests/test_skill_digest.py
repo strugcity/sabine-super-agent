@@ -8,15 +8,10 @@ Tests digest generation and Slack webhook sending with full mocking.
 Run with: pytest tests/test_skill_digest.py -v
 """
 
-import os
-import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-# Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.services.skill_digest import (
     generate_weekly_digest,

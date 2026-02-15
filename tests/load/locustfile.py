@@ -5,13 +5,13 @@ This suite validates the PRD exit criteria: "Load test confirms 10-15s latency a
 
 Usage:
     # Headless mode (recommended for CI)
-    BASE_URL=http://localhost:8000 API_KEY=your-key locust -f tests/load/locustfile.py --headless -u 5 -r 1 --run-time 60s
+    BASE_URL=http://localhost:8001 API_KEY=your-key locust -f tests/load/locustfile.py --headless -u 5 -r 1 --run-time 60s
 
     # Web UI mode (recommended for interactive testing)
-    BASE_URL=http://localhost:8000 API_KEY=your-key locust -f tests/load/locustfile.py
+    BASE_URL=http://localhost:8001 API_KEY=your-key locust -f tests/load/locustfile.py
 
 Environment Variables:
-    BASE_URL: Base URL of the API server (default: http://localhost:8000)
+    BASE_URL: Base URL of the API server (default: http://localhost:8001)
     API_KEY: API key for authenticated endpoints (required for protected endpoints)
 """
 
@@ -40,7 +40,7 @@ class SabineUser(HttpUser):
         Performs initial health check to verify the API is responsive
         before proceeding with load testing.
         """
-        self.host = os.getenv("BASE_URL", "http://localhost:8000")
+        self.host = os.getenv("BASE_URL", "http://localhost:8001")
         self.api_key = os.getenv("API_KEY", "")
         
         logger.info(f"Starting load test user against {self.host}")
@@ -209,7 +209,7 @@ class SabineUser(HttpUser):
 @events.test_start.add_listener
 def on_test_start(environment, **kwargs):
     """Log test configuration when test starts."""
-    base_url = os.getenv("BASE_URL", "http://localhost:8000")
+    base_url = os.getenv("BASE_URL", "http://localhost:8001")
     api_key_configured = bool(os.getenv("API_KEY"))
     
     logger.info("=" * 60)

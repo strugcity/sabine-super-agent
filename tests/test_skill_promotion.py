@@ -8,15 +8,10 @@ Tests promote, disable, and rollback operations with full mocking.
 Run with: pytest tests/test_skill_promotion.py -v
 """
 
-import os
-import sys
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-# Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.services.skill_promotion import (
     disable_skill,

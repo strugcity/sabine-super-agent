@@ -7,6 +7,6 @@ scrape_configs:
     scrape_interval: 30s
     metrics_path: '/metrics/prometheus'
     static_configs:
-      - targets: ['host.docker.internal:8000']
+      - targets: ['host.docker.internal:8001']
         labels:
           environment: 'development'
