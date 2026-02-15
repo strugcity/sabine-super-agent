@@ -36,14 +36,58 @@ Sabine Super Agent - a personal AI agent with a Python/FastAPI backend and Next.
 - `src/` - Next.js frontend
 - Shared models, constants, and auth dependencies should live in `lib/agent/shared.py` (not duplicated across files)
 
-### Parallel Work (MUST FOLLOW)
-- **Before dispatching ANY parallel agents**, launch the dashboard: `python scripts/parallel_dashboard.py`
-  - This opens a live web UI at http://localhost:3847 that auto-polls every 3 seconds — zero token cost
-  - Pass `--workspace <name>` to filter to a specific workspace
-- **Every parallel Claude Code session MUST use `SessionTracker` from `lib/parallel/`** for status reporting
-- **Heartbeats MUST be sent at least every 5 minutes** during parallel work
-- **Sessions MUST call `.complete()` or `.fail()`** before exiting
-- **Do NOT use the CLI monitor (`parallel_monitor.py`) from within Claude Code** for ongoing polling — it wastes tokens. Use the dashboard UI instead. The CLI is for one-shot checks only.
-- **`.parallel/` is gitignored** - it's local transient state, never committed
-- **Do NOT confuse with Dream Team task queue** (`backend/services/task_queue.py`) which is for production multi-agent orchestration
+### Multi-Task Work: DEFAULT PROTOCOL (MUST FOLLOW)
+
+**When the user requests work that spans 3+ files or 2+ independent features, the DEFAULT approach is parallel dispatch — NOT direct coding.** Direct coding burns tokens linearly. Parallel dispatch runs N agents concurrently at the same cost as 1, with the user watching progress on a dashboard.
+
+**Only code directly when:**
+- The task is a single small fix (< 3 files)
+- The user explicitly says "just do it" or "code this directly"
+- The task has hard sequential dependencies that prevent parallelism
+
+#### The Parallel Dispatch Protocol (4 steps)
+
+**Step 1: Launch the dashboard**
+```bash
+python scripts/parallel_dashboard.py --workspace <name>
+```
+This opens http://localhost:3847 — zero token cost, user watches progress here.
+
+**Step 2: Register sessions on the dashboard BEFORE dispatching agents**
+Task tool subagents cannot run `SessionTracker` themselves (they lack a persistent Python runtime). The coordinator MUST register all sessions upfront:
+```python
+python -c "
+import sys; sys.path.insert(0, '.')
+from lib.parallel import SessionTracker
+for sid, desc in [('session-1', 'Description 1'), ('session-2', 'Description 2')]:
+    t = SessionTracker(session_id=sid, workspace='<name>')
+    t.start(desc)
+    t.heartbeat(progress_pct=5, message='Agent dispatched')
+"
+```
+
+**Step 3: Dispatch agents via Task tool**
+- Use `run_in_background: true` on all Task calls
+- Each agent prompt MUST include bash commands to update the dashboard at milestones:
+  ```bash
+  python -c "
+  import sys; sys.path.insert(0, '.')
+  from lib.parallel import SessionTracker
+  t = SessionTracker(session_id='SESSION_ID', workspace='WORKSPACE')
+  t.heartbeat(progress_pct=PERCENT, message='MESSAGE')
+  "
+  ```
+- Each agent prompt MUST include a `.complete()` bash command to run on success and a `.fail()` command on failure
+- Write detailed session prompts with full file context — agents start cold with no prior conversation
+
+**Step 4: Wait passively, then audit**
+- Do NOT poll agents from within Claude Code — the user watches the dashboard
+- When agents finish, audit outputs (py_compile, spot-check key files)
+- Commit if clean, report issues if not
+
+#### Key Constraints
+- **`.parallel/` is gitignored** — local transient state, never committed
+- **Do NOT use `parallel_monitor.py` from within Claude Code** for ongoing polling — it wastes tokens. The dashboard UI is free.
+- **Do NOT confuse with Dream Team task queue** (`backend/services/task_queue.py`) — that is production multi-agent orchestration
+- **Session prompt files are throwaway** — do not commit them. The reusable knowledge lives in plan docs.
 - See `docs/plans/parallel-work-best-practices.md` for full guide
