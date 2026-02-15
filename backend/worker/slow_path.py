@@ -560,11 +560,26 @@ def extract_relationships(
             if not isinstance(rel, dict):
                 continue
 
-            subject: str = rel.get("subject", "")
-            predicate: str = rel.get("predicate", "").lower().replace(" ", "_")
-            obj: str = rel.get("object", "")
-            confidence: float = float(rel.get("confidence", 0.5))
-            graph_layer: str = rel.get("graph_layer", "").lower()
+            # Safely extract fields, handling None values from LLM output
+            subject: str = rel.get("subject") or ""
+            predicate_raw = rel.get("predicate") or ""
+            obj: str = rel.get("object") or ""
+            graph_layer_raw = rel.get("graph_layer") or ""
+            
+            # Normalize predicate (handle None before calling .lower())
+            predicate: str = str(predicate_raw).lower().replace(" ", "_") if predicate_raw else ""
+            graph_layer: str = str(graph_layer_raw).lower() if graph_layer_raw else ""
+            
+            # Safely parse confidence with fallback for invalid types
+            confidence: float = 0.5
+            try:
+                confidence_val = rel.get("confidence", 0.5)
+                confidence = float(confidence_val) if confidence_val is not None else 0.5
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Invalid confidence value '%s' for relationship %s -> %s, using default 0.5",
+                    rel.get("confidence"), subject, obj
+                )
 
             # Skip entries where subject/object aren't known entities
             if subject not in entity_name_set or obj not in entity_name_set:
