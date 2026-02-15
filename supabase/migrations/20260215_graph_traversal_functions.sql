@@ -31,6 +31,7 @@
 --   relationship_type_filter TEXT   - Filter by relationship type (NULL = all)
 --   layer_filter            TEXT    - Filter by graph layer (NULL = all)
 --   min_confidence          FLOAT   - Minimum confidence threshold (default: 0.0)
+--   max_results             INT     - Maximum number of rows returned (default: 500)
 --
 -- Returns:
 --   source_id, target_id, source_name, target_name,
@@ -41,7 +42,8 @@ CREATE OR REPLACE FUNCTION traverse_graph(
     max_depth INT DEFAULT 3,
     relationship_type_filter TEXT DEFAULT NULL,
     layer_filter TEXT DEFAULT NULL,
-    min_confidence FLOAT DEFAULT 0.0
+    min_confidence FLOAT DEFAULT 0.0,
+    max_results INT DEFAULT 500
 )
 RETURNS TABLE (
     source_id UUID,
@@ -154,12 +156,13 @@ BEGIN
         traverse.conf,
         traverse.depth
     FROM traverse
-    ORDER BY traverse.depth, traverse.conf DESC;
+    ORDER BY traverse.depth, traverse.conf DESC
+    LIMIT max_results;
 END;
 $$ LANGUAGE plpgsql;
 
-COMMENT ON FUNCTION traverse_graph(UUID, INT, TEXT, TEXT, FLOAT) IS
-    'Bidirectional recursive multi-hop graph traversal with cycle prevention and optional filters for relationship type, layer, and confidence';
+COMMENT ON FUNCTION traverse_graph(UUID, INT, TEXT, TEXT, FLOAT, INT) IS
+    'Bidirectional recursive multi-hop graph traversal with cycle prevention, optional filters for relationship type, layer, and confidence, and max_results limit';
 
 
 -- =============================================================================

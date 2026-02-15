@@ -13,6 +13,7 @@ All functions use the Supabase client.  For multi-hop traversals the
 ``traverse_graph()`` Postgres RPC is called via ``supabase.rpc()``.
 """
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -64,8 +65,8 @@ async def causal_trace(
         client = _get_client()
 
         # Fetch root entity name
-        root_resp = (
-            client.table("entities")
+        root_resp = await asyncio.to_thread(
+            lambda: client.table("entities")
             .select("id, name, type, domain")
             .eq("id", entity_id)
             .limit(1)
@@ -78,16 +79,18 @@ async def causal_trace(
         }
 
         # Call traverse_graph RPC with causal layer filter
-        rpc_resp = client.rpc(
-            "traverse_graph",
-            {
-                "start_entity_id": entity_id,
-                "max_depth": max_depth,
-                "relationship_type_filter": None,
-                "layer_filter": "causal",
-                "min_confidence": min_confidence,
-            },
-        ).execute()
+        rpc_resp = await asyncio.to_thread(
+            lambda: client.rpc(
+                "traverse_graph",
+                {
+                    "start_entity_id": entity_id,
+                    "max_depth": max_depth,
+                    "relationship_type_filter": None,
+                    "layer_filter": "causal",
+                    "min_confidence": min_confidence,
+                },
+            ).execute()
+        )
 
         rows: List[Dict[str, Any]] = rpc_resp.data or []
 
@@ -172,8 +175,8 @@ async def entity_network(
         client = _get_client()
 
         # Fetch root entity details
-        root_resp = (
-            client.table("entities")
+        root_resp = await asyncio.to_thread(
+            lambda: client.table("entities")
             .select("id, name, type, domain")
             .eq("id", entity_id)
             .limit(1)
@@ -193,28 +196,32 @@ async def entity_network(
 
         if layers:
             for layer in layers:
-                rpc_resp = client.rpc(
+                rpc_resp = await asyncio.to_thread(
+                    lambda _layer=layer: client.rpc(
+                        "traverse_graph",
+                        {
+                            "start_entity_id": entity_id,
+                            "max_depth": max_depth,
+                            "relationship_type_filter": None,
+                            "layer_filter": _layer,
+                            "min_confidence": min_confidence,
+                        },
+                    ).execute()
+                )
+                all_rows.extend(rpc_resp.data or [])
+        else:
+            rpc_resp = await asyncio.to_thread(
+                lambda: client.rpc(
                     "traverse_graph",
                     {
                         "start_entity_id": entity_id,
                         "max_depth": max_depth,
                         "relationship_type_filter": None,
-                        "layer_filter": layer,
+                        "layer_filter": None,
                         "min_confidence": min_confidence,
                     },
                 ).execute()
-                all_rows.extend(rpc_resp.data or [])
-        else:
-            rpc_resp = client.rpc(
-                "traverse_graph",
-                {
-                    "start_entity_id": entity_id,
-                    "max_depth": max_depth,
-                    "relationship_type_filter": None,
-                    "layer_filter": None,
-                    "min_confidence": min_confidence,
-                },
-            ).execute()
+            )
             all_rows = rpc_resp.data or []
 
         # Deduplicate edges (same source+target+type can appear from
@@ -372,7 +379,7 @@ async def get_entity_relationships(
             )
             if relationship_type:
                 query = query.eq("relationship_type", relationship_type)
-            response = query.execute()
+            response = await asyncio.to_thread(query.execute)
 
             for row in response.data or []:
                 row["direction"] = "outgoing"
@@ -398,7 +405,7 @@ async def get_entity_relationships(
             )
             if relationship_type:
                 query = query.eq("relationship_type", relationship_type)
-            response = query.execute()
+            response = await asyncio.to_thread(query.execute)
 
             for row in response.data or []:
                 row["direction"] = "incoming"

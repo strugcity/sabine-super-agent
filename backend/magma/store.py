@@ -11,7 +11,7 @@ The main entry point is :func:`store_relationships`, called from
 Key behaviours:
   - Resolves subject/object names to entity UUIDs via a name-to-id mapping
   - Skips relationships where either entity cannot be resolved
-  - Uses upsert with ``GREATEST(confidence)`` to keep the highest confidence
+  - Checks existing confidence before upsert; skips if new confidence is not higher
   - Validates predicates against the MAGMA taxonomy
   - Corrects ``graph_layer`` via :func:`infer_layer` if mismatched
   - Logs all skips and errors (never swallows silently)
@@ -82,6 +82,11 @@ async def store_relationships(
         result["skipped"] = len(relationships)
         return result
 
+    # Build case-insensitive lookup for entity names
+    name_lookup: Dict[str, str] = {
+        k.lower().strip(): v for k, v in entity_name_to_id.items()
+    }
+
     for rel in relationships:
         subject_name: str = rel.get("subject", "")
         object_name: str = rel.get("object", "")
@@ -89,9 +94,9 @@ async def store_relationships(
         confidence: float = float(rel.get("confidence", 0.5))
         graph_layer: str = rel.get("graph_layer", "entity")
 
-        # --- Resolve entity names to UUIDs ---
-        source_entity_id: Optional[str] = entity_name_to_id.get(subject_name)
-        target_entity_id: Optional[str] = entity_name_to_id.get(object_name)
+        # --- Resolve entity names to UUIDs (case-insensitive) ---
+        source_entity_id: Optional[str] = name_lookup.get(subject_name.lower().strip())
+        target_entity_id: Optional[str] = name_lookup.get(object_name.lower().strip())
 
         if not source_entity_id or not target_entity_id:
             skip_reason = (
@@ -155,8 +160,35 @@ async def store_relationships(
         if source_wal_id:
             row["source_wal_id"] = source_wal_id
 
-        # --- Upsert: ON CONFLICT keep highest confidence ---
+        # --- Upsert: only if new confidence is higher than existing ---
         try:
+            existing = (
+                client.table("entity_relationships")
+                .select("confidence")
+                .eq("source_entity_id", str(source_entity_id))
+                .eq("target_entity_id", str(target_entity_id))
+                .eq("relationship_type", predicate)
+                .limit(1)
+                .execute()
+            )
+            existing_conf: float = (
+                float(existing.data[0]["confidence"]) if existing.data else 0.0
+            )
+
+            if confidence <= existing_conf:
+                logger.debug(
+                    "Skipping upsert: existing confidence %.2f >= new %.2f "
+                    "for %s -[%s]-> %s",
+                    existing_conf,
+                    confidence,
+                    subject_name,
+                    predicate,
+                    object_name,
+                )
+                result["skipped"] += 1
+                continue
+
+            # New confidence is strictly higher or row does not exist yet
             client.table("entity_relationships").upsert(
                 row,
                 on_conflict="source_entity_id,target_entity_id,relationship_type",

@@ -726,7 +726,7 @@ async def _async_resolve_entity(
 
     # Look up existing entity by name
     try:
-        response = client.table("entities").select("*").eq(
+        response = client.table("entities").select("*").ilike(
             "name", entity_name,
         ).limit(1).execute()
     except Exception as exc:

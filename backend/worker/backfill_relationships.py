@@ -208,7 +208,7 @@ async def _async_backfill(
         name_to_id: Dict[str, UUID] = {}
         for e in entity_details:
             try:
-                name_to_id[e["name"]] = UUID(e["id"])
+                name_to_id[e["name"].strip()] = UUID(e["id"])
             except (ValueError, KeyError, TypeError):
                 pass
 
@@ -243,10 +243,10 @@ async def _async_backfill(
             try:
                 stored = await store_relationships(
                     relationships=relationships,
-                    name_to_id=name_to_id,
-                    source_memory_id=memory_id,
+                    entity_name_to_id=name_to_id,
+                    source_wal_id=memory_id,
                 )
-                relationships_stored += stored
+                relationships_stored += stored.get("stored", 0)
             except Exception as exc:
                 error_msg = f"store_relationships failed for memory {memory_id}: {exc}"
                 logger.warning(error_msg)
