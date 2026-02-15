@@ -9,10 +9,8 @@
 -- Performance: Enables fast ILIKE queries with leading wildcards.
 -- =============================================================================
 
--- Enable pg_trgm extension if not already enabled
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-
 -- Add GIN trigram index for efficient fuzzy text search on entity names
+-- Note: pg_trgm extension is already enabled in migration 20260216000001
 CREATE INDEX IF NOT EXISTS idx_entities_name_trigram
     ON entities USING gin(name gin_trgm_ops);
 

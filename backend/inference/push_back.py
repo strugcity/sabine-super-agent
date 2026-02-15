@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 MIN_ALTERNATIVES: int = 2  # PUSH-002: minimum alternatives per push-back
 TARGET_PUSH_BACK_RATE_LOW: float = 0.05   # 5%
 TARGET_PUSH_BACK_RATE_HIGH: float = 0.15  # 15%
+CAUSAL_TRACE_TIMEOUT_SECONDS: float = 0.2  # 200ms max for causal trace to prevent blocking
 
 
 # =============================================================================
@@ -90,8 +91,8 @@ async def _resolve_entity_id(entity_name: str) -> Optional[str]:
     """
     Look up an entity UUID by name from the entities table.
 
-    Sanitizes input to prevent SQL wildcard DoS attacks and uses efficient
-    exact-match first, falling back to trigram search.
+    Sanitizes input to prevent SQL wildcard DoS attacks by removing wildcards
+    entirely and using exact match.
 
     Parameters
     ----------
@@ -107,13 +108,19 @@ async def _resolve_entity_id(entity_name: str) -> Optional[str]:
         from backend.services.wal import get_supabase_client
         import asyncio
 
-        # Sanitize input: escape SQL wildcards to prevent DoS attacks
-        # Users shouldn't be searching with wildcards in entity names
-        sanitized_name = entity_name.replace("%", r"\%").replace("_", r"\_")
+        # Sanitize input: remove SQL wildcards to prevent DoS attacks
+        # For entity name lookup, we want exact matches, not pattern matching
+        # Remove % and _ wildcards entirely (users shouldn't use these in entity names)
+        sanitized_name = entity_name.replace("%", "").replace("_", " ")
+
+        if not sanitized_name.strip():
+            logger.debug("Empty entity name after sanitization")
+            return None
 
         client = get_supabase_client()
         
-        # Try exact match first (case-insensitive, uses B-tree index)
+        # Use case-insensitive exact match (no wildcards)
+        # The GIN trigram index will help with performance even for ILIKE
         response = await asyncio.to_thread(
             lambda: client.table("entities")
             .select("id")
@@ -205,19 +212,20 @@ async def gather_evidence(
 
         # Follow causal chains for deeper evidence
         # causal_trace signature: entity_id, max_depth, min_confidence
-        # Add 200ms timeout to prevent blocking the request path
+        # Add timeout to prevent blocking the request path
         try:
             causal_result = await asyncio.wait_for(
                 causal_trace(
                     entity_id=entity_id,
                     max_depth=3,
                 ),
-                timeout=0.2,  # 200ms max
+                timeout=CAUSAL_TRACE_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "Causal trace timed out for entity=%s (>200ms), proceeding without causal evidence",
+                "Causal trace timed out for entity=%s (>%.0fms), proceeding without causal evidence",
                 entity_name,
+                CAUSAL_TRACE_TIMEOUT_SECONDS * 1000,
             )
             return evidence[:max_items]
 

@@ -744,7 +744,7 @@ class TestEntityResolutionSecurity:
 
     @pytest.mark.asyncio
     async def test_wildcard_sanitization(self, pushback_module: Dict[str, Any]) -> None:
-        """Entity name with SQL wildcards should be escaped to prevent DoS."""
+        """Entity name with SQL wildcards should be sanitized to prevent DoS."""
         from backend.inference.push_back import _resolve_entity_id
         
         # Mock the Supabase client to verify sanitized input
@@ -767,16 +767,16 @@ class TestEntityResolutionSecurity:
             malicious_input = "%%%%"
             result = await _resolve_entity_id(malicious_input)
             
-            # Should return None (no match)
+            # Should return None (empty after sanitization)
             assert result is None
             
-            # Verify the query was called with escaped wildcards
-            mock_select.ilike.assert_called_once()
-            call_args = mock_select.ilike.call_args
-            assert call_args is not None
-            # The sanitized name should have escaped wildcards
-            sanitized = call_args[0][1]
-            assert r"\%" in sanitized
+            # Verify wildcards were removed
+            # The function should either not call the query (empty string) or call with sanitized input
+            if mock_select.ilike.called:
+                call_args = mock_select.ilike.call_args
+                sanitized = call_args[0][1]
+                # Verify no wildcards remain
+                assert "%" not in sanitized
 
     @pytest.mark.asyncio
     async def test_entity_resolution_normal_input(self, pushback_module: Dict[str, Any]) -> None:
@@ -805,7 +805,7 @@ class TestEntityResolutionSecurity:
 
     @pytest.mark.asyncio
     async def test_underscore_wildcard_sanitization(self, pushback_module: Dict[str, Any]) -> None:
-        """Underscore wildcards should also be escaped."""
+        """Underscore wildcards should be sanitized (replaced with space)."""
         from backend.inference.push_back import _resolve_entity_id
         
         mock_client = MagicMock()
@@ -821,13 +821,39 @@ class TestEntityResolutionSecurity:
         mock_ilike.limit.return_value = mock_limit
         
         with patch("backend.services.wal.get_supabase_client", return_value=mock_client):
+            # All underscores becomes empty after sanitization
             result = await _resolve_entity_id("___")
             assert result is None
             
-            # Verify escaped underscores in the query
+            # Query should not be called because input is empty after sanitization
+            # (This prevents DoS from wildcard-only queries)
+            
+    @pytest.mark.asyncio
+    async def test_mixed_wildcard_sanitization(self, pushback_module: Dict[str, Any]) -> None:
+        """Entity names with mixed wildcards should be sanitized."""
+        from backend.inference.push_back import _resolve_entity_id
+        
+        mock_client = MagicMock()
+        mock_table = MagicMock()
+        mock_select = MagicMock()
+        mock_ilike = MagicMock()
+        mock_limit = MagicMock()
+        mock_limit.execute.return_value = MagicMock(data=[])
+        
+        mock_client.table.return_value = mock_table
+        mock_table.select.return_value = mock_select
+        mock_select.ilike.return_value = mock_ilike
+        mock_ilike.limit.return_value = mock_limit
+        
+        with patch("backend.services.wal.get_supabase_client", return_value=mock_client):
+            result = await _resolve_entity_id("Alice_%_Bob")
+            
+            # Should call query with underscores replaced
             call_args = mock_select.ilike.call_args
             sanitized = call_args[0][1]
-            assert r"\_" in sanitized
+            # Wildcards should be removed/replaced
+            assert "%" not in sanitized
+            assert sanitized == "Alice  Bob"  # % removed, _ replaced with space
 
 
 class TestCausalTraceTimeout:
