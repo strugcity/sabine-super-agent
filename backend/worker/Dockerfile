@@ -33,11 +33,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Health check -- Railway uses this to verify the service is alive
+# Health check -- uses Railway's PORT if set, otherwise 8082
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8082/health || exit 1
+    CMD curl -f http://localhost:${PORT:-8082}/health || exit 1
 
-# Expose the health-check port
+# Expose the health-check port (Railway overrides with PORT env var)
 EXPOSE 8082
 
 # Run the worker entry point

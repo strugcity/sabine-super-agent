@@ -36,7 +36,11 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-HEALTH_PORT: int = int(os.getenv("WORKER_HEALTH_PORT", "8082"))
+# Railway injects PORT for its healthcheck probe. Prefer that over the
+# worker-specific WORKER_HEALTH_PORT so Railway can actually reach us.
+HEALTH_PORT: int = int(
+    os.getenv("PORT") or os.getenv("WORKER_HEALTH_PORT", "8082")
+)
 
 # Module-level state tracking
 _start_time: float = time.monotonic()
