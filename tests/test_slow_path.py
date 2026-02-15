@@ -552,7 +552,7 @@ class TestEntityResolution:
         new_id = str(uuid4())
         mock_client = MagicMock()
         # Lookup returns empty (entity does not exist)
-        mock_client.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value = (
+        mock_client.table.return_value.select.return_value.ilike.return_value.limit.return_value.execute.return_value = (
             _make_supabase_response(data=[])
         )
         # Insert returns new entity
@@ -576,7 +576,7 @@ class TestEntityResolution:
         existing_id = str(uuid4())
         mock_client = MagicMock()
         # Lookup returns existing entity
-        mock_client.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value = (
+        mock_client.table.return_value.select.return_value.ilike.return_value.limit.return_value.execute.return_value = (
             _make_supabase_response(data=[{
                 "id": existing_id,
                 "name": "Alice",
