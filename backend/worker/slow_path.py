@@ -28,6 +28,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
+from backend.magma.taxonomy import is_valid_predicate, infer_layer, GraphLayer
+
 logger = logging.getLogger(__name__)
 
 
@@ -551,7 +553,6 @@ def extract_relationships(
             )
 
         # Validate and normalise each relationship
-        valid_layers = {"semantic", "temporal", "causal", "entity"}
         entity_name_set = set(entity_names)
         relationships: List[Dict[str, Any]] = []
 
@@ -559,11 +560,26 @@ def extract_relationships(
             if not isinstance(rel, dict):
                 continue
 
-            subject: str = rel.get("subject", "")
-            predicate: str = rel.get("predicate", "")
-            obj: str = rel.get("object", "")
-            confidence: float = float(rel.get("confidence", 0.5))
-            graph_layer: str = rel.get("graph_layer", "entity")
+            # Safely extract fields, handling None values from LLM output
+            subject: str = rel.get("subject") or ""
+            predicate_raw = rel.get("predicate") or ""
+            obj: str = rel.get("object") or ""
+            graph_layer_raw = rel.get("graph_layer") or ""
+            
+            # Normalize predicate (None already converted to empty string above)
+            predicate: str = predicate_raw.lower().replace(" ", "_")
+            graph_layer: str = graph_layer_raw.lower()
+            
+            # Safely parse confidence with fallback for invalid types
+            try:
+                confidence_val = rel.get("confidence", 0.5)
+                confidence: float = float(confidence_val) if confidence_val is not None else 0.5
+            except (ValueError, TypeError):
+                confidence = 0.5
+                logger.warning(
+                    "Invalid confidence value '%s' for relationship %s -> %s, using default 0.5",
+                    rel.get("confidence"), subject, obj
+                )
 
             # Skip entries where subject/object aren't known entities
             if subject not in entity_name_set or obj not in entity_name_set:
@@ -580,9 +596,20 @@ def extract_relationships(
             # Clamp confidence to [0.0, 1.0]
             confidence = max(0.0, min(1.0, confidence))
 
-            # Default to "entity" if layer is not recognised
-            if graph_layer not in valid_layers:
-                graph_layer = "entity"
+            # Validate predicate against canonical taxonomy
+            if not is_valid_predicate(predicate):
+                logger.warning("Non-canonical predicate '%s', falling back to 'related_to'", predicate)
+                predicate = "related_to"
+
+            # Infer correct layer from predicate (overrides Haiku's guess)
+            inferred = infer_layer(predicate)
+            # Only log correction if Haiku provided a layer guess that differs from taxonomy
+            if graph_layer and graph_layer != inferred.value:
+                logger.debug(
+                    "Correcting graph_layer: Haiku said '%s', taxonomy says '%s' for predicate '%s'",
+                    graph_layer, inferred.value, predicate
+                )
+            graph_layer = inferred.value
 
             relationships.append({
                 "subject": subject,
@@ -654,7 +681,7 @@ def _extract_relationships_fallback(
             "object": entities[i + 1].get("name", f"entity_{i + 1}"),
             "confidence": 0.8,
             "source_wal_id": source_wal_id,
-            "graph_layer": "entity",
+            "graph_layer": infer_layer("related_to").value,
             "relationship_type": "related_to",
         })
 

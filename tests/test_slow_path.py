@@ -180,7 +180,7 @@ class TestRelationshipExtraction:
         assert rel["predicate"] == "related_to"
         assert rel["confidence"] == 0.8
         assert rel["source_wal_id"] == TEST_WAL_ID
-        assert rel["graph_layer"] == "entity"
+        assert rel["graph_layer"] == "semantic"  # related_to is a semantic predicate
 
     def test_returns_empty_for_fewer_than_two_entities(self) -> None:
         """No relationships can be formed with fewer than 2 entities."""
