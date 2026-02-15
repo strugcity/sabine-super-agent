@@ -21,6 +21,7 @@ Owner: @backend-architect-sabine
 """
 
 from lib.agent.memory import get_supabase_client, get_embeddings
+import asyncio
 import logging
 import os
 import re
@@ -610,8 +611,6 @@ async def _fetch_entity_relationships(
         Deduplicated list of relationship dicts.
     """
     # Lazy import to avoid circular deps
-    import asyncio
-    from uuid import UUID
     from backend.magma.query import get_entity_relationships, causal_trace, entity_network
 
     all_relationships: List[Dict[str, Any]] = []
@@ -698,7 +697,7 @@ async def _fetch_entity_relationships(
         )
         network_task = entity_network(
             entity_id=entity_id_str,
-            layers=["entity", "semantic", "temporal", "causal"],
+            layers=None,  # Single RPC returns all layers; backend deduplicates edges
             max_depth=2,
             min_confidence=0.3,
         )
@@ -768,7 +767,7 @@ async def _fetch_entity_relationships(
     try:
         multi_hop_results = await asyncio.gather(
             *[fetch_entity_multi_hop(entity) for entity in valid_entities],
-            return_exceptions=False
+            return_exceptions=True
         )
     except Exception as exc:
         logger.error(
@@ -779,7 +778,13 @@ async def _fetch_entity_relationships(
         return all_relationships
 
     # Process and deduplicate results
-    for causal_rels, network_rels in multi_hop_results:
+    for result in multi_hop_results:
+        # Skip exceptions from individual entity failures
+        if isinstance(result, Exception):
+            logger.warning("Multi-hop enrichment failed for one entity: %s", result)
+            continue
+        
+        causal_rels, network_rels = result
         # Process causal relationships
         for item in causal_rels:
             if len(seen_keys) >= MAX_SEEN_KEYS:
