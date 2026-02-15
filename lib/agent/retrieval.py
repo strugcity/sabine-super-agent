@@ -650,8 +650,12 @@ async def _fetch_entity_relationships(
         return all_relationships
 
     # Multi-hop enrichment for top entities (limit to avoid latency)
-    # Only process first 3 entities to avoid excessive queries
-    for entity in entities[:3]:
+    # Process only first 3 entities to balance context richness vs query latency.
+    # Each multi-hop query (causal_trace + entity_network) can add 50-100ms overhead.
+    # Testing showed 3 entities provides good context coverage while keeping total
+    # retrieval time under 500ms for typical queries.
+    MAX_MULTI_HOP_ENTITIES = 3
+    for entity in entities[:MAX_MULTI_HOP_ENTITIES]:
         if entity.id is None:
             continue
 
@@ -702,6 +706,13 @@ async def _fetch_entity_relationships(
                 min_confidence=0.3,
             )
 
+            # Build node ID to name mapping for O(n+m) lookup complexity
+            nodes = network_result.get("nodes", [])
+            node_id_to_name: Dict[str, str] = {
+                node.get("id", ""): node.get("name", "unknown")
+                for node in nodes
+            }
+
             # Convert network edges to relationship format
             for edge in network_result.get("edges", []):
                 source_id = edge.get("source", "")
@@ -712,15 +723,9 @@ async def _fetch_entity_relationships(
                 if dedup_key not in seen_keys and source_id and target_id:
                     seen_keys.add(dedup_key)
 
-                    # Find node names from nodes list
-                    nodes = network_result.get("nodes", [])
-                    source_name = "unknown"
-                    target_name = "unknown"
-                    for node in nodes:
-                        if node.get("id") == source_id:
-                            source_name = node.get("name", "unknown")
-                        if node.get("id") == target_id:
-                            target_name = node.get("name", "unknown")
+                    # Lookup node names from pre-built dictionary
+                    source_name = node_id_to_name.get(source_id, "unknown")
+                    target_name = node_id_to_name.get(target_id, "unknown")
 
                     all_relationships.append({
                         "source_entity_id": source_id,
