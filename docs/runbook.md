@@ -54,7 +54,7 @@ Metrics Recording (5min) ──► Task Metrics ──► Prometheus Scraper
 |-----------|-------------|-------------------|------|
 | FastAPI | `GET /health` | `{"status": "healthy", "database_connected": true}` | 8001 |
 | Redis | `redis-cli ping` | `PONG` | 6379 |
-| rq Worker | `rq info` | Shows worker count &gt; 0 | N/A |
+| rq Worker | `rq info` | Shows worker count > 0 | N/A |
 | Worker Health | `GET http://localhost:8082/health` | `{"status": "healthy", "redis_connected": true}` | 8082 |
 | Supabase | Check `/health` response field | `database_connected: true` | N/A |
 | E2B | `GET /e2b/test` | `{"success": true}` | 8001 |
@@ -344,7 +344,7 @@ curl -X GET http://localhost:8001/wal/failed \
 ```
 
 **Prevention:**
-- Set up alerting when `pending` count &gt; 50 for more than 5 minutes
+- Set up alerting when `pending` count > 50 for more than 5 minutes
 - Monitor worker memory usage (see **3f. Memory Pressure**)
 - Scale workers before peak usage times
 - Review failed entry error patterns weekly
@@ -356,7 +356,7 @@ curl -X GET http://localhost:8001/wal/failed \
 **Symptoms:**
 - Worker process killed by OS with "Killed" in logs
 - Worker health endpoint shows `memory_status: "critical"` or `memory_status: "warning"`
-- `@memory_profiled_job` logs show high RSS values (&gt; 1536 MB)
+- `@memory_profiled_job` logs show high RSS values (> 1536 MB)
 - Batch processing jobs fail mid-execution
 - `GET http://localhost:8082/health` shows `memory_rss_mb` near `memory_limit_mb`
 
@@ -381,8 +381,8 @@ journalctl -u sabine-worker | grep "memory_profiled_job"
 ```
 
 **Memory status thresholds:**
-- `healthy`: RSS &lt; 1536 MB
-- `warning`: 1536 MB ≤ RSS &lt; 2048 MB
+- `healthy`: RSS < 1536 MB
+- `warning`: 1536 MB ≤ RSS < 2048 MB
 - `critical`: RSS ≥ 2048 MB (default hard limit)
 
 **Recovery:**
@@ -407,7 +407,7 @@ sudo systemctl restart sabine-worker
 - Set Docker memory limits (`--memory=2g --memory-reservation=1.5g`)
 - Configure systemd `MemoryMax=2G` in service file
 - Monitor worker health endpoint for `memory_status: "warning"`
-- Alert when memory usage &gt; 1536 MB (warning threshold)
+- Alert when memory usage > 1536 MB (warning threshold)
 - Review memory profiling logs weekly to identify memory leaks
 
 ---
@@ -549,7 +549,7 @@ open https://status.anthropic.com
 **Prevention:**
 - Monitor Anthropic API key expiry date (set to non-expiring if possible)
 - Set up billing alerts in Anthropic console
-- Monitor rate limit consumption (alert at &gt; 80% of quota)
+- Monitor rate limit consumption (alert at > 80% of quota)
 - Configure prompt caching to reduce token usage
 - Subscribe to Anthropic status page notifications
 - Document API key rotation procedure
@@ -560,12 +560,12 @@ open https://status.anthropic.com
 
 | Job | Schedule | Function | Description | Priority |
 |-----|----------|----------|-------------|----------|
-| Gap Detection | Sunday 03:00 UTC | `run_gap_detection()` | Analyzes 7-day failure window in tool audit log, creates/updates skill_gaps | Medium |
-| Skill Digest | Sunday 03:30 UTC | `run_weekly_digest()` | Sends weekly summary of gaps, proposals, promotions to Slack | Low |
+| Gap Detection | Sunday 03:00 UTC | `run_gap_detection()` (via Dream Team task queue) | Analyzes 7-day failure window in tool audit log, creates/updates skill_gaps | Medium |
+| Skill Digest | Sunday 03:30 UTC | `run_weekly_digest()` (via Dream Team task queue) | Sends weekly summary of gaps, proposals, promotions to Slack | Low |
 | Metrics Recording | Every 5 minutes | `POST /metrics/record` | Snapshots queue depth, role performance, task metrics for Prometheus | High |
-| Morning Briefing | Daily 06:00 local (CST) | `trigger_briefing()` | Generates dual-context briefing, sends via SMS | High |
+| Morning Briefing | Daily 08:00 local (CST) | `trigger_briefing()` | Generates dual-context briefing, sends via SMS | High |
 | Salience Recalculation | Daily 02:00 UTC | `run_salience_recalculation()` | Recalculates memory salience scores based on access patterns | Medium |
-| Memory Archival | Weekly Saturday 01:00 UTC | `run_archive_job()` | Archives low-salience memories (salience &lt; 0.1, older than 90 days) | Low |
+| Memory Archival | Weekly Saturday 01:00 UTC | `run_archive_job()` | Archives low-salience memories (salience < 0.1, older than 90 days) | Low |
 
 ### Job Configuration
 
