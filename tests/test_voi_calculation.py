@@ -821,7 +821,7 @@ class TestEntityResolutionSecurity:
         mock_ilike.limit.return_value = mock_limit
         
         with patch("backend.services.wal.get_supabase_client", return_value=mock_client):
-            # All underscores becomes empty after sanitization
+            # All underscores become empty after sanitization
             result = await _resolve_entity_id("___")
             assert result is None
             

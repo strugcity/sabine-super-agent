@@ -111,6 +111,10 @@ async def _resolve_entity_id(entity_name: str) -> Optional[str]:
         # Sanitize input: remove SQL wildcards to prevent DoS attacks
         # For entity name lookup, we want exact matches, not pattern matching
         # Remove % and _ wildcards entirely (users shouldn't use these in entity names)
+        # NOTE: Underscores are replaced with spaces, which may affect entity names
+        # like "project_alpha". This is a security trade-off: we prioritize preventing
+        # DoS attacks over supporting underscores in entity names. Entity names with
+        # underscores should be stored and queried using alternative delimiters (e.g., hyphens).
         sanitized_name = entity_name.replace("%", "").replace("_", " ")
 
         if not sanitized_name.strip():
@@ -491,7 +495,15 @@ async def log_push_back_event(entry: PushBackLogEntry) -> bool:
 
         # Serialize alternatives safely, handling Pydantic models and datetime objects
         def serialize_alternative(alt: Any) -> Dict[str, Any]:
-            """Convert alternative to JSON-compliant dict."""
+            """
+            Convert alternative to JSON-compliant dict.
+            
+            Note: This handles datetime objects at the top level of the dict.
+            Nested datetime objects in sub-dictionaries or lists are not handled.
+            This is acceptable for the current data model where datetime fields
+            are top-level attributes. If nested datetime objects become necessary,
+            implement recursive serialization.
+            """
             if hasattr(alt, "model_dump"):
                 dumped = alt.model_dump()
             elif isinstance(alt, dict):

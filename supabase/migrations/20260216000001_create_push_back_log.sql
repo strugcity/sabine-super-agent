@@ -65,7 +65,9 @@ ALTER TABLE push_back_log ENABLE ROW LEVEL SECURITY;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM pg_policies WHERE policyname = 'Service role has full access to push_back_log'
+        SELECT 1 FROM pg_policies 
+        WHERE policyname = 'Service role has full access to push_back_log'
+        AND tablename = 'push_back_log'
     ) THEN
         CREATE POLICY "Service role has full access to push_back_log"
             ON push_back_log
@@ -79,7 +81,9 @@ $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM pg_policies WHERE policyname = 'Users can insert their own push_back_log entries'
+        SELECT 1 FROM pg_policies 
+        WHERE policyname = 'Users can insert their own push_back_log entries'
+        AND tablename = 'push_back_log'
     ) THEN
         CREATE POLICY "Users can insert their own push_back_log entries"
             ON push_back_log
@@ -93,7 +97,9 @@ $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM pg_policies WHERE policyname = 'Users can view their own push_back_log entries'
+        SELECT 1 FROM pg_policies 
+        WHERE policyname = 'Users can view their own push_back_log entries'
+        AND tablename = 'push_back_log'
     ) THEN
         CREATE POLICY "Users can view their own push_back_log entries"
             ON push_back_log
@@ -107,7 +113,9 @@ $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM pg_policies WHERE policyname = 'Users can update their own push_back_log responses'
+        SELECT 1 FROM pg_policies 
+        WHERE policyname = 'Users can update their own push_back_log responses'
+        AND tablename = 'push_back_log'
     ) THEN
         CREATE POLICY "Users can update their own push_back_log responses"
             ON push_back_log
