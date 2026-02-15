@@ -684,7 +684,7 @@ async def _fetch_entity_relationships(
 
     # Use asyncio.gather to parallelize multi-hop queries for all entities
     # This reduces latency from 3*(causal+network) to max(causal, network)
-    async def fetch_entity_multi_hop(entity: Entity) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    async def fetch_entity_multi_hop(entity: Entity) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Fetch both causal trace and entity network for a single entity in parallel."""
         entity_id_str = str(entity.id)
         causal_rels = []
@@ -816,12 +816,18 @@ async def _fetch_entity_relationships(
                 )
                 return all_relationships
                 
-            dedup_key = (item["source_id"], item["target_id"], item["type"])
+            # Validate IDs before adding
+            source_id = item["source_id"]
+            target_id = item["target_id"]
+            if not source_id or not target_id:
+                continue
+                
+            dedup_key = (source_id, target_id, item["type"])
             if dedup_key not in seen_keys:
                 seen_keys.add(dedup_key)
                 all_relationships.append({
-                    "source_entity_id": item["source_id"],
-                    "target_entity_id": item["target_id"],
+                    "source_entity_id": source_id,
+                    "target_entity_id": target_id,
                     "source_name": item["source_name"],
                     "target_name": item["target_name"],
                     "relationship_type": item["type"],

@@ -9,14 +9,14 @@ Addresses the following concerns:
 1. Tenant isolation - ensure no cross-tenant data leaks
 2. Performance - verify parallel execution reduces latency
 3. Circular graph handling - ensure deduplication works correctly
-4. UUID validation - prevent injection attacks
+4. UUID validation - prevent malformed inputs from reaching backend
 5. Error handling - ensure failures are logged appropriately
 """
 
 import asyncio
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -89,7 +89,9 @@ async def test_uuid_validation_prevents_injection(mock_entities_invalid):
     """
     Test that invalid UUIDs are rejected and logged.
     
-    This prevents potential SQL injection if entity.id is passed to raw SQL queries.
+    This prevents malformed inputs from reaching backend functions that may
+    construct database queries. Proper UUID validation ensures only well-formed
+    identifiers are passed downstream.
     """
     with patch("lib.agent.retrieval.get_entity_relationships") as mock_get_rels:
         mock_get_rels.return_value = []
@@ -149,14 +151,14 @@ async def test_parallel_execution_reduces_latency(mock_entities):
         
         with patch("lib.agent.retrieval.causal_trace", side_effect=slow_causal_trace):
             with patch("lib.agent.retrieval.entity_network", side_effect=slow_entity_network):
-                start_time = datetime.utcnow()
+                start_time = datetime.now(timezone.utc)
                 
                 result = await _fetch_entity_relationships(
                     entities=mock_entities,
                     enable_multi_hop=True,
                 )
                 
-                end_time = datetime.utcnow()
+                end_time = datetime.now(timezone.utc)
                 elapsed_ms = (end_time - start_time).total_seconds() * 1000
                 
                 # Should take ~500ms (parallel) not ~3000ms (serial)
