@@ -588,6 +588,7 @@ def extract_relationships(
 
             # Infer correct layer from predicate (overrides Haiku's guess)
             inferred = infer_layer(predicate)
+            # Only log correction if Haiku provided a layer guess that differs from taxonomy
             if graph_layer and graph_layer != inferred.value:
                 logger.debug(
                     "Correcting graph_layer: Haiku said '%s', taxonomy says '%s' for predicate '%s'",
