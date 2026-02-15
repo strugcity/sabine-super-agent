@@ -9,6 +9,9 @@
 --   PUSH-004:   Push-back rate tracked per user (target: 5-15%)
 -- =============================================================================
 
+-- Enable pg_trgm extension for fuzzy text search on entity names
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
 CREATE TABLE IF NOT EXISTS push_back_log (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -57,6 +60,71 @@ CREATE INDEX IF NOT EXISTS idx_push_back_log_session
 
 -- RLS
 ALTER TABLE push_back_log ENABLE ROW LEVEL SECURITY;
+
+-- Allow service role full access (for backend operations)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE policyname = 'Service role has full access to push_back_log'
+        AND tablename = 'push_back_log'
+    ) THEN
+        CREATE POLICY "Service role has full access to push_back_log"
+            ON push_back_log
+            FOR ALL
+            USING (auth.role() = 'service_role');
+    END IF;
+END;
+$$;
+
+-- Allow authenticated users to insert their own push-back logs
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE policyname = 'Users can insert their own push_back_log entries'
+        AND tablename = 'push_back_log'
+    ) THEN
+        CREATE POLICY "Users can insert their own push_back_log entries"
+            ON push_back_log
+            FOR INSERT
+            WITH CHECK (auth.uid() = user_id);
+    END IF;
+END;
+$$;
+
+-- Allow authenticated users to read their own push-back logs
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE policyname = 'Users can view their own push_back_log entries'
+        AND tablename = 'push_back_log'
+    ) THEN
+        CREATE POLICY "Users can view their own push_back_log entries"
+            ON push_back_log
+            FOR SELECT
+            USING (auth.uid() = user_id);
+    END IF;
+END;
+$$;
+
+-- Allow authenticated users to update their own push-back responses
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE policyname = 'Users can update their own push_back_log responses'
+        AND tablename = 'push_back_log'
+    ) THEN
+        CREATE POLICY "Users can update their own push_back_log responses"
+            ON push_back_log
+            FOR UPDATE
+            USING (auth.uid() = user_id)
+            WITH CHECK (auth.uid() = user_id);
+    END IF;
+END;
+$$;
 
 COMMENT ON TABLE push_back_log IS 'Logs VoI calculations and push-back events for Active Inference (Phase 2D)';
 COMMENT ON COLUMN push_back_log.action_type IS 'Classified action reversibility: irreversible (C=1.0), reversible (C=0.5), informational (C=0.2)';

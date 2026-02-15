@@ -732,3 +732,307 @@ class TestFormatPushBack:
         )
         assert isinstance(msg, str)
         assert len(msg) > 0
+
+
+# =============================================================================
+# Security Tests (SQL Injection, DoS Protection)
+# =============================================================================
+
+
+class TestEntityResolutionSecurity:
+    """Test security fixes for entity name resolution."""
+
+    @pytest.mark.asyncio
+    async def test_wildcard_sanitization(self, pushback_module: Dict[str, Any]) -> None:
+        """Entity name with SQL wildcards should be sanitized to prevent DoS."""
+        from backend.inference.push_back import _resolve_entity_id
+        
+        # Mock the Supabase client to verify sanitized input
+        mock_client = MagicMock()
+        mock_table = MagicMock()
+        mock_select = MagicMock()
+        mock_ilike = MagicMock()
+        mock_limit = MagicMock()
+        mock_execute = MagicMock()
+        
+        mock_client.table.return_value = mock_table
+        mock_table.select.return_value = mock_select
+        mock_select.ilike.return_value = mock_ilike
+        mock_ilike.limit.return_value = mock_limit
+        mock_limit.execute.return_value = MagicMock(data=[])
+        
+        # Patch the get_supabase_client from backend.services.wal where it's imported
+        with patch("backend.services.wal.get_supabase_client", return_value=mock_client):
+            # Try to exploit with wildcard DoS attack
+            malicious_input = "%%%%"
+            result = await _resolve_entity_id(malicious_input)
+            
+            # Should return None (empty after sanitization)
+            assert result is None
+            
+            # Verify wildcards were removed
+            # The function should either not call the query (empty string) or call with sanitized input
+            if mock_select.ilike.called:
+                call_args = mock_select.ilike.call_args
+                sanitized = call_args[0][1]
+                # Verify no wildcards remain
+                assert "%" not in sanitized
+
+    @pytest.mark.asyncio
+    async def test_entity_resolution_normal_input(self, pushback_module: Dict[str, Any]) -> None:
+        """Normal entity names should work correctly."""
+        from backend.inference.push_back import _resolve_entity_id
+        
+        # Mock successful lookup
+        mock_client = MagicMock()
+        mock_table = MagicMock()
+        mock_select = MagicMock()
+        mock_ilike = MagicMock()
+        mock_limit = MagicMock()
+        mock_execute = MagicMock()
+        
+        mock_client.table.return_value = mock_table
+        mock_table.select.return_value = mock_select
+        mock_select.ilike.return_value = mock_ilike
+        mock_ilike.limit.return_value = mock_limit
+        mock_limit.execute.return_value = MagicMock(
+            data=[{"id": "test-uuid-123"}]
+        )
+        
+        with patch("backend.services.wal.get_supabase_client", return_value=mock_client):
+            result = await _resolve_entity_id("Alice")
+            assert result == "test-uuid-123"
+
+    @pytest.mark.asyncio
+    async def test_underscore_wildcard_sanitization(self, pushback_module: Dict[str, Any]) -> None:
+        """Underscore wildcards should be sanitized (replaced with space)."""
+        from backend.inference.push_back import _resolve_entity_id
+        
+        mock_client = MagicMock()
+        mock_table = MagicMock()
+        mock_select = MagicMock()
+        mock_ilike = MagicMock()
+        mock_limit = MagicMock()
+        mock_limit.execute.return_value = MagicMock(data=[])
+        
+        mock_client.table.return_value = mock_table
+        mock_table.select.return_value = mock_select
+        mock_select.ilike.return_value = mock_ilike
+        mock_ilike.limit.return_value = mock_limit
+        
+        with patch("backend.services.wal.get_supabase_client", return_value=mock_client):
+            # All underscores become empty after sanitization
+            result = await _resolve_entity_id("___")
+            assert result is None
+            
+            # Query should not be called because input is empty after sanitization
+            # (This prevents DoS from wildcard-only queries)
+            
+    @pytest.mark.asyncio
+    async def test_mixed_wildcard_sanitization(self, pushback_module: Dict[str, Any]) -> None:
+        """Entity names with mixed wildcards should be sanitized."""
+        from backend.inference.push_back import _resolve_entity_id
+        
+        mock_client = MagicMock()
+        mock_table = MagicMock()
+        mock_select = MagicMock()
+        mock_ilike = MagicMock()
+        mock_limit = MagicMock()
+        mock_limit.execute.return_value = MagicMock(data=[])
+        
+        mock_client.table.return_value = mock_table
+        mock_table.select.return_value = mock_select
+        mock_select.ilike.return_value = mock_ilike
+        mock_ilike.limit.return_value = mock_limit
+        
+        with patch("backend.services.wal.get_supabase_client", return_value=mock_client):
+            result = await _resolve_entity_id("Alice_%_Bob")
+            
+            # Should call query with underscores replaced
+            call_args = mock_select.ilike.call_args
+            sanitized = call_args[0][1]
+            # Wildcards should be removed/replaced
+            assert "%" not in sanitized
+            assert sanitized == "Alice  Bob"  # % removed, _ replaced with space
+
+
+class TestCausalTraceTimeout:
+    """Test timeout protection for causal trace calls."""
+
+    @pytest.mark.asyncio
+    async def test_causal_trace_timeout_handling(self, pushback_module: Dict[str, Any]) -> None:
+        """Causal trace should timeout after 200ms and return partial evidence."""
+        from backend.inference.push_back import gather_evidence
+        
+        # Mock entity resolution
+        with patch("backend.inference.push_back._resolve_entity_id", return_value="test-entity-id"):
+            # Mock get_entity_relationships to return some evidence
+            mock_relationships = [
+                {
+                    "id": "rel-1",
+                    "source_name": "Alice",
+                    "target_name": "Bob",
+                    "relationship_type": "works_with",
+                    "confidence": 0.9,
+                }
+            ]
+            
+            # Mock causal_trace to hang (simulate slow query)
+            async def slow_causal_trace(*args, **kwargs):
+                import asyncio
+                await asyncio.sleep(1.0)  # Simulate 1 second delay
+                return {"chain": []}
+            
+            with patch("backend.magma.query.get_entity_relationships", return_value=mock_relationships):
+                with patch("backend.magma.query.causal_trace", side_effect=slow_causal_trace):
+                    # Should timeout and return only the relationship evidence
+                    evidence = await gather_evidence("Alice", "test-user-id", max_items=5)
+                    
+                    # Should have relationship evidence but not causal evidence
+                    assert len(evidence) == 1
+                    assert evidence[0].entity_name in ["Bob", "Alice"]
+
+    @pytest.mark.asyncio
+    async def test_causal_trace_success(self, pushback_module: Dict[str, Any]) -> None:
+        """Causal trace that completes quickly should include causal evidence."""
+        from backend.inference.push_back import gather_evidence
+        
+        with patch("backend.inference.push_back._resolve_entity_id", return_value="test-entity-id"):
+            mock_relationships = [
+                {
+                    "id": "rel-1",
+                    "source_name": "Alice",
+                    "target_name": "Bob",
+                    "relationship_type": "works_with",
+                    "confidence": 0.9,
+                }
+            ]
+            
+            # Mock fast causal_trace
+            async def fast_causal_trace(*args, **kwargs):
+                import asyncio
+                await asyncio.sleep(0.05)  # 50ms - well under timeout
+                return {
+                    "chain": [
+                        {
+                            "from": "Alice",
+                            "to": "Project X",
+                            "type": "caused_by",
+                            "from_id": "alice-id",
+                            "to_id": "project-id",
+                            "confidence": 0.8,
+                        }
+                    ]
+                }
+            
+            with patch("backend.magma.query.get_entity_relationships", return_value=mock_relationships):
+                with patch("backend.magma.query.causal_trace", side_effect=fast_causal_trace):
+                    evidence = await gather_evidence("Alice", "test-user-id", max_items=5)
+                    
+                    # Should have both relationship and causal evidence
+                    assert len(evidence) == 2
+                    # Check causal evidence is present
+                    causal_items = [e for e in evidence if "Causal chain" in e.summary]
+                    assert len(causal_items) == 1
+
+
+class TestJsonSerialization:
+    """Test JSON serialization safety for JSONB fields."""
+
+    @pytest.mark.asyncio
+    async def test_datetime_serialization_in_alternatives(self, pushback_module: Dict[str, Any]) -> None:
+        """Alternatives with datetime objects should serialize correctly."""
+        from backend.inference.push_back import log_push_back_event, PushBackLogEntry
+        from datetime import datetime, timezone
+        
+        # Mock Supabase client
+        mock_client = MagicMock()
+        mock_table = MagicMock()
+        mock_insert = MagicMock()
+        mock_execute = MagicMock()
+        
+        mock_client.table.return_value = mock_table
+        mock_table.insert.return_value = mock_insert
+        mock_insert.execute.return_value = MagicMock(data=[{"id": "log-id"}])
+        
+        with patch("backend.services.wal.get_supabase_client", return_value=mock_client):
+            # Create an entry with a datetime in alternatives
+            entry = PushBackLogEntry(
+                user_id="test-user-id",
+                action_type="irreversible",
+                c_error=1.0,
+                p_error=0.5,
+                c_int=0.3,
+                voi_score=0.2,
+                push_back_triggered=True,
+                alternatives_offered=[
+                    {
+                        "label": "A",
+                        "description": "Test",
+                        "timestamp": datetime.now(timezone.utc),  # datetime object
+                    }
+                ],
+            )
+            
+            result = await log_push_back_event(entry)
+            assert result is True
+            
+            # Verify insert was called
+            mock_table.insert.assert_called_once()
+            
+            # Get the data that was inserted
+            call_args = mock_table.insert.call_args
+            inserted_data = call_args[0][0]
+            
+            # Verify alternatives were serialized properly
+            alternatives = inserted_data["alternatives_offered"]
+            assert len(alternatives) == 1
+            # The timestamp should be a string (ISO format), not a datetime object
+            assert isinstance(alternatives[0]["timestamp"], str)
+
+    @pytest.mark.asyncio
+    async def test_pydantic_model_serialization(self, pushback_module: Dict[str, Any]) -> None:
+        """Pydantic Alternative models should serialize correctly."""
+        from backend.inference.push_back import log_push_back_event, PushBackLogEntry
+        
+        Alternative = pushback_module["Alternative"]
+        
+        mock_client = MagicMock()
+        mock_table = MagicMock()
+        mock_insert = MagicMock()
+        mock_insert.execute.return_value = MagicMock(data=[{"id": "log-id"}])
+        mock_table.insert.return_value = mock_insert
+        mock_client.table.return_value = mock_table
+        
+        with patch("backend.services.wal.get_supabase_client", return_value=mock_client):
+            # Create an Alternative model and dump it to dict
+            alt = Alternative(
+                label="A",
+                description="Proceed",
+                is_original=True,
+                risk_level="high",
+            )
+            
+            entry = PushBackLogEntry(
+                user_id="test-user-id",
+                action_type="irreversible",
+                c_error=1.0,
+                p_error=0.5,
+                c_int=0.3,
+                voi_score=0.2,
+                push_back_triggered=True,
+                alternatives_offered=[alt.model_dump()],  # Pass as dict
+            )
+            
+            result = await log_push_back_event(entry)
+            assert result is True
+            
+            # Verify the alternative was serialized
+            call_args = mock_table.insert.call_args
+            inserted_data = call_args[0][0]
+            alternatives = inserted_data["alternatives_offered"]
+            
+            assert len(alternatives) == 1
+            assert alternatives[0]["label"] == "A"
+            assert alternatives[0]["description"] == "Proceed"
+            assert alternatives[0]["is_original"] is True
