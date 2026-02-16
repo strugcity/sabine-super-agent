@@ -19,6 +19,10 @@ Environment variables:
     ARCHIVE_CRON_MINUTE   -- Minute for nightly archive job (default: 30)
     GAP_DETECTION_CRON_HOUR  -- Hour (UTC) for weekly gap detection (default: 3)
     GAP_DETECTION_CRON_MINUTE -- Minute for weekly gap detection (default: 0)
+    SKILL_GENERATION_CRON_HOUR  -- Hour (UTC) for weekly skill generation (default: 3)
+    SKILL_GENERATION_CRON_MINUTE -- Minute for weekly skill generation (default: 15)
+    SKILL_SCORING_CRON_HOUR  -- Hour (UTC) for weekly skill scoring (default: 4)
+    SKILL_SCORING_CRON_MINUTE -- Minute for weekly skill scoring (default: 0)
 
 ADR Reference: ADR-002
 """
@@ -81,6 +85,8 @@ def _register_scheduled_jobs(queue: "Queue", redis_conn: "Redis") -> None:
         2. **Archive low-salience memories** (default 04:30 UTC) — MEM-002
         3. **Gap detection** (default 03:00 UTC Sunday) — SKILL-001, SKILL-002
         4. **Skill digest** (default 03:30 UTC Sunday) — weekly summary via Slack
+        5. **Skill generation batch** (default 03:15 UTC Sunday) — auto gap→proposal
+        6. **Skill effectiveness scoring** (default 04:00 UTC Sunday)
     """
     from datetime import timedelta
 
@@ -155,6 +161,20 @@ def _register_scheduled_jobs(queue: "Queue", redis_conn: "Redis") -> None:
             gap_hour, gap_minute, gap_time.isoformat(),
         )
 
+        # Schedule weekly skill generation batch (Sunday 03:15 UTC, after gap detection)
+        generation_time = gap_time.replace(minute=15)
+        queue.enqueue_at(
+            generation_time,
+            "backend.worker.jobs.run_skill_generation_batch",
+            meta={"repeat": 604800, "description": "weekly-skill-generation"},
+            job_timeout="30m",
+            description="weekly-skill-generation",
+        )
+        logger.info(
+            "Scheduled weekly skill generation at %02d:15 UTC Sunday (next: %s)",
+            gap_hour, generation_time.isoformat(),
+        )
+
         # Schedule weekly skill digest (Sunday 03:30 UTC, after gap detection)
         digest_time = gap_time.replace(minute=30)
         queue.enqueue_at(
@@ -167,6 +187,20 @@ def _register_scheduled_jobs(queue: "Queue", redis_conn: "Redis") -> None:
         logger.info(
             "Scheduled weekly skill digest at %02d:30 UTC Sunday (next: %s)",
             gap_hour, digest_time.isoformat(),
+        )
+
+        # Schedule weekly skill effectiveness scoring (Sunday 04:00 UTC, after digest)
+        scoring_time = gap_time.replace(hour=4, minute=0)
+        queue.enqueue_at(
+            scoring_time,
+            "backend.worker.jobs.run_skill_effectiveness_scoring",
+            meta={"repeat": 604800, "description": "weekly-skill-scoring"},
+            job_timeout="15m",
+            description="weekly-skill-scoring",
+        )
+        logger.info(
+            "Scheduled weekly skill effectiveness scoring at 04:00 UTC Sunday (next: %s)",
+            scoring_time.isoformat(),
         )
 
     except Exception as exc:

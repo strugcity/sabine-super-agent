@@ -423,6 +423,93 @@ class TestTestInSandbox:
 
 
 # =============================================================================
+# Batch Pipeline Tests
+# =============================================================================
+
+class TestSkillGenerationBatch:
+    """Tests for the batch gap-to-proposal pipeline."""
+
+    @pytest.mark.asyncio
+    async def test_batch_processes_open_gaps(self):
+        """Should call generate_and_test_skill for each open gap."""
+        with patch("backend.worker.jobs.asyncio") as mock_asyncio:
+            # Mock get_open_gaps to return 2 gaps
+            gaps = [
+                {"id": "gap-1", "tool_name": "search_emails", "status": "open"},
+                {"id": "gap-2", "tool_name": "calendar_create", "status": "open"},
+            ]
+            mock_asyncio.run.side_effect = [
+                gaps,  # First call: get_open_gaps
+                {"status": "proposed", "proposal_id": "prop-1"},  # Second: generate for gap-1
+                {"status": "proposed", "proposal_id": "prop-2"},  # Third: generate for gap-2
+            ]
+
+            import os
+            with patch.dict(os.environ, {"DEFAULT_USER_ID": "user-123"}):
+                from backend.worker.jobs import run_skill_generation_batch
+                result = run_skill_generation_batch()
+
+            assert result["status"] == "completed"
+            assert result["gaps_processed"] == 2
+            assert result["proposals_created"] == 2
+            assert result["failures"] == 0
+
+    @pytest.mark.asyncio
+    async def test_batch_limits_to_three(self):
+        """Should process at most 3 gaps even if more are open."""
+        with patch("backend.worker.jobs.asyncio") as mock_asyncio:
+            gaps = [{"id": f"gap-{i}", "status": "open"} for i in range(5)]
+            mock_asyncio.run.side_effect = [
+                gaps,  # get_open_gaps returns 5
+                {"status": "proposed"},  # gap-0
+                {"status": "proposed"},  # gap-1
+                {"status": "proposed"},  # gap-2
+                # gap-3 and gap-4 should NOT be processed
+            ]
+
+            import os
+            with patch.dict(os.environ, {"DEFAULT_USER_ID": "user-123"}):
+                from backend.worker.jobs import run_skill_generation_batch
+                result = run_skill_generation_batch()
+
+            assert result["gaps_found"] == 5
+            assert result["gaps_processed"] == 3
+            assert result["proposals_created"] == 3
+
+    @pytest.mark.asyncio
+    async def test_batch_skips_without_user_id(self):
+        """Should return skipped if DEFAULT_USER_ID not set."""
+        import os
+        with patch.dict(os.environ, {}, clear=True):
+            # Ensure DEFAULT_USER_ID is not set
+            os.environ.pop("DEFAULT_USER_ID", None)
+            from backend.worker.jobs import run_skill_generation_batch
+            result = run_skill_generation_batch()
+
+        assert result["status"] == "skipped"
+        assert "no DEFAULT_USER_ID" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_batch_handles_generation_failure(self):
+        """Should count failures when generate_and_test_skill fails."""
+        with patch("backend.worker.jobs.asyncio") as mock_asyncio:
+            gaps = [{"id": "gap-1", "status": "open"}]
+            mock_asyncio.run.side_effect = [
+                gaps,  # get_open_gaps
+                {"status": "failed", "error": "Haiku API error"},  # generation failed
+            ]
+
+            import os
+            with patch.dict(os.environ, {"DEFAULT_USER_ID": "user-123"}):
+                from backend.worker.jobs import run_skill_generation_batch
+                result = run_skill_generation_batch()
+
+            assert result["status"] == "completed"
+            assert result["failures"] == 1
+            assert result["proposals_created"] == 0
+
+
+# =============================================================================
 # Run Tests
 # =============================================================================
 

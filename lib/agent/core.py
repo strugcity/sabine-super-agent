@@ -253,6 +253,84 @@ def classify_agent_error(e: Exception) -> Dict[str, Any]:
     }
 
 
+async def record_skill_telemetry(
+    agent_messages: List[BaseMessage],
+    user_id: str,
+    session_id: str,
+    user_message: str,
+    previous_user_message: Optional[str] = None,
+) -> None:
+    """
+    Record telemetry for any promoted skills used in the agent response.
+
+    This is a fire-and-forget utility -- it should NEVER block the response
+    path or raise exceptions to the caller.
+
+    Checks if any promoted (DB) skill was used in the agent's intermediate
+    messages, classifies implicit user signals, and records the execution.
+
+    Parameters
+    ----------
+    agent_messages : List[BaseMessage]
+        The full list of messages from the agent invocation.
+    user_id : str
+        The user's ID.
+    session_id : str
+        The current session ID.
+    user_message : str
+        The user's input message (for signal classification).
+    previous_user_message : str, optional
+        The user's previous message (for repetition detection).
+    """
+    try:
+        # Lazy imports to avoid circular dependencies
+        from backend.services.signal_classifier import classify_signals
+
+        # Check if any promoted (DB) skill was used in this turn
+        # DB skills are prefixed with "skill_" in the registry
+        skill_tool_names: List[str] = []
+        for msg in agent_messages:
+            msg_type = type(msg).__name__
+            if msg_type == "ToolMessage":
+                tool_name = getattr(msg, 'name', '')
+                if tool_name.startswith("skill_"):
+                    skill_tool_names.append(tool_name)
+
+        if not skill_tool_names:
+            return  # No promoted skills used, nothing to record
+
+        # Classify signals from the user's message
+        signals = classify_signals(
+            current_message=user_message,
+            previous_user_message=previous_user_message,
+        )
+
+        logger.info(
+            "Skill telemetry: skills_used=%s, signals=%s",
+            skill_tool_names, signals,
+        )
+
+        # NOTE: The actual recording to skill_executions table requires
+        # looking up the skill_version_id from the registry, which is
+        # done by the skill_effectiveness service. For now, we log the
+        # classification. Full recording will be wired once
+        # skill_effectiveness.record_skill_execution() is available.
+        #
+        # Future: for each skill_tool_name, look up version_id and call:
+        #   await record_skill_execution(
+        #       skill_version_id=version_id,
+        #       user_id=user_id,
+        #       session_id=session_id,
+        #       execution_status="success",
+        #       user_sent_thank_you=signals["gratitude"],
+        #       user_repeated_request=signals["repetition"],
+        #   )
+
+    except Exception:
+        # NEVER let telemetry break the response path
+        logger.debug("Skill telemetry recording failed (non-fatal)", exc_info=True)
+
+
 # =============================================================================
 # Timezone Configuration
 # =============================================================================
