@@ -17,7 +17,9 @@ Job catalog:
     - ``run_archive_job``         — Archive low-salience memories (MEM-002)
     - ``run_backfill_job``        — Backfill entity relationships from existing memories
     - ``run_gap_detection``       — Weekly skill gap detection (SKILL-001, SKILL-002)
+    - ``run_skill_generation_batch`` — Auto-generate proposals from open gaps (SKILL-003)
     - ``run_weekly_digest``       — Weekly skill acquisition digest (Slack)
+    - ``run_skill_effectiveness_scoring`` — Weekly skill effectiveness scoring and auto-disable
 
 ADR Reference: ADR-002
 """
@@ -451,6 +453,76 @@ def run_gap_detection() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Automated skill generation batch job
+# ---------------------------------------------------------------------------
+
+@memory_profiled_job()
+def run_skill_generation_batch() -> Dict[str, Any]:
+    """
+    Generate skill proposals for all open gaps.
+
+    Runs after gap detection. For each gap with status='open',
+    calls generate_and_test_skill() to create a proposal.
+    Limits to 3 gaps per run to avoid Haiku API cost spikes.
+
+    Returns
+    -------
+    dict
+        Summary with keys: gaps_processed, proposals_created, failures, elapsed_ms.
+    """
+    logger.info("run_skill_generation_batch START")
+    start = time.monotonic()
+
+    try:
+        from backend.services.gap_detection import get_open_gaps
+        from backend.services.skill_generator import generate_and_test_skill
+        import os
+
+        user_id = os.getenv("DEFAULT_USER_ID", "")
+        if not user_id:
+            return {"status": "skipped", "reason": "no DEFAULT_USER_ID"}
+
+        # Fetch open gaps (limit to 3 per batch to control costs)
+        gaps = asyncio.run(get_open_gaps(user_id))
+        gaps_to_process = gaps[:3]
+
+        proposals_created = 0
+        failures = 0
+
+        for gap in gaps_to_process:
+            try:
+                result = asyncio.run(generate_and_test_skill(gap["id"]))
+                if result.get("status") == "proposed":
+                    proposals_created += 1
+                else:
+                    failures += 1
+            except Exception as e:
+                logger.error("Failed to generate skill for gap %s: %s", gap["id"], e)
+                failures += 1
+
+        elapsed_ms = (time.monotonic() - start) * 1000.0
+        result = {
+            "status": "completed",
+            "gaps_found": len(gaps),
+            "gaps_processed": len(gaps_to_process),
+            "proposals_created": proposals_created,
+            "failures": failures,
+            "elapsed_ms": round(elapsed_ms, 1),
+        }
+        logger.info(
+            "run_skill_generation_batch DONE  found=%d processed=%d proposals=%d failures=%d elapsed=%.0fms",
+            len(gaps), len(gaps_to_process), proposals_created, failures, elapsed_ms,
+        )
+        return result
+
+    except Exception as exc:
+        elapsed_ms = (time.monotonic() - start) * 1000.0
+        logger.error("run_skill_generation_batch FAILED  elapsed=%.0fms error=%s",
+                      elapsed_ms, exc, exc_info=True)
+        return {"status": "failed", "error": str(exc), "elapsed_ms": round(elapsed_ms, 1)}
+
+
+# ---------------------------------------------------------------------------
 # Weekly skill digest job
 # ---------------------------------------------------------------------------
 
@@ -498,6 +570,54 @@ def run_weekly_digest() -> Dict[str, Any]:
             "error": str(exc),
             "elapsed_ms": round(elapsed_ms, 1),
         }
+
+
+# ---------------------------------------------------------------------------
+# Weekly skill effectiveness scoring job (TRAIN-001, TRAIN-002, TRAIN-003)
+# ---------------------------------------------------------------------------
+
+@memory_profiled_job()
+def run_skill_effectiveness_scoring() -> Dict[str, Any]:
+    """
+    Score all promoted skills and auto-disable underperformers.
+
+    Runs weekly after gap detection and digest.  Computes a "dopamine
+    score" for each active skill based on success rate, edit rate,
+    repeat rate, and gratitude signals.
+
+    Returns
+    -------
+    dict
+        Summary with keys: status, skills_scored, skills_disabled, etc.
+    """
+    logger.info("run_skill_effectiveness_scoring START")
+    start = time.monotonic()
+    try:
+        from backend.services.skill_effectiveness import score_all_skills, auto_disable_underperformers
+        import os
+        user_id = os.getenv("DEFAULT_USER_ID", "")
+        if not user_id:
+            return {"status": "skipped", "reason": "no DEFAULT_USER_ID"}
+
+        scores = asyncio.run(score_all_skills(user_id))
+        disabled = asyncio.run(auto_disable_underperformers(user_id))
+        elapsed_ms = (time.monotonic() - start) * 1000.0
+
+        result = {
+            "status": "completed",
+            "skills_scored": len(scores),
+            "skills_disabled": len(disabled),
+            "disabled_names": [d["skill_name"] for d in disabled],
+            "elapsed_ms": round(elapsed_ms, 1),
+        }
+        logger.info("run_skill_effectiveness_scoring DONE  scored=%d disabled=%d elapsed=%.0fms",
+                     len(scores), len(disabled), elapsed_ms)
+        return result
+    except Exception as exc:
+        elapsed_ms = (time.monotonic() - start) * 1000.0
+        logger.error("run_skill_effectiveness_scoring FAILED  elapsed=%.0fms error=%s",
+                      elapsed_ms, exc, exc_info=True)
+        return {"status": "failed", "error": str(exc), "elapsed_ms": round(elapsed_ms, 1)}
 
 
 # ---------------------------------------------------------------------------

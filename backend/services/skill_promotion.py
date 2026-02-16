@@ -130,6 +130,14 @@ async def promote_skill(proposal_id: str) -> Dict[str, Any]:
         user_id=proposal["user_id"],
     )
 
+    # Refresh the tool registry so the new skill is immediately available
+    try:
+        from lib.agent.registry import refresh_skill_registry
+        await refresh_skill_registry(proposal["user_id"])
+        logger.info("Registry refreshed after promoting %s", proposal["skill_name"])
+    except Exception as e:
+        logger.warning("Failed to refresh registry after promotion: %s", e)
+
     logger.info(
         "Promoted skill: %s v%s (proposal=%s, version_id=%s)",
         proposal["skill_name"], new_version, proposal_id, skill_version_id,
@@ -190,6 +198,14 @@ async def disable_skill(skill_version_id: str) -> Dict[str, Any]:
         status="success",
         user_id=version["user_id"],
     )
+
+    # Refresh the tool registry to remove the disabled skill
+    try:
+        from lib.agent.registry import refresh_skill_registry
+        await refresh_skill_registry(version["user_id"])
+        logger.info("Registry refreshed after disabling %s", version["skill_name"])
+    except Exception as e:
+        logger.warning("Failed to refresh registry after disable: %s", e)
 
     logger.info("Disabled skill: %s v%s", version["skill_name"], version["version"])
 
@@ -282,6 +298,14 @@ async def rollback_skill(skill_name: str, user_id: str) -> Dict[str, Any]:
         status="success",
         user_id=user_id,
     )
+
+    # Refresh the tool registry to swap skill versions
+    try:
+        from lib.agent.registry import refresh_skill_registry
+        await refresh_skill_registry(user_id)
+        logger.info("Registry refreshed after rollback of %s", skill_name)
+    except Exception as e:
+        logger.warning("Failed to refresh registry after rollback: %s", e)
 
     return {
         "status": "rolled_back",

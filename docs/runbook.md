@@ -561,6 +561,8 @@ open https://status.anthropic.com
 | Job | Schedule | Function | Description | Priority |
 |-----|----------|----------|-------------|----------|
 | Gap Detection | Sunday 03:00 UTC | `run_gap_detection()` (via Dream Team task queue) | Analyzes 7-day failure window in tool audit log, creates/updates skill_gaps | Medium |
+| Skill Generation | Sunday 03:15 UTC | `run_skill_generation_batch()` (via rq) | Generates proposals for up to 3 open gaps per run | Medium |
+| Skill Scoring | Sunday 04:00 UTC | `run_skill_effectiveness_scoring()` (via rq) | Scores promoted skills and auto-disables underperformers | Low |
 | Skill Digest | Sunday 03:30 UTC | `run_weekly_digest()` (via Dream Team task queue) | Sends weekly summary of gaps, proposals, promotions to Slack | Low |
 | Metrics Recording | Every 5 minutes | `POST /metrics/record` | Snapshots queue depth, role performance, task metrics for Prometheus | High |
 | Morning Briefing | Daily 08:00 local (CST) | `trigger_briefing()` | Generates dual-context briefing, sends via SMS | High |
