@@ -51,6 +51,9 @@ SABINE_TOOLS: Set[str] = {
     "create_reminder",
     "cancel_reminder",
     "list_reminders",
+    "search_gmail_messages",
+    "get_gmail_message_content",
+    "send_gmail_message",
 }
 
 # Coding and project management tools for Dream Team
