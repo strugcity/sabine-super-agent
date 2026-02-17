@@ -1306,6 +1306,9 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                         import base64 as _base64
                         _msg_data = _attach_resp.json()
                         _parts = _msg_data.get("payload", {}).get("parts", [])
+                        _TEXT_MIMES = {"text/plain", "text/csv", "text/html"}
+                        _MAX_ATT_BYTES = 5_000_000  # 5 MB
+                        _MAX_CONTENT_CHARS = 5000
                         _attachments = []
                         for _part in _parts:
                             _filename = _part.get("filename", "")
@@ -1315,17 +1318,24 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                             _size = _body.get("size", 0)
                             if _filename and _att_id and _size > 0:
                                 _att_info = {"filename": _filename, "mime_type": _mime, "size": _size}
-                                # Only fetch text-extractable attachments under 500KB
-                                if _size < 500_000 and _mime in ("text/plain", "text/csv", "text/html"):
+                                _extractable = _mime in _TEXT_MIMES or _mime == "application/pdf"
+                                if _extractable and _size < _MAX_ATT_BYTES:
                                     try:
                                         _att_resp = await _httpx.AsyncClient().get(
                                             f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/attachments/{_att_id}",
                                             headers={"Authorization": f"Bearer {agent_access_token}"},
-                                            timeout=10.0
+                                            timeout=30.0
                                         )
                                         if _att_resp.status_code == 200:
                                             _raw = _base64.urlsafe_b64decode(_att_resp.json().get("data", ""))
-                                            _att_info["content"] = _raw.decode("utf-8", errors="replace")[:3000]
+                                            if _mime == "application/pdf":
+                                                import io as _io
+                                                import pypdf as _pypdf
+                                                _reader = _pypdf.PdfReader(_io.BytesIO(_raw))
+                                                _pages = [_p.extract_text() or "" for _p in _reader.pages]
+                                                _att_info["content"] = "\n".join(_pages)[:_MAX_CONTENT_CHARS]
+                                            else:
+                                                _att_info["content"] = _raw.decode("utf-8", errors="replace")[:_MAX_CONTENT_CHARS]
                                     except Exception as _e:
                                         logger.warning(f"Could not fetch attachment {_filename}: {_e}")
                                 _attachments.append(_att_info)
