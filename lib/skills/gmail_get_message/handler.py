@@ -343,7 +343,9 @@ async def get_gmail_message_content(
 async def execute(params: dict) -> dict:
     """Entry point called by the agent skill runner."""
     message_id = params.get("message_id", "")
-    include_attachments = params.get("include_attachments", True)
+    # Treat None (schema builder may inject None for unset optional bools) as True
+    raw = params.get("include_attachments")
+    include_attachments: bool = True if raw is None else bool(raw)
     return await get_gmail_message_content(
         message_id=message_id,
         include_attachments=include_attachments,

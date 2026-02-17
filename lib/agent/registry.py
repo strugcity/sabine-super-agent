@@ -254,10 +254,14 @@ def create_args_schema_from_manifest(skill: LoadedSkill) -> Optional[type]:
             item_type = type_mapping.get(field_schema["items"].get("type", "string"), str)
             field_type = ListType[item_type]
 
-        # Make optional if not in required list
+        # Make optional if not in required list, using the manifest's default if provided
         if field_name not in required:
+            manifest_default = field_schema.get("default", None)
             field_type = OptionalType[field_type]
-            field_definitions[field_name] = (field_type, Field(default=None, description=description))
+            field_definitions[field_name] = (
+                field_type,
+                Field(default=manifest_default, description=description),
+            )
         else:
             field_definitions[field_name] = (field_type, Field(..., description=description))
 
