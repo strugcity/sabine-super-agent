@@ -1,0 +1,19 @@
+{
+  "name": "search_gmail_messages",
+  "description": "Search Gmail messages using Gmail query syntax. Returns message IDs, subjects, senders, dates, and snippets. Use for finding emails by sender, subject, date, keyword, or label. Examples: 'from:user@example.com', 'subject:shared with you', 'is:unread', 'after:2024/01/01'.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Gmail search query using standard Gmail query syntax"
+      },
+      "max_results": {
+        "type": "integer",
+        "description": "Maximum number of messages to return",
+        "default": 10
+      }
+    },
+    "required": ["query"]
+  }
+}
