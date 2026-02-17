@@ -31,6 +31,7 @@ import logging
 import os
 import signal
 import sys
+import time
 import types
 import uuid
 from datetime import datetime, timezone
@@ -241,35 +242,55 @@ def run_worker() -> None:
     logger.info("  Log level : %s", LOG_LEVEL)
     logger.info("=" * 60)
 
-    # 2. Connect to Redis ---------------------------------------------------
+    # 2. Start health server BEFORE Redis retry so probes get 200/"starting"
+    # rather than a connection-refused or 503 during the cold-start window.
+    # set_worker_ready() is called below once Redis and the rq Worker are ready.
     try:
-        from backend.services.redis_client import get_redis_client
-
-        redis_conn = get_redis_client()
-        pong: bool = redis_conn.ping()
-        if not pong:
-            logger.error("Redis PING returned False -- aborting")
-            sys.exit(1)
-        logger.info("Redis connection verified (PING OK)")
-    except ImportError:
-        logger.error(
-            "redis package is not installed. "
-            "Install with: pip install redis"
-        )
-        sys.exit(1)
-    except Exception as exc:
-        logger.error("Failed to connect to Redis: %s", exc, exc_info=True)
-        sys.exit(1)
-
-    # 3. Start health server ------------------------------------------------
-    try:
-        from backend.worker.health import start_health_server
+        from backend.worker.health import start_health_server, set_worker_ready
 
         start_health_server()
     except Exception as exc:
         logger.warning(
             "Health server failed to start (non-fatal): %s", exc,
         )
+        set_worker_ready = lambda ready=True: None  # noqa: E731 — harmless no-op
+
+    # 3. Connect to Redis (with retry for cold-start race) ------------------
+    try:
+        from backend.services.redis_client import get_redis_client, reset_redis_client
+    except ImportError:
+        logger.error(
+            "redis package is not installed. "
+            "Install with: pip install redis"
+        )
+        sys.exit(1)
+
+    _REDIS_RETRY_DELAYS = [2, 4, 8, 15, 30]  # seconds between attempts
+    redis_conn = None
+    for _attempt, _delay in enumerate(_REDIS_RETRY_DELAYS + [None], start=1):
+        try:
+            redis_conn = get_redis_client()
+            pong: bool = redis_conn.ping()
+            if pong:
+                logger.info("Redis connection verified (PING OK, attempt %d)", _attempt)
+                break
+            logger.warning("Redis PING returned False on attempt %d", _attempt)
+        except Exception as exc:
+            logger.warning(
+                "Redis connection attempt %d/%d failed: %s",
+                _attempt, len(_REDIS_RETRY_DELAYS) + 1, exc,
+            )
+            reset_redis_client()  # force fresh socket on next attempt
+            redis_conn = None
+
+        if _delay is None:
+            logger.error("Exhausted all Redis connection attempts -- aborting")
+            sys.exit(1)
+
+        logger.info("Retrying Redis in %ds...", _delay)
+        time.sleep(_delay)
+
+    assert redis_conn is not None  # guaranteed by loop above
 
     # 4. Import queue constant and create rq primitives ---------------------
     try:
@@ -313,6 +334,9 @@ def run_worker() -> None:
         "Worker %s started -- waiting for jobs on [%s]",
         worker.name, QUEUE_NAME,
     )
+
+    # Signal to the health probe that startup is complete.
+    set_worker_ready(True)
 
     try:
         worker.work(with_scheduler=True, logging_level=LOG_LEVEL)

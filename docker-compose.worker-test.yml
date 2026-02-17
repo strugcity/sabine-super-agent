@@ -1,0 +1,116 @@
+# ============================================================================
+# Worker Deployment Test Harness
+# ============================================================================
+#
+# Three test profiles that map to the six test cases in test_worker_deploy.sh:
+#
+#   happy   — Redis is ready before the worker starts            (Tests 1-2, 6)
+#   delayed — Redis starts 15 s after the worker                 (Tests 3-4)
+#   absent  — No Redis service at all                            (Test 5)
+#
+# Usage (from repo root):
+#   docker compose -f docker-compose.worker-test.yml --profile happy   up --build
+#   docker compose -f docker-compose.worker-test.yml --profile delayed up --build
+#   docker compose -f docker-compose.worker-test.yml --profile absent  up --build
+#
+# Or run all scenarios via the automated script:
+#   ./scripts/test_worker_deploy.sh
+#
+# NOTE: The worker image is always built from the repo root so that the full
+#       backend/ and lib/ package tree is available (matches Railway's build).
+# ============================================================================
+
+x-worker-base: &worker-base
+  build:
+    context: .
+    dockerfile: backend/worker/Dockerfile
+  image: sabine-worker-test
+  environment:
+    # Minimal env — real secrets not needed for startup / health tests.
+    # The worker will connect to Redis and report healthy, but jobs that
+    # reach Supabase will fail (which is fine — we're testing startup, not jobs).
+    REDIS_URL: redis://redis:6379/0
+    LOG_LEVEL: DEBUG
+    WORKER_HEALTH_PORT: "8082"
+    # Stub values so Python imports that read env vars at module level don't crash
+    SUPABASE_URL: "https://placeholder.supabase.co"
+    SUPABASE_SERVICE_KEY: "placeholder"
+    OPENAI_API_KEY: "placeholder"
+    ANTHROPIC_API_KEY: "placeholder"
+  ports:
+    - "8082:8082"
+
+# ---------------------------------------------------------------------------
+# Profile: happy — Redis ready before worker
+# ---------------------------------------------------------------------------
+services:
+  redis-happy:
+    image: redis:7-alpine
+    profiles: [happy]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  worker-happy:
+    <<: *worker-base
+    profiles: [happy]
+    depends_on:
+      redis-happy:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis-happy:6379/0
+      LOG_LEVEL: DEBUG
+      WORKER_HEALTH_PORT: "8082"
+      SUPABASE_URL: "https://placeholder.supabase.co"
+      SUPABASE_SERVICE_KEY: "placeholder"
+      OPENAI_API_KEY: "placeholder"
+      ANTHROPIC_API_KEY: "placeholder"
+
+# ---------------------------------------------------------------------------
+# Profile: delayed — Redis starts 15 s after worker (cold-start race)
+# ---------------------------------------------------------------------------
+  redis-delayed:
+    image: redis:7-alpine
+    profiles: [delayed]
+    # Simulate Railway's Redis service coming up ~15 s after the worker container
+    command: >
+      sh -c "sleep 15 && redis-server"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+
+  worker-delayed:
+    <<: *worker-base
+    profiles: [delayed]
+    # Worker starts immediately — it must retry until Redis is ready
+    depends_on:
+      - redis-delayed
+    environment:
+      REDIS_URL: redis://redis-delayed:6379/0
+      LOG_LEVEL: DEBUG
+      WORKER_HEALTH_PORT: "8082"
+      SUPABASE_URL: "https://placeholder.supabase.co"
+      SUPABASE_SERVICE_KEY: "placeholder"
+      OPENAI_API_KEY: "placeholder"
+      ANTHROPIC_API_KEY: "placeholder"
+
+# ---------------------------------------------------------------------------
+# Profile: absent — No Redis at all (retry exhaustion + clean exit)
+# ---------------------------------------------------------------------------
+  worker-absent:
+    <<: *worker-base
+    profiles: [absent]
+    environment:
+      # Point at a host that will refuse connections immediately
+      REDIS_URL: redis://127.0.0.1:6379/0
+      LOG_LEVEL: DEBUG
+      WORKER_HEALTH_PORT: "8082"
+      SUPABASE_URL: "https://placeholder.supabase.co"
+      SUPABASE_SERVICE_KEY: "placeholder"
+      OPENAI_API_KEY: "placeholder"
+      ANTHROPIC_API_KEY: "placeholder"

@@ -15,7 +15,7 @@
 
 FROM python:3.11-slim
 
-# Prevent Python from writing .pyc files and enable unbuffered output
+# Prevent Python from writing .pyc files and enable unbuffered output.
 # PYTHONPATH=/app ensures that lazy imports (e.g., `from lib.db.models import ...`)
 # resolve correctly regardless of how Python is invoked.
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -36,10 +36,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Health check -- uses Railway's PORT if set, otherwise 8082
-# start-period=60s: allow time for Redis connection + rq scheduler registration
-# retries=5: tolerate transient Redis unavailability during cold starts
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
+# Health check -- uses Railway's PORT if set, otherwise 8082.
+# start-period=90s covers the Redis retry window (max ~59s cumulative backoff)
+# plus container image-pull and Python import time on a cold Railway deploy.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \
     CMD curl -f http://localhost:${PORT:-8082}/health || exit 1
 
 # Expose the health-check port (Railway overrides with PORT env var)
