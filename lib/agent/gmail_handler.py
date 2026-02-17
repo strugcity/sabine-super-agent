@@ -1293,50 +1293,64 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
                 email_body = body_preview or ""
                 logger.info(f"Email body ({len(email_body)} chars): {email_body[:200]}...")
 
-                # Fetch attachment metadata and content for this message
+                # Fetch attachment metadata and content for this message.
+                # Uses a single shared AsyncClient (avoids unclosed-connection leaks)
+                # and _walk_parts from the gmail_get_message skill so nested multipart
+                # structures (e.g. multipart/mixed > multipart/alternative > attachment)
+                # are found correctly.
                 attachment_context = ""
                 try:
+                    import base64 as _base64
                     import httpx as _httpx
-                    _attach_resp = await _httpx.AsyncClient().get(
-                        f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}?format=full",
-                        headers={"Authorization": f"Bearer {agent_access_token}"},
-                        timeout=10.0
+                    import io as _io
+                    from lib.skills.gmail_get_message.handler import (
+                        _walk_parts as _gmail_walk_parts,
+                        _extract_text_from_bytes as _gmail_extract_text,
                     )
-                    if _attach_resp.status_code == 200:
-                        import base64 as _base64
-                        _msg_data = _attach_resp.json()
-                        _parts = _msg_data.get("payload", {}).get("parts", [])
-                        _attachments = []
-                        for _part in _parts:
-                            _filename = _part.get("filename", "")
-                            _body = _part.get("body", {})
-                            _att_id = _body.get("attachmentId")
-                            _mime = _part.get("mimeType", "")
-                            _size = _body.get("size", 0)
-                            if _filename and _att_id and _size > 0:
+                    _MAX_ATT_BYTES = 5_000_000  # 5 MB
+                    _MAX_CONTENT_CHARS = 5000
+                    _EXTRACTABLE_MIMES = {"text/plain", "text/csv", "text/html", "application/pdf"}
+
+                    async with _httpx.AsyncClient() as _client:
+                        _attach_resp = await _client.get(
+                            f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}?format=full",
+                            headers={"Authorization": f"Bearer {agent_access_token}"},
+                            timeout=10.0,
+                        )
+                        if _attach_resp.status_code == 200:
+                            _payload = _attach_resp.json().get("payload", {})
+                            # _walk_parts recurses into nested multipart structures
+                            _, _att_meta = _gmail_walk_parts(_payload)
+                            _attachments = []
+                            for _meta in _att_meta:
+                                _att_id = _meta.get("attachmentId", "")
+                                _filename = _meta.get("filename", "")
+                                _mime = _meta.get("mime_type", "")
+                                _size = _meta.get("size", 0)
                                 _att_info = {"filename": _filename, "mime_type": _mime, "size": _size}
-                                # Only fetch text-extractable attachments under 500KB
-                                if _size < 500_000 and _mime in ("text/plain", "text/csv", "text/html"):
+                                if _att_id and _mime in _EXTRACTABLE_MIMES and _size < _MAX_ATT_BYTES:
                                     try:
-                                        _att_resp = await _httpx.AsyncClient().get(
+                                        _att_resp = await _client.get(
                                             f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/attachments/{_att_id}",
                                             headers={"Authorization": f"Bearer {agent_access_token}"},
-                                            timeout=10.0
+                                            timeout=30.0,
                                         )
                                         if _att_resp.status_code == 200:
                                             _raw = _base64.urlsafe_b64decode(_att_resp.json().get("data", ""))
-                                            _att_info["content"] = _raw.decode("utf-8", errors="replace")[:3000]
+                                            _extracted = _gmail_extract_text(_raw, _mime, _filename)
+                                            if "content" in _extracted:
+                                                _att_info["content"] = _extracted["content"][:_MAX_CONTENT_CHARS]
                                     except Exception as _e:
-                                        logger.warning(f"Could not fetch attachment {_filename}: {_e}")
+                                        logger.warning(f"Could not fetch attachment '{_filename}': {_e}")
                                 _attachments.append(_att_info)
-                        if _attachments:
-                            attachment_context = "\n\n**EMAIL ATTACHMENTS:**\n"
-                            for _att in _attachments:
-                                attachment_context += f"\n### Attachment: {_att['filename']} ({_att['mime_type']}, {_att['size']} bytes)\n"
-                                if "content" in _att:
-                                    attachment_context += f"Content:\n{_att['content']}\n"
-                                else:
-                                    attachment_context += "(Binary attachment — content not extracted)\n"
+                            if _attachments:
+                                attachment_context = "\n\n**EMAIL ATTACHMENTS:**\n"
+                                for _att in _attachments:
+                                    attachment_context += f"\n### Attachment: {_att['filename']} ({_att['mime_type']}, {_att['size']} bytes)\n"
+                                    if "content" in _att:
+                                        attachment_context += f"Content:\n{_att['content']}\n"
+                                    else:
+                                        attachment_context += "(Binary attachment — content not extracted)\n"
                 except Exception as _e:
                     logger.warning(f"Could not fetch attachments for message {message_id}: {_e}")
 
