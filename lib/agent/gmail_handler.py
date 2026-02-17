@@ -957,7 +957,11 @@ async def generate_ai_response(
 Instructions for your response:
 1. Address the sender by their first name if known, otherwise use a friendly greeting
 2. Be helpful and provide relevant information based on the email content
-3. **IGNORE email signatures, disclaimers, and empty/signature attachments** - Do not mention or ask about Outlook signatures, email disclaimers, confidentiality notices, or attachments that appear to be empty or part of an email signature
+3. **Attachments**: When an email includes attachments, review the attachment content provided in the context. You can:
+   - Summarize the attachment content in your reply
+   - Store important information from attachments as memories
+   - Take action based on attachment data (e.g., add events from a schedule)
+   - Still IGNORE empty/signature attachments, Outlook disclaimers, and confidentiality notices
 4. If they are asking about weather, use your `get_weather` tool to get accurate information
 5. **CRITICAL - For ANY calendar/schedule questions:**
    - Use the `get_calendar_events` tool to get REAL data
@@ -1288,6 +1292,55 @@ async def handle_new_email_notification(history_id: str) -> Dict[str, Any]:
 
                 email_body = body_preview or ""
                 logger.info(f"Email body ({len(email_body)} chars): {email_body[:200]}...")
+
+                # Fetch attachment metadata and content for this message
+                attachment_context = ""
+                try:
+                    import httpx as _httpx
+                    _attach_resp = await _httpx.AsyncClient().get(
+                        f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}?format=full",
+                        headers={"Authorization": f"Bearer {agent_access_token}"},
+                        timeout=10.0
+                    )
+                    if _attach_resp.status_code == 200:
+                        import base64 as _base64
+                        _msg_data = _attach_resp.json()
+                        _parts = _msg_data.get("payload", {}).get("parts", [])
+                        _attachments = []
+                        for _part in _parts:
+                            _filename = _part.get("filename", "")
+                            _body = _part.get("body", {})
+                            _att_id = _body.get("attachmentId")
+                            _mime = _part.get("mimeType", "")
+                            _size = _body.get("size", 0)
+                            if _filename and _att_id and _size > 0:
+                                _att_info = {"filename": _filename, "mime_type": _mime, "size": _size}
+                                # Only fetch text-extractable attachments under 500KB
+                                if _size < 500_000 and _mime in ("text/plain", "text/csv", "text/html"):
+                                    try:
+                                        _att_resp = await _httpx.AsyncClient().get(
+                                            f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/attachments/{_att_id}",
+                                            headers={"Authorization": f"Bearer {agent_access_token}"},
+                                            timeout=10.0
+                                        )
+                                        if _att_resp.status_code == 200:
+                                            _raw = _base64.urlsafe_b64decode(_att_resp.json().get("data", ""))
+                                            _att_info["content"] = _raw.decode("utf-8", errors="replace")[:3000]
+                                    except Exception as _e:
+                                        logger.warning(f"Could not fetch attachment {_filename}: {_e}")
+                                _attachments.append(_att_info)
+                        if _attachments:
+                            attachment_context = "\n\n**EMAIL ATTACHMENTS:**\n"
+                            for _att in _attachments:
+                                attachment_context += f"\n### Attachment: {_att['filename']} ({_att['mime_type']}, {_att['size']} bytes)\n"
+                                if "content" in _att:
+                                    attachment_context += f"Content:\n{_att['content']}\n"
+                                else:
+                                    attachment_context += "(Binary attachment — content not extracted)\n"
+                except Exception as _e:
+                    logger.warning(f"Could not fetch attachments for message {message_id}: {_e}")
+
+                email_body = email_body + attachment_context
 
                 if not original_subject:
                     original_subject = "your email"
