@@ -55,6 +55,7 @@ HEALTH_PORT: int = int(
 # Module-level state tracking
 _start_time: float = time.monotonic()
 _last_job_processed: Optional[str] = None
+_worker_ready: bool = False  # set to True once Redis is confirmed connected
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +66,20 @@ def record_job_processed() -> None:
     """Record the timestamp of the most recently completed job."""
     global _last_job_processed
     _last_job_processed = datetime.now(timezone.utc).isoformat()
+
+
+def set_worker_ready(ready: bool = True) -> None:
+    """
+    Signal that the worker has finished its startup sequence.
+
+    Called by ``main.py`` after Redis is confirmed connected and the rq
+    Worker loop is about to start.  Until this is called, ``/health``
+    returns 200 with status ``"starting"`` so Railway's probe does not
+    kill the container during the Redis retry window.
+    """
+    global _worker_ready
+    _worker_ready = ready
+    logger.info("Worker ready flag set to %s", ready)
 
 
 def get_uptime_seconds() -> float:
@@ -85,6 +100,16 @@ def _collect_health() -> Dict[str, Any]:
     dict
         Health payload ready for JSON serialisation.
     """
+    # During the startup retry window (before Redis is confirmed), report
+    # "starting" with HTTP 200 so Railway's probe doesn't kill the container.
+    if not _worker_ready:
+        return {
+            "status": "starting",
+            "redis_connected": False,
+            "uptime_seconds": get_uptime_seconds(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
     health: Dict[str, Any] = {
         "status": "healthy",
         "redis_connected": False,
@@ -169,8 +194,8 @@ class _HealthHandler(BaseHTTPRequestHandler):
         if self.path.rstrip("/") == "/health":
             payload = _collect_health()
             body = json.dumps(payload, indent=2).encode("utf-8")
-            # Return 200 for healthy/warning, 503 for degraded/unhealthy/critical
-            status_ok = payload["status"] in ("healthy", "warning")
+            # Return 200 for healthy/warning/starting, 503 for degraded/unhealthy/critical
+            status_ok = payload["status"] in ("healthy", "warning", "starting")
             self.send_response(200 if status_ok else 503)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
