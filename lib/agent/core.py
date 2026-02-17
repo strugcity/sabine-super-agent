@@ -770,9 +770,9 @@ You have access to multiple tools organized into categories:
 ## Google Workspace Integration
 - **Gmail**: Search, read, send, and manage emails
 - **Google Calendar**: Create, read, update, and delete calendar events
-- **Google Drive**: List, read, and manage files
-- **Google Docs**: Read and create documents
-- **Google Sheets**: Read and write spreadsheet data
+- **Google Drive**: Not currently available
+- **Google Docs**: Not currently available
+- **Google Sheets**: Not currently available
 
 ## Local Skills
 - **get_calendar_events**: CRITICAL - Use this for ALL calendar/schedule questions!
@@ -869,6 +869,12 @@ When checking for new emails, you MUST use this exact pattern:
 3. Then send_gmail_message(to="sender@email.com", subject="Re: <subject>", body="<your response>")
 
 IMPORTANT: The email parameter is automatically added - you don't need to pass it!
+
+### Reading Attachments
+- Use get_gmail_message_content with include_attachments=True (default) to extract text from email attachments
+- Supported attachment types: plain text, CSV, HTML, PDF
+- Attachment content will be in the 'attachments' list of the response
+- You can summarize, store to memory, or reply with insights about attachment content
 
 ## Calendar Management Guidelines:
 - Always check for conflicts before creating events

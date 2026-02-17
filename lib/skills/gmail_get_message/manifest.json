@@ -1,0 +1,19 @@
+{
+  "name": "get_gmail_message_content",
+  "description": "Get the full content of a Gmail message by its ID, including body text and attachments. Use after search_gmail_messages to read the full email. Supports extracting text from plain text, HTML, CSV, and PDF attachments.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "message_id": {
+        "type": "string",
+        "description": "Gmail message ID from search_gmail_messages"
+      },
+      "include_attachments": {
+        "type": "boolean",
+        "description": "Whether to download and extract text from attachments",
+        "default": true
+      }
+    },
+    "required": ["message_id"]
+  }
+}
