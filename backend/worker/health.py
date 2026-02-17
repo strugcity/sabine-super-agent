@@ -150,9 +150,16 @@ def _collect_health() -> Dict[str, Any]:
         health["memory_limit_mb"] = None
         health["memory_status"] = "unknown"
 
-    # If Redis is down, mark as unhealthy
+    # If Redis is down, degrade status based on uptime:
+    # - Within first 45s of startup: "degraded" (200) to allow Railway health
+    #   check to pass while the worker is still connecting to Redis.
+    # - After 45s: "unhealthy" (503) so Railway can detect a genuine outage.
     if not health["redis_connected"]:
-        health["status"] = "unhealthy"
+        uptime = health.get("uptime_seconds", 0)
+        if uptime < 45:
+            health["status"] = "degraded"
+        else:
+            health["status"] = "unhealthy"
 
     return health
 
@@ -169,8 +176,9 @@ class _HealthHandler(BaseHTTPRequestHandler):
         if self.path.rstrip("/") == "/health":
             payload = _collect_health()
             body = json.dumps(payload, indent=2).encode("utf-8")
-            # Return 200 for healthy/warning, 503 for degraded/unhealthy/critical
-            status_ok = payload["status"] in ("healthy", "warning")
+            # Return 200 for healthy/warning/degraded (startup grace period),
+            # 503 for unhealthy/critical (genuine outage after startup window).
+            status_ok = payload["status"] in ("healthy", "warning", "degraded")
             self.send_response(200 if status_ok else 503)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
