@@ -11,6 +11,18 @@ ADR Reference: ADR-002 (Redis + rq selected for Slow Path job queue)
 Singleton Pattern: Matches ``get_supabase_client()`` in ``backend/services/wal.py``.
 The module-level ``_redis_client`` is lazily initialised on first call to
 ``get_redis_client()`` and reused for the lifetime of the process.
+
+IMPORTANT — two separate clients:
+- ``get_redis_client()``    : ``decode_responses=True``  — for application code (FastAPI,
+                               health checks, salience scores).  Returns Python strings.
+- ``get_rq_redis_client()`` : ``decode_responses=False`` — REQUIRED for rq's Queue and
+                               Worker.  rq serialises jobs as pickle (binary data); with
+                               ``decode_responses=True`` redis-py tries to UTF-8-decode
+                               the raw pickle bytes, causing UnicodeDecodeError on every
+                               ``Job.fetch_many()`` call, and rq's ``intermediate_queue``
+                               calls ``.decode()`` on already-decoded strings, causing
+                               ``AttributeError: 'str' object has no attribute 'decode'``.
+                               See deploy-ws.log 2026-02-18 for the production crash.
 """
 
 import logging
@@ -54,7 +66,7 @@ class RedisHealthStatus(BaseModel):
 
 
 # =============================================================================
-# Singleton Client
+# Singleton Client (application use — decode_responses=True)
 # =============================================================================
 
 _redis_client: Optional[Any] = None  # typed as Any to allow lazy import
@@ -62,9 +74,13 @@ _redis_client: Optional[Any] = None  # typed as Any to allow lazy import
 
 def get_redis_client() -> Any:
     """
-    Get or create the Redis client singleton.
+    Get or create the Redis client singleton (``decode_responses=True``).
 
-    Returns the ``redis.Redis`` instance backed by ``REDIS_URL``.
+    Returns Python strings for all Redis responses.  Suitable for application
+    code (FastAPI endpoints, salience scores, health checks via ``ping_redis``).
+
+    **Do NOT pass this connection to rq's Queue or Worker.**  rq requires raw
+    bytes (``decode_responses=False``).  Use ``get_rq_redis_client()`` instead.
 
     Raises
     ------
@@ -104,6 +120,50 @@ def reset_redis_client() -> None:
             pass  # best-effort cleanup
     _redis_client = None
     logger.debug("Redis client singleton reset")
+
+
+# =============================================================================
+# rq-Compatible Client (decode_responses=False — required for rq)
+# =============================================================================
+
+def get_rq_redis_client() -> Any:
+    """
+    Create a fresh Redis connection suitable for use with rq's Queue and Worker.
+
+    **Key difference from** ``get_redis_client()``: this connection uses
+    ``decode_responses=False``, meaning Redis responses are returned as raw
+    ``bytes``.  rq 2.x requires raw bytes because:
+
+    1. Job payloads are serialised with ``pickle``, which produces binary data
+       that cannot be UTF-8 decoded.  Passing ``decode_responses=True`` causes
+       ``UnicodeDecodeError: 'utf-8' codec can't decode byte 0x80`` when rq's
+       scheduler calls ``Job.fetch_many()``.
+
+    2. rq's ``IntermediateQueue.get_job_ids()`` calls ``job_id.decode()`` on
+       every item it reads from Redis.  With ``decode_responses=True`` the items
+       are already Python strings; calling ``.decode()`` on a ``str`` raises
+       ``AttributeError: 'str' object has no attribute 'decode'``.
+
+    This function is intentionally **not** a singleton — it creates a new
+    connection each call.  The caller (``backend/worker/main.py``) holds the
+    reference for the lifetime of the worker process.
+
+    Returns
+    -------
+    redis.Redis
+        A connected Redis client with ``decode_responses=False``.
+    """
+    from redis import Redis  # type: ignore[import-untyped]
+
+    client = Redis.from_url(
+        REDIS_URL,
+        decode_responses=False,   # rq MUST receive raw bytes, not strings
+        socket_connect_timeout=5,
+        socket_timeout=5,
+        retry_on_timeout=True,
+    )
+    logger.info("rq Redis client created (url=%s, decode_responses=False)", _redis_url_safe())
+    return client
 
 
 # =============================================================================

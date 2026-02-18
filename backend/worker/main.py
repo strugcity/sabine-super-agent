@@ -256,8 +256,21 @@ def run_worker() -> None:
         set_worker_ready = lambda ready=True: None  # noqa: E731 — harmless no-op
 
     # 3. Connect to Redis (with retry for cold-start race) ------------------
+    # We use TWO separate connections:
+    #   - app_redis  (decode_responses=True)  : liveness PING only in this block
+    #   - rq_redis   (decode_responses=False) : passed to rq's Queue and Worker
+    #
+    # rq 2.x requires decode_responses=False because it stores job payloads as
+    # pickle (binary).  Passing a decode_responses=True connection to rq causes:
+    #   AttributeError: 'str' object has no attribute 'decode'  (intermediate_queue)
+    #   UnicodeDecodeError: 'utf-8' codec can't decode byte 0x80  (job scheduler)
+    # See deploy-ws.log 2026-02-18 for the production crash trace.
     try:
-        from backend.services.redis_client import get_redis_client, reset_redis_client
+        from backend.services.redis_client import (
+            get_redis_client,
+            get_rq_redis_client,
+            reset_redis_client,
+        )
     except ImportError:
         logger.error(
             "redis package is not installed. "
@@ -266,11 +279,11 @@ def run_worker() -> None:
         sys.exit(1)
 
     _REDIS_RETRY_DELAYS = [2, 4, 8, 15, 30]  # seconds between attempts
-    redis_conn = None
+    _ping_conn = None  # app client — decode_responses=True — ping only
     for _attempt, _delay in enumerate(_REDIS_RETRY_DELAYS + [None], start=1):
         try:
-            redis_conn = get_redis_client()
-            pong: bool = redis_conn.ping()
+            _ping_conn = get_redis_client()
+            pong: bool = _ping_conn.ping()
             if pong:
                 logger.info("Redis connection verified (PING OK, attempt %d)", _attempt)
                 break
@@ -281,7 +294,7 @@ def run_worker() -> None:
                 _attempt, len(_REDIS_RETRY_DELAYS) + 1, exc,
             )
             reset_redis_client()  # force fresh socket on next attempt
-            redis_conn = None
+            _ping_conn = None
 
         if _delay is None:
             logger.error("Exhausted all Redis connection attempts -- aborting")
@@ -290,13 +303,18 @@ def run_worker() -> None:
         logger.info("Retrying Redis in %ds...", _delay)
         time.sleep(_delay)
 
-    assert redis_conn is not None  # guaranteed by loop above
+    assert _ping_conn is not None  # guaranteed by loop above
 
     # Signal ready as soon as Redis is confirmed — before scheduled job
     # registration or Worker init, both of which can take additional seconds.
     # Railway's probe must see 200/"healthy" within the start-period window;
     # we don't want to burn that budget on enqueue_at() calls.
     set_worker_ready(True)
+
+    # Create the rq-compatible connection (decode_responses=False).
+    # This is the connection passed to Queue and Worker — never use the
+    # application client (decode_responses=True) for rq objects.
+    rq_redis = get_rq_redis_client()
 
     # 4. Import queue constant and create rq primitives ---------------------
     try:
@@ -309,11 +327,11 @@ def run_worker() -> None:
 
     from backend.services.queue import QUEUE_NAME
 
-    queue = Queue(QUEUE_NAME, connection=redis_conn)
+    queue = Queue(QUEUE_NAME, connection=rq_redis)
     logger.info("Listening on queue: %s", QUEUE_NAME)
 
     # 4b. Register nightly scheduled jobs -----------------------------------
-    _register_scheduled_jobs(queue, redis_conn)
+    _register_scheduled_jobs(queue, rq_redis)
 
     # 5. Graceful shutdown --------------------------------------------------
     worker: Optional["Worker"] = None
@@ -332,7 +350,7 @@ def run_worker() -> None:
     # 6. Start the rq worker loop (blocking) --------------------------------
     worker = Worker(
         queues=[queue],
-        connection=redis_conn,
+        connection=rq_redis,
         name=f"sabine-worker-{uuid.uuid4().hex[:8]}",
     )
 
