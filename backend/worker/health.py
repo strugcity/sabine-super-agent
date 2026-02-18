@@ -121,16 +121,16 @@ def _collect_health() -> Dict[str, Any]:
     }
 
     # --- Redis connectivity ---
+    # Use ping_redis() (1s timeout) not the singleton's ping (5s timeout).
+    # The health handler runs on Railway's probe deadline of ~5s total; a 5s
+    # Redis timeout would consume the entire budget and trigger a false 503.
     try:
-        from backend.services.redis_client import get_redis_client
+        from backend.services.redis_client import ping_redis
 
-        client = get_redis_client()
-        pong: bool = client.ping()
-        health["redis_connected"] = pong
+        health["redis_connected"] = ping_redis(timeout_s=1.0)
     except Exception as exc:
         logger.warning("Health: Redis ping failed: %s", exc)
         health["redis_connected"] = False
-        health["status"] = "degraded"
 
     # --- Queue stats ---
     try:
@@ -175,16 +175,13 @@ def _collect_health() -> Dict[str, Any]:
         health["memory_limit_mb"] = None
         health["memory_status"] = "unknown"
 
-    # If Redis is down, degrade status based on uptime:
-    # - Within first 45s of startup: "degraded" (200) to allow Railway health
-    #   check to pass while the worker is still connecting to Redis.
-    # - After 45s: "unhealthy" (503) so Railway can detect a genuine outage.
+    # If Redis is down after the worker has fully started, mark as "degraded"
+    # (HTTP 200) not "unhealthy" (503).  A transient Redis blip during a
+    # Railway rolling deploy should not fail the health probe and abort the
+    # deploy — the worker will reconnect automatically.  Railway should only
+    # see 503 for a sustained outage, which operators must address manually.
     if not health["redis_connected"]:
-        uptime = health.get("uptime_seconds", 0)
-        if uptime < 45:
-            health["status"] = "degraded"
-        else:
-            health["status"] = "unhealthy"
+        health["status"] = "degraded"
 
     return health
 
@@ -201,8 +198,10 @@ class _HealthHandler(BaseHTTPRequestHandler):
         if self.path.rstrip("/") == "/health":
             payload = _collect_health()
             body = json.dumps(payload, indent=2).encode("utf-8")
-            # Return 200 for healthy/warning/starting, 503 for degraded/unhealthy/critical
-            status_ok = payload["status"] in ("healthy", "warning", "starting")
+            # HTTP 200: healthy, warning, degraded (transient Redis blip or
+            #           startup), starting (Redis retry window).
+            # HTTP 503: unhealthy (sustained outage), critical (memory limit).
+            status_ok = payload["status"] in ("healthy", "warning", "degraded", "starting")
             self.send_response(200 if status_ok else 503)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))

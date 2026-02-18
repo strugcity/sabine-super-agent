@@ -292,6 +292,12 @@ def run_worker() -> None:
 
     assert redis_conn is not None  # guaranteed by loop above
 
+    # Signal ready as soon as Redis is confirmed — before scheduled job
+    # registration or Worker init, both of which can take additional seconds.
+    # Railway's probe must see 200/"healthy" within the start-period window;
+    # we don't want to burn that budget on enqueue_at() calls.
+    set_worker_ready(True)
+
     # 4. Import queue constant and create rq primitives ---------------------
     try:
         from rq import Queue, Worker  # type: ignore[import-untyped]
@@ -334,9 +340,6 @@ def run_worker() -> None:
         "Worker %s started -- waiting for jobs on [%s]",
         worker.name, QUEUE_NAME,
     )
-
-    # Signal to the health probe that startup is complete.
-    set_worker_ready(True)
 
     try:
         worker.work(with_scheduler=True, logging_level=LOG_LEVEL)

@@ -110,6 +110,46 @@ def reset_redis_client() -> None:
 # Health Check
 # =============================================================================
 
+def ping_redis(timeout_s: float = 1.0) -> bool:
+    """
+    Fast synchronous Redis liveness probe with an independent short timeout.
+
+    Used by the worker's health-check HTTP handler so that a probe never
+    blocks for more than ``timeout_s`` seconds.  The main singleton uses a
+    5-second socket timeout (needed for job operations); that is too slow for
+    a health endpoint that Railway probes every 15 seconds with its own 5s
+    deadline.
+
+    Creates a *transient* connection for the probe — does not touch or replace
+    the singleton used by job workers.
+
+    Parameters
+    ----------
+    timeout_s : float
+        Socket connect + read timeout in seconds.  Default 1.0.
+
+    Returns
+    -------
+    bool
+        ``True`` if PING succeeded, ``False`` on any error.
+    """
+    try:
+        from redis import Redis  # type: ignore[import-untyped]
+
+        probe = Redis.from_url(
+            REDIS_URL,
+            decode_responses=True,
+            socket_connect_timeout=timeout_s,
+            socket_timeout=timeout_s,
+            retry_on_timeout=False,
+        )
+        result: bool = probe.ping()
+        probe.close()
+        return result
+    except Exception:
+        return False
+
+
 async def check_redis_health() -> RedisHealthStatus:
     """
     Probe the Redis connection and return a structured health report.
